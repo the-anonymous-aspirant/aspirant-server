@@ -1,10 +1,19 @@
 package data_functions
 
 import (
+	"os"
 	"testing"
 )
 
+func requireDictionary(t *testing.T) {
+	t.Helper()
+	if os.Getenv("S3_BUCKET_NAME") == "" || len(dictionary) == 0 {
+		t.Skip("Skipping: dictionary not loaded (requires S3 credentials)")
+	}
+}
+
 func TestWordExistsInDictionary(t *testing.T) {
+	requireDictionary(t)
 	word := "abandons"
 	if _, exists := dictionary[word]; !exists {
 		t.Errorf("Expected word %s to be in the dictionary", word)
@@ -12,6 +21,7 @@ func TestWordExistsInDictionary(t *testing.T) {
 }
 
 func TestWordDoesNotExistInDictionary(t *testing.T) {
+	requireDictionary(t)
 	word := "nonexistentword"
 	if _, exists := dictionary[word]; exists {
 		t.Errorf("Did not expect word %s to be in the dictionary", word)
@@ -74,6 +84,7 @@ func equalUnordered(a, b []string) bool {
 }
 
 func TestGetLongestValidWord(t *testing.T) {
+	requireDictionary(t)
 	words := []string{"cat", "caterpillar", "dog", "elephant"}
 	expected := "caterpillar"
 
@@ -84,6 +95,7 @@ func TestGetLongestValidWord(t *testing.T) {
 }
 
 func TestGetLongestValidWordNoValidWords(t *testing.T) {
+	requireDictionary(t)
 	words := []string{"nonexistentword1", "nonexistentword2"}
 	expected := ""
 
@@ -94,6 +106,7 @@ func TestGetLongestValidWordNoValidWords(t *testing.T) {
 }
 
 func TestGetLongestValidWordEmptyList(t *testing.T) {
+	requireDictionary(t)
 	words := []string{}
 	expected := ""
 
@@ -104,6 +117,7 @@ func TestGetLongestValidWordEmptyList(t *testing.T) {
 }
 
 func TestGetLongestWordsFromBoard(t *testing.T) {
+	requireDictionary(t)
 	board := [][]string{
 		{"c", "a", "t"},
 		{"a", " ", "b"},
@@ -125,6 +139,7 @@ func TestGetLongestWordsFromBoard(t *testing.T) {
 }
 
 func TestGetLongestWordsFromBoardEmptyBoard(t *testing.T) {
+	requireDictionary(t)
 	board := [][]string{
 		{"", "", ""},
 		{"", "", ""},
@@ -146,6 +161,7 @@ func TestGetLongestWordsFromBoardEmptyBoard(t *testing.T) {
 }
 
 func TestGetLongestWordsFromBoardNoValidWords(t *testing.T) {
+	requireDictionary(t)
 	board := [][]string{
 		{"y", "y", "y"},
 		{"x", "x", "s"},
