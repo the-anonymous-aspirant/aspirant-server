@@ -11,9 +11,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var wikipediaClient = &http.Client{Timeout: 60 * time.Second}
+// wikipediaClient does not follow redirects so we can rewrite Location headers
+// from kiwix before passing them back to the browser.
+var wikipediaClient = &http.Client{
+	Timeout: 60 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 const zimName = "wikipedia_en_all_maxi_2026-02"
+
+// kiwixKnownPrefixes lists path prefixes that belong to kiwix's own routing.
+// Any path NOT matching these is treated as a bare article path.
+var kiwixKnownPrefixes = []string{
+	"/content/", "/search", "/catalog/", "/skin/",
+	"/viewer", "/catch/", "/suggest", "/random",
+}
 
 func kiwixURL() string {
 	if url := os.Getenv("KIWIX_URL"); url != "" {
@@ -26,19 +40,15 @@ func kiwixURL() string {
 // Kiwix is configured with --urlRootLocation /api/wikipedia, so we reconstruct
 // the full path before forwarding.
 //
-// Kiwix's search overlay generates content links without the ZIM name
-// (e.g. /content/Africa instead of /content/wikipedia_en_all_maxi_2026-02/Africa).
-// We detect these and rewrite them to include the ZIM name prefix.
+// Kiwix links arrive in several forms that all need rewriting:
+//  1. Bare article paths: /Applied_mathematics → /content/{zim}/Applied_mathematics
+//  2. Content paths missing ZIM name: /content/Africa → /content/{zim}/Africa
+//
+// We also disable automatic redirect following so that any 302 from kiwix
+// has its Location header rewritten before being sent to the browser.
 func WikipediaProxyHandler(c *gin.Context) {
 	path := c.Param("path")
-
-	// Rewrite content paths that are missing the ZIM name prefix
-	contentPrefix := "/content/"
-	zimContentPrefix := "/content/" + zimName + "/"
-	if strings.HasPrefix(path, contentPrefix) && !strings.HasPrefix(path, zimContentPrefix) {
-		article := strings.TrimPrefix(path, contentPrefix)
-		path = zimContentPrefix + article
-	}
+	path = rewriteArticlePath(path)
 
 	targetURL := kiwixURL() + "/api/wikipedia" + path
 	if c.Request.URL.RawQuery != "" {
@@ -62,7 +72,16 @@ func WikipediaProxyHandler(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	// Stream response headers
+	// Rewrite Location header on redirects so the browser's next request
+	// also goes through our proxy with proper article path rewriting.
+	if loc := resp.Header.Get("Location"); loc != "" {
+		const proxyPrefix = "/api/wikipedia"
+		if strings.HasPrefix(loc, proxyPrefix) {
+			articlePath := strings.TrimPrefix(loc, proxyPrefix)
+			resp.Header.Set("Location", proxyPrefix+rewriteArticlePath(articlePath))
+		}
+	}
+
 	for key, values := range resp.Header {
 		for _, value := range values {
 			c.Header(key, value)
@@ -71,4 +90,36 @@ func WikipediaProxyHandler(c *gin.Context) {
 
 	c.Status(resp.StatusCode)
 	io.Copy(c.Writer, resp.Body)
+}
+
+// rewriteArticlePath ensures the path includes /content/{zimName}/.
+// Bare article paths (not matching any known kiwix prefix) get the full prefix.
+// Content paths missing the ZIM name get it inserted.
+func rewriteArticlePath(path string) string {
+	zimContentPrefix := "/content/" + zimName + "/"
+
+	// Already has the full prefix — no rewrite needed
+	if strings.HasPrefix(path, zimContentPrefix) {
+		return path
+	}
+
+	// Content path missing ZIM name: /content/Africa → /content/{zim}/Africa
+	if strings.HasPrefix(path, "/content/") {
+		article := strings.TrimPrefix(path, "/content/")
+		return zimContentPrefix + article
+	}
+
+	// Check if this is a known kiwix path (search, skin, catalog, etc.)
+	for _, prefix := range kiwixKnownPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return path
+		}
+	}
+
+	// Bare article path: /Applied_mathematics → /content/{zim}/Applied_mathematics
+	if path != "" && path != "/" {
+		return zimContentPrefix + strings.TrimPrefix(path, "/")
+	}
+
+	return path
 }
