@@ -5,12 +5,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 var wikipediaClient = &http.Client{Timeout: 60 * time.Second}
+
+const zimName = "wikipedia_en_all_maxi_2026-02"
 
 func kiwixURL() string {
 	if url := os.Getenv("KIWIX_URL"); url != "" {
@@ -22,8 +25,21 @@ func kiwixURL() string {
 // WikipediaProxyHandler proxies all requests to the kiwix-serve container.
 // Kiwix is configured with --urlRootLocation /api/wikipedia, so we reconstruct
 // the full path before forwarding.
+//
+// Kiwix's search overlay generates content links without the ZIM name
+// (e.g. /content/Africa instead of /content/wikipedia_en_all_maxi_2026-02/Africa).
+// We detect these and rewrite them to include the ZIM name prefix.
 func WikipediaProxyHandler(c *gin.Context) {
 	path := c.Param("path")
+
+	// Rewrite content paths that are missing the ZIM name prefix
+	contentPrefix := "/content/"
+	zimContentPrefix := "/content/" + zimName + "/"
+	if strings.HasPrefix(path, contentPrefix) && !strings.HasPrefix(path, zimContentPrefix) {
+		article := strings.TrimPrefix(path, contentPrefix)
+		path = zimContentPrefix + article
+	}
+
 	targetURL := kiwixURL() + "/api/wikipedia" + path
 	if c.Request.URL.RawQuery != "" {
 		targetURL += "?" + c.Request.URL.RawQuery
