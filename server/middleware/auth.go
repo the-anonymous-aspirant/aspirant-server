@@ -3,6 +3,7 @@ package middleware
 import (
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -10,7 +11,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var jwtSecret = []byte("aspirant_secret")
+var jwtSecret = []byte(getJWTSecret())
+
+func getJWTSecret() string {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		log.Println("WARNING: JWT_SECRET not set, using insecure default")
+		return "aspirant_secret_CHANGE_ME"
+	}
+	return secret
+}
 
 func GenerateToken(userID uint, role string) (string, error) {
 	claims := jwt.MapClaims{
