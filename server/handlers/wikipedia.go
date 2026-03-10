@@ -27,6 +27,7 @@ const zimName = "wikipedia_en_all_maxi_2026-02"
 var kiwixKnownPrefixes = []string{
 	"/content/", "/search", "/catalog/", "/skin/",
 	"/viewer", "/catch/", "/suggest", "/random",
+	"/raw/",
 }
 
 func kiwixURL() string {
