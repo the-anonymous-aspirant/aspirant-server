@@ -87,9 +87,9 @@ aspirant-server/
 │       └── create_dictionary.py     # Offline dictionary builder script
 │
 ├── docs/
-│   ├── SERVER_SPEC.md
-│   ├── SERVER_ARCHITECTURE.md
-│   ├── SERVER_OPERATIONS.md
+│   ├── SPEC.md
+│   ├── ARCHITECTURE.md
+│   ├── OPERATIONS.md
 │   ├── CHANGELOG.md
 │   └── DECISIONS.md
 │

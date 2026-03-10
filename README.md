@@ -35,7 +35,7 @@ The server listens on **port 8080**.
 | Trusted | JWT | Trusted, Admin | `GET /files/list`, `POST /translator/translations` |
 | Admin | JWT | Admin | `POST /data_models/users`, `GET /voice-messages` |
 
-See [docs/SERVER_SPEC.md](docs/SERVER_SPEC.md) for the full route table.
+See [docs/SPEC.md](docs/SPEC.md) for the full route table.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ See [docs/SERVER_SPEC.md](docs/SERVER_SPEC.md) for the full route table.
          └── translator (language translation)
 ```
 
-See [docs/SERVER_ARCHITECTURE.md](docs/SERVER_ARCHITECTURE.md) for detailed diagrams.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed diagrams.
 
 ## Environment Variables
 
@@ -86,12 +86,12 @@ docker build -t aspirant-server .
 docker run -p 8080:8080 aspirant-server
 ```
 
-See [docs/SERVER_OPERATIONS.md](docs/SERVER_OPERATIONS.md) for detailed build arguments and deployment instructions.
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for detailed build arguments and deployment instructions.
 
 ## Documentation
 
-- [SERVER_SPEC.md](docs/SERVER_SPEC.md) -- Full API specification
-- [SERVER_ARCHITECTURE.md](docs/SERVER_ARCHITECTURE.md) -- Architecture diagrams
-- [SERVER_OPERATIONS.md](docs/SERVER_OPERATIONS.md) -- Setup, run, test, debug
+- [SPEC.md](docs/SPEC.md) -- Full API specification
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) -- Architecture diagrams
+- [OPERATIONS.md](docs/OPERATIONS.md) -- Setup, run, test, debug
 - [CHANGELOG.md](docs/CHANGELOG.md) -- Release history
 - [DECISIONS.md](docs/DECISIONS.md) -- Key design decisions
