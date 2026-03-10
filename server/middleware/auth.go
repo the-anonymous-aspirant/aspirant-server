@@ -50,15 +50,22 @@ func GenerateToken(userID uint, role string) (string, error) {
 // are encoded in the JWT token. Common claims include user ID, role, and other metadata.
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			log.Println("Authorization header required")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+		// Check Authorization header first, fall back to auth_token cookie
+		// (cookies are needed for non-AJAX requests like iframes)
+		tokenString := ""
+		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+			tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if cookie, err := c.Cookie("auth_token"); err == nil && cookie != "" {
+			tokenString = cookie
+		}
+
+		if tokenString == "" {
+			log.Println("Authorization required")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization required"})
 			c.Abort()
 			return
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		log.Printf("Token string received: %s", tokenString)
 
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
