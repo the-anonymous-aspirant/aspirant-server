@@ -1,0 +1,9 @@
+.env
+.env.local
+/bin/
+/main
+.DS_Store
+.idea/
+.vscode/
+*.swp
+docker-compose.override.yml
