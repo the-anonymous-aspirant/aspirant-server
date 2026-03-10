@@ -33,6 +33,9 @@ func TestGetGitCommit(t *testing.T) {
 
 func TestInitS3Session(t *testing.T) {
 	accessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
+	if accessKeyID == "" {
+		t.Skip("Skipping: AWS_ACCESS_KEY_ID not set")
+	}
 
 	log.Printf("Loaded AWS Access Key ID: %s", accessKeyID)
 	sess, err := InitS3Session()
@@ -46,6 +49,9 @@ func TestInitS3Session(t *testing.T) {
 
 func TestFetchEntityFromS3(t *testing.T) {
 	bucket := os.Getenv("S3_BUCKET_NAME")
+	if bucket == "" {
+		t.Skip("Skipping: S3_BUCKET_NAME not set")
+	}
 	etag := "\"0b04a90f672c2aadd9117c3c3d0b50b7\"" // ETag should be wrapped in double quotes
 
 	sess, err := InitS3Session()
