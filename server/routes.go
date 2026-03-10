@@ -115,6 +115,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/translator/languages/install", handlers.InstallTranslatorLanguageHandler)
 		trustedRoutes.POST("/translator/translations", handlers.TranslateHandler)
 
+		// Wikipedia (proxied to kiwix-serve)
+		trustedRoutes.Any("/wikipedia/*path", handlers.WikipediaProxyHandler)
+
 		// Ludde feeding times
 		trustedRoutes.POST("/upload", handlers.UploadImageHandler)
 		trustedRoutes.GET("/data_models/ludde_feeding_times", handlers.GetAllFeedingTimesHandler)
