@@ -10,10 +10,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Load environment variables from .env file
+	// Load environment variables from .env file (optional — CI won't have one)
 	err := godotenv.Load("../../.env")
 	if err != nil {
-		log.Fatalf("Error loading .env file")
+		log.Println("Warning: .env file not found, using environment variables as-is")
 	}
 
 	// Run tests
