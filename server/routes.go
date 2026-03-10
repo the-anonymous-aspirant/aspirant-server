@@ -160,6 +160,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.GET("/commander/notes/:id", handlers.GetCommanderNoteHandler)
 		adminRoutes.PATCH("/commander/notes/:id", handlers.UpdateCommanderNoteHandler)
 		adminRoutes.DELETE("/commander/notes/:id", handlers.DeleteCommanderNoteHandler)
+
+		// System monitoring (proxied to monitor sidecar + local DB stats)
+		adminRoutes.GET("/system/health", handlers.GetMonitorHealthHandler)
+		adminRoutes.GET("/system/containers", handlers.GetMonitorContainersHandler)
+		adminRoutes.GET("/system/disk", handlers.GetMonitorDiskHandler)
+		adminRoutes.GET("/system/db-stats", handlers.GetDBStatsHandler)
 	}
 
 	log.Println("Routes registered successfully")
