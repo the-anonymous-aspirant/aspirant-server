@@ -302,7 +302,7 @@ func DownloadSharedFileHandler(c *gin.Context) {
 	c.File(filePath)
 }
 
-// DeleteFileHandler deletes a file or empty directory from the authenticated user's private folder
+// DeleteFileHandler deletes a file or directory from the authenticated user's private folder
 func DeleteFileHandler(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {
@@ -323,15 +323,28 @@ func DeleteFileHandler(c *gin.Context) {
 	}
 
 	filePath := filepath.Join(getUserDir(userID.(uint)), subpath, filename)
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+	info, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
 		RespondWithError(c, http.StatusNotFound, "File not found")
 		return
 	}
 
-	if err := os.Remove(filePath); err != nil {
-		log.Printf("Error deleting %s: %v", filePath, err)
-		RespondWithError(c, http.StatusInternalServerError, "Failed to delete (directory may not be empty)")
-		return
+	if info.IsDir() {
+		if c.Query("recursive") != "true" {
+			RespondWithError(c, http.StatusBadRequest, "Directory deletion requires recursive=true")
+			return
+		}
+		if err := os.RemoveAll(filePath); err != nil {
+			log.Printf("Error deleting directory %s: %v", filePath, err)
+			RespondWithError(c, http.StatusInternalServerError, "Failed to delete directory")
+			return
+		}
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("Error deleting %s: %v", filePath, err)
+			RespondWithError(c, http.StatusInternalServerError, "Failed to delete file")
+			return
+		}
 	}
 
 	log.Printf("User %d deleted: %s", userID, filepath.Join(subpath, filename))
@@ -407,7 +420,7 @@ func CreateSharedFolderHandler(c *gin.Context) {
 	RespondWithSuccess(c, nil, "Shared folder created successfully")
 }
 
-// DeleteSharedFileHandler deletes a file or empty directory from the shared folder (admin only)
+// DeleteSharedFileHandler deletes a file or directory from the shared folder (admin only)
 func DeleteSharedFileHandler(c *gin.Context) {
 	subpath := c.Query("path")
 	if err := validateSubpath(subpath); err != nil {
@@ -422,19 +435,32 @@ func DeleteSharedFileHandler(c *gin.Context) {
 	}
 
 	filePath := filepath.Join(getSharedDir(), subpath, filename)
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+	info, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
 		RespondWithError(c, http.StatusNotFound, "File not found")
 		return
 	}
 
-	if err := os.Remove(filePath); err != nil {
-		log.Printf("Error deleting shared file %s: %v", filePath, err)
-		RespondWithError(c, http.StatusInternalServerError, "Failed to delete (directory may not be empty)")
-		return
+	if info.IsDir() {
+		if c.Query("recursive") != "true" {
+			RespondWithError(c, http.StatusBadRequest, "Directory deletion requires recursive=true")
+			return
+		}
+		if err := os.RemoveAll(filePath); err != nil {
+			log.Printf("Error deleting shared directory %s: %v", filePath, err)
+			RespondWithError(c, http.StatusInternalServerError, "Failed to delete directory")
+			return
+		}
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("Error deleting shared file %s: %v", filePath, err)
+			RespondWithError(c, http.StatusInternalServerError, "Failed to delete file")
+			return
+		}
 	}
 
 	userID, _ := c.Get("user_id")
-	log.Printf("Admin %d deleted shared file: %s", userID, filepath.Join(subpath, filename))
+	log.Printf("Admin %d deleted shared: %s", userID, filepath.Join(subpath, filename))
 	RespondWithSuccess(c, nil, "Deleted successfully")
 }
 
