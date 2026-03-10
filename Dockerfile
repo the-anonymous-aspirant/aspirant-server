@@ -1,0 +1,63 @@
+# Build stage
+FROM golang:1.23.4 AS builder
+
+WORKDIR /app
+
+ARG DB_USER
+ARG DB_HOST
+ARG DB_PASSWORD
+ARG DB_NAME
+ARG DB_PORT
+ARG AWS_ACCESS_KEY_ID
+ARG AWS_SECRET_ACCESS_KEY
+ARG AWS_REGION
+ARG S3_BUCKET_NAME
+
+COPY go.mod go.sum ./
+COPY .env* ./
+
+RUN go mod download
+
+COPY . .
+
+ARG GIT_COMMIT=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
+    -ldflags "-X aspirant-online/server/data_functions.GitCommit=${GIT_COMMIT}" \
+    -o main .
+
+# Production stage
+FROM alpine:latest
+
+ARG DB_USER
+ARG DB_HOST
+ARG DB_PASSWORD
+ARG DB_NAME
+ARG DB_PORT
+ARG AWS_ACCESS_KEY_ID
+ARG AWS_SECRET_ACCESS_KEY
+ARG AWS_REGION
+ARG S3_BUCKET_NAME
+
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /root/
+
+ENV TZ=UTC
+ENV DB_USER=${DB_USER}
+ENV DB_HOST=${DB_HOST}
+ENV DB_PASSWORD=${DB_PASSWORD}
+ENV DB_NAME=${DB_NAME}
+ENV DB_PORT=${DB_PORT}
+ENV AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+ENV AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+ENV AWS_REGION=${AWS_REGION}
+ENV S3_BUCKET_NAME=${S3_BUCKET_NAME}
+ENV PORT=8080
+
+RUN mkdir -p /data/files/shared
+
+COPY --from=builder /app/main .
+
+EXPOSE 8080
+
+CMD ["./main"]
