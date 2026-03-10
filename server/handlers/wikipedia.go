@@ -97,9 +97,10 @@ func WikipediaProxyHandler(c *gin.Context) {
 // Content paths missing the ZIM name get it inserted.
 func rewriteArticlePath(path string) string {
 	zimContentPrefix := "/content/" + zimName + "/"
+	zimContentExact := "/content/" + zimName
 
-	// Already has the full prefix — no rewrite needed
-	if strings.HasPrefix(path, zimContentPrefix) {
+	// Already has the full prefix (with or without trailing slash)
+	if strings.HasPrefix(path, zimContentPrefix) || path == zimContentExact {
 		return path
 	}
 
