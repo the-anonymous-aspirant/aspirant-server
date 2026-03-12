@@ -155,6 +155,11 @@ func GetRemarkableTreeHandler(c *gin.Context) {
 	remarkableProxyGet(c, "/tree")
 }
 
+// SyncRemarkableHandler proxies POST /sync
+func SyncRemarkableHandler(c *gin.Context) {
+	remarkableProxyPost(c, "/sync")
+}
+
 // GetRemarkableSyncStatusHandler proxies GET /sync/status
 func GetRemarkableSyncStatusHandler(c *gin.Context) {
 	remarkableProxyGet(c, "/sync/status")
