@@ -169,6 +169,20 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.GET("/system/containers", handlers.GetMonitorContainersHandler)
 		adminRoutes.GET("/system/disk", handlers.GetMonitorDiskHandler)
 		adminRoutes.GET("/system/db-stats", handlers.GetDBStatsHandler)
+
+		// reMarkable (proxied to remarkable service)
+		adminRoutes.GET("/remarkable/health", handlers.GetRemarkableHealthHandler)
+		adminRoutes.GET("/remarkable/notebooks", handlers.ListRemarkableNotebooksHandler)
+		adminRoutes.GET("/remarkable/notebooks/:id", handlers.GetRemarkableNotebookHandler)
+		adminRoutes.GET("/remarkable/notebooks/:id/pages/:page/render", handlers.RenderRemarkablePageHandler)
+		adminRoutes.GET("/remarkable/notebooks/:id/export", handlers.ExportRemarkableNotebookHandler)
+		adminRoutes.GET("/remarkable/folders", handlers.ListRemarkableFoldersHandler)
+		adminRoutes.GET("/remarkable/folders/:id/contents", handlers.GetRemarkableFolderContentsHandler)
+		adminRoutes.GET("/remarkable/tree", handlers.GetRemarkableTreeHandler)
+		adminRoutes.GET("/remarkable/sync/status", handlers.GetRemarkableSyncStatusHandler)
+		adminRoutes.POST("/remarkable/to-device/upload", handlers.UploadRemarkableToDeviceHandler)
+		adminRoutes.GET("/remarkable/to-device/pending", handlers.ListRemarkablePendingHandler)
+		adminRoutes.DELETE("/remarkable/to-device/:id", handlers.DeleteRemarkablePendingHandler)
 	}
 
 	log.Println("Routes registered successfully")
