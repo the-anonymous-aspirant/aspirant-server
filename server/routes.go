@@ -179,6 +179,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.GET("/remarkable/folders", handlers.ListRemarkableFoldersHandler)
 		adminRoutes.GET("/remarkable/folders/:id/contents", handlers.GetRemarkableFolderContentsHandler)
 		adminRoutes.GET("/remarkable/tree", handlers.GetRemarkableTreeHandler)
+		adminRoutes.POST("/remarkable/sync", handlers.SyncRemarkableHandler)
 		adminRoutes.GET("/remarkable/sync/status", handlers.GetRemarkableSyncStatusHandler)
 		adminRoutes.POST("/remarkable/to-device/upload", handlers.UploadRemarkableToDeviceHandler)
 		adminRoutes.GET("/remarkable/to-device/pending", handlers.ListRemarkablePendingHandler)
