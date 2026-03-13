@@ -184,6 +184,21 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.POST("/remarkable/to-device/upload", handlers.UploadRemarkableToDeviceHandler)
 		adminRoutes.GET("/remarkable/to-device/pending", handlers.ListRemarkablePendingHandler)
 		adminRoutes.DELETE("/remarkable/to-device/:id", handlers.DeleteRemarkablePendingHandler)
+
+		// Finance (proxied to finance service)
+		adminRoutes.GET("/finance/health", handlers.GetFinanceHealthHandler)
+		adminRoutes.POST("/finance/sources/:bank/upload", handlers.UploadFinanceCSVHandler)
+		adminRoutes.GET("/finance/sources", handlers.ListFinanceSourcesHandler)
+		adminRoutes.GET("/finance/sources/:bank/schema", handlers.GetFinanceSourceSchemaHandler)
+		adminRoutes.GET("/finance/transactions", handlers.ListFinanceTransactionsHandler)
+		adminRoutes.GET("/finance/summary/monthly", handlers.GetFinanceMonthlySummaryHandler)
+		adminRoutes.GET("/finance/summary/overview", handlers.GetFinanceOverviewHandler)
+		adminRoutes.GET("/finance/categories", handlers.ListFinanceCategoriesHandler)
+		adminRoutes.POST("/finance/categories", handlers.CreateFinanceCategoryHandler)
+		adminRoutes.DELETE("/finance/categories/:id", handlers.DeleteFinanceCategoryHandler)
+		adminRoutes.POST("/finance/re-enrich", handlers.ReEnrichFinanceHandler)
+		adminRoutes.GET("/finance/accounts", handlers.ListFinanceAccountsHandler)
+		adminRoutes.POST("/finance/import-local", handlers.ImportLocalFinanceHandler)
 	}
 
 	log.Println("Routes registered successfully")
