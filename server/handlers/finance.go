@@ -167,3 +167,8 @@ func ReEnrichFinanceHandler(c *gin.Context) {
 func ListFinanceAccountsHandler(c *gin.Context) {
 	financeProxyGet(c, "/accounts")
 }
+
+// ImportLocalFinanceHandler proxies POST /import-local
+func ImportLocalFinanceHandler(c *gin.Context) {
+	financeProxyPost(c, "/import-local")
+}

@@ -198,6 +198,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.DELETE("/finance/categories/:id", handlers.DeleteFinanceCategoryHandler)
 		adminRoutes.POST("/finance/re-enrich", handlers.ReEnrichFinanceHandler)
 		adminRoutes.GET("/finance/accounts", handlers.ListFinanceAccountsHandler)
+		adminRoutes.POST("/finance/import-local", handlers.ImportLocalFinanceHandler)
 	}
 
 	log.Println("Routes registered successfully")
