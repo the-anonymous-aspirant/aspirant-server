@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+.env
+.env.*
+.DS_Store
+docs/
+*.md
+.idea/
+.vscode/
+*.swp
+docker-compose.override.yml
