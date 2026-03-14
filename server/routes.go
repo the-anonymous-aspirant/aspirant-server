@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"aspirant-online/server/handlers"
 	"aspirant-online/server/middleware"
@@ -39,7 +38,7 @@ func SetupMiddleware(r *gin.Engine) {
 		username, _ := param.Keys["user_name"].(string)
 
 		return fmt.Sprintf("[GIN] %v | %3d | %15s | %-7s %#v | role: %s | user: %d | username: %s\n",
-			param.TimeStamp.Format(time.RFC1123),
+			param.TimeStamp.Format("2006-01-02T15:04:05Z"),
 			param.StatusCode,
 			param.ClientIP,
 			param.Method,
@@ -67,7 +66,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 
 	// Public routes - no authentication required
 	router.POST("/login", handlers.LoginHandler)
-	router.GET("/login:username", handlers.LoginUserHandler)
+	router.GET("/login/:username", handlers.LoginUserHandler)
 	router.GET("/health", handlers.HealthCheckHandler)
 	router.POST("/games/word_weaver", handlers.GetLongestWordsHandler)
 	router.GET("/fetch-object/:etag", handlers.FetchObjectHandler)

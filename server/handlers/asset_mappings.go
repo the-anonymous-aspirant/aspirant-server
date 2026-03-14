@@ -25,9 +25,7 @@ const assetMappingsFile = "asset_mappings.json"
 func GetAssetMappingsHandler(c *gin.Context) {
 	mappings, err := loadAssetMappings()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to load asset mappings",
-		})
+		RespondWithError(c, http.StatusInternalServerError, "Failed to load asset mappings")
 		return
 	}
 
@@ -39,32 +37,23 @@ func UpdateAssetMappingsHandler(c *gin.Context) {
 	var newMappings AssetMappingsConfig
 
 	if err := c.ShouldBindJSON(&newMappings); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid JSON payload",
-		})
+		RespondWithError(c, http.StatusBadRequest, "Invalid JSON payload")
 		return
 	}
 
 	// Validate the mappings
 	if err := validateAssetMappings(newMappings); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": err.Error(),
-		})
+		RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Save the mappings
 	if err := saveAssetMappings(newMappings); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to save asset mappings",
-		})
+		RespondWithError(c, http.StatusInternalServerError, "Failed to save asset mappings")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":  "Asset mappings updated successfully",
-		"mappings": newMappings,
-	})
+	RespondWithSuccess(c, gin.H{"mappings": newMappings}, "Asset mappings updated successfully")
 }
 
 // loadAssetMappings loads the asset mappings from file or returns defaults
