@@ -10,18 +10,33 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
-// GetAllFeedingTimesHandler handles retrieving all feeding times
+// GetAllFeedingTimesHandler handles retrieving all feeding times with pagination
 func GetAllFeedingTimesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
-	feedingTimes, err := data_models.GetAllFeedingTimes(db)
-	if err != nil {
+	page, pageSize := parsePagination(c)
+	offset := (page - 1) * pageSize
+
+	var total int64
+	if err := db.Model(&data_models.LuddeFeedingTime{}).Count(&total).Error; err != nil {
+		log.Printf("Error counting feeding times: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving feeding times")
+		return
+	}
+
+	var feedingTimes []data_models.LuddeFeedingTime
+	if err := db.Offset(offset).Limit(pageSize).Find(&feedingTimes).Error; err != nil {
 		log.Printf("Error retrieving feeding times: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving feeding times")
 		return
 	}
 
-	RespondWithSuccess(c, feedingTimes, "Feeding times retrieved successfully")
+	c.JSON(http.StatusOK, PaginatedResponse{
+		Items:    feedingTimes,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }
 
 // GetFeedingTimeHandler handles retrieving a feeding time by ID
