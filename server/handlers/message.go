@@ -11,18 +11,33 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
-// GetAllMessagesHandler handles retrieving all messages
+// GetAllMessagesHandler handles retrieving all messages with pagination
 func GetAllMessagesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
-	messages, err := data_models.GetAllMessages(db)
-	if err != nil {
+	page, pageSize := parsePagination(c)
+	offset := (page - 1) * pageSize
+
+	var total int64
+	if err := db.Model(&data_models.Message{}).Count(&total).Error; err != nil {
+		log.Printf("Error counting messages: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving messages")
+		return
+	}
+
+	var messages []data_models.Message
+	if err := db.Order("updated_at desc").Offset(offset).Limit(pageSize).Find(&messages).Error; err != nil {
 		log.Printf("Error retrieving messages: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving messages")
 		return
 	}
 
-	RespondWithSuccess(c, messages, "Messages retrieved successfully")
+	c.JSON(http.StatusOK, PaginatedResponse{
+		Items:    messages,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }
 
 // PostMessageHandler handles posting a new message

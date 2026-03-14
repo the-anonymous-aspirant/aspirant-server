@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strconv"
 
 	"aspirant-online/server/data_functions"
 	"aspirant-online/server/data_models"
@@ -107,21 +106,28 @@ func GetGameScoresHandler(c *gin.Context) {
 	}
 
 	mode := c.Query("mode")
+	page, pageSize := parsePagination(c)
+	offset := (page - 1) * pageSize
 
-	limit := 10
-	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
-		}
+	log.Printf("Retrieving game scores for game: %s, mode: %s, page: %d, page_size: %d", game, mode, page, pageSize)
+
+	// Build base query
+	query := db.Model(&data_models.GameScore{}).Where("game = ?", game)
+	if mode != "" {
+		query = query.Where("mode = ?", mode)
 	}
-	if limit > 50 {
-		limit = 50
+
+	// Get total count
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		log.Printf("Error counting game scores: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving scores")
+		return
 	}
 
-	log.Printf("Retrieving game scores for game: %s, mode: %s, limit: %d", game, mode, limit)
-
-	scores, err := data_models.GetGameScores(db, game, mode, limit)
-	if err != nil {
+	// Fetch paginated scores
+	var scores []data_models.GameScore
+	if err := query.Order("score DESC").Offset(offset).Limit(pageSize).Find(&scores).Error; err != nil {
 		log.Printf("Error retrieving game scores: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving scores")
 		return
@@ -145,5 +151,10 @@ func GetGameScoresHandler(c *gin.Context) {
 	}
 
 	log.Printf("Retrieved %d game scores for game: %s", len(result), game)
-	RespondWithSuccess(c, result, "Scores retrieved successfully")
+	c.JSON(http.StatusOK, PaginatedResponse{
+		Items:    result,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }

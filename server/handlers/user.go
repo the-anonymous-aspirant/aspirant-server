@@ -57,12 +57,22 @@ func GetUserHandler(c *gin.Context) {
 	RespondWithSuccess(c, user.ToResponse(), "User retrieved successfully")
 }
 
-// GetAllUsersHandler handles retrieving all users
+// GetAllUsersHandler handles retrieving all users with pagination
 func GetAllUsersHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
-	users, err := data_models.GetAllUsers(db)
-	if err != nil {
+	page, pageSize := parsePagination(c)
+	offset := (page - 1) * pageSize
+
+	var total int64
+	if err := db.Model(&data_models.User{}).Count(&total).Error; err != nil {
+		log.Printf("Error counting users: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving users")
+		return
+	}
+
+	var users []data_models.User
+	if err := db.Preload("Role").Offset(offset).Limit(pageSize).Find(&users).Error; err != nil {
 		log.Printf("Error retrieving users: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving users")
 		return
@@ -73,7 +83,12 @@ func GetAllUsersHandler(c *gin.Context) {
 		responses[i] = users[i].ToResponse()
 	}
 
-	RespondWithSuccess(c, responses, "Users retrieved successfully")
+	c.JSON(http.StatusOK, PaginatedResponse{
+		Items:    responses,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }
 
 // CreateUserHandler handles creating a new user
@@ -301,16 +316,31 @@ func BootstrapUserHandler(c *gin.Context) {
 	RespondWithSuccess(c, user.ToResponse(), "Bootstrap admin user created successfully")
 }
 
-// GetAllRolesHandler handles retrieving all roles
+// GetAllRolesHandler handles retrieving all roles with pagination
 func GetAllRolesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
-	roles, err := data_models.GetAllRoles(db)
-	if err != nil {
+	page, pageSize := parsePagination(c)
+	offset := (page - 1) * pageSize
+
+	var total int64
+	if err := db.Model(&data_models.Role{}).Count(&total).Error; err != nil {
+		log.Printf("Error counting roles: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving roles")
+		return
+	}
+
+	var roles []data_models.Role
+	if err := db.Offset(offset).Limit(pageSize).Find(&roles).Error; err != nil {
 		log.Printf("Error retrieving roles: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving roles")
 		return
 	}
 
-	RespondWithSuccess(c, roles, "Roles retrieved successfully")
+	c.JSON(http.StatusOK, PaginatedResponse{
+		Items:    roles,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }

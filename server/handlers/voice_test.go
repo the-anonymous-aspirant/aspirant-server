@@ -140,8 +140,11 @@ func TestListVoiceMessages_TranscriberDown_Returns502(t *testing.T) {
 
 	var body ErrorResponse
 	json.Unmarshal(w.Body.Bytes(), &body)
-	if body.Error == "" {
+	if body.Error.Message == "" {
 		t.Error("expected error message in response body")
+	}
+	if body.Error.Code == "" {
+		t.Error("expected error code in response body")
 	}
 }
 
