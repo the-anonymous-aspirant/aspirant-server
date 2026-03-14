@@ -128,31 +128,31 @@ func FetchObjectHandler(c *gin.Context) {
 func UploadImageHandler(c *gin.Context) {
 	file, err := c.FormFile("image")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file is received"})
+		RespondWithError(c, http.StatusBadRequest, "No file is received")
 		return
 	}
 
 	path := c.PostForm("path")
 	if path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Path is required"})
+		RespondWithError(c, http.StatusBadRequest, "Path is required")
 		return
 	}
 
 	bucket := os.Getenv("S3_BUCKET_NAME")
 	if bucket == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "S3 bucket not configured"})
+		RespondWithError(c, http.StatusInternalServerError, "S3 bucket not configured")
 		return
 	}
 
 	sess, err := data_functions.InitS3Session()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize S3 session"})
+		RespondWithError(c, http.StatusInternalServerError, "Failed to initialize S3 session")
 		return
 	}
 
 	fileContent, err := file.Open()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to open file"})
+		RespondWithError(c, http.StatusInternalServerError, "Failed to open file")
 		return
 	}
 	defer fileContent.Close()
@@ -160,11 +160,11 @@ func UploadImageHandler(c *gin.Context) {
 	key := path
 	err = data_functions.UploadFileToS3(sess, bucket, key, fileContent)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file to S3"})
+		RespondWithError(c, http.StatusInternalServerError, "Failed to upload file to S3")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "File uploaded successfully"})
+	RespondWithSuccess(c, nil, "File uploaded successfully")
 }
 
 // ListS3AssetsHandler handles listing all S3 assets
