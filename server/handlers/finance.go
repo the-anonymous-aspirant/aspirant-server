@@ -173,6 +173,11 @@ func GetFinanceRecurringHandler(c *gin.Context) {
 	financeProxyGet(c, "/summary/recurring")
 }
 
+// GetFinanceOutliersHandler proxies GET /summary/outliers
+func GetFinanceOutliersHandler(c *gin.Context) {
+	financeProxyGet(c, "/summary/outliers")
+}
+
 // ImportLocalFinanceHandler proxies POST /import-local
 func ImportLocalFinanceHandler(c *gin.Context) {
 	financeProxyPost(c, "/import-local")
