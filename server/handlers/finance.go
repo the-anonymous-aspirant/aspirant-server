@@ -168,6 +168,11 @@ func ListFinanceAccountsHandler(c *gin.Context) {
 	financeProxyGet(c, "/accounts")
 }
 
+// GetFinanceRecurringHandler proxies GET /summary/recurring
+func GetFinanceRecurringHandler(c *gin.Context) {
+	financeProxyGet(c, "/summary/recurring")
+}
+
 // ImportLocalFinanceHandler proxies POST /import-local
 func ImportLocalFinanceHandler(c *gin.Context) {
 	financeProxyPost(c, "/import-local")
