@@ -192,6 +192,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.GET("/finance/transactions", handlers.ListFinanceTransactionsHandler)
 		adminRoutes.GET("/finance/summary/monthly", handlers.GetFinanceMonthlySummaryHandler)
 		adminRoutes.GET("/finance/summary/overview", handlers.GetFinanceOverviewHandler)
+		adminRoutes.GET("/finance/summary/recurring", handlers.GetFinanceRecurringHandler)
 		adminRoutes.GET("/finance/categories", handlers.ListFinanceCategoriesHandler)
 		adminRoutes.POST("/finance/categories", handlers.CreateFinanceCategoryHandler)
 		adminRoutes.DELETE("/finance/categories/:id", handlers.DeleteFinanceCategoryHandler)
