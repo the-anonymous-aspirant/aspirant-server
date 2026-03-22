@@ -13,14 +13,9 @@ var dictionary map[string]map[string][]struct {
 	Example    string `json:"example,omitempty"`
 }
 
-// LoadDictionaryFromS3 loads the dictionary from a JSON file in an S3 bucket
-func LoadDictionaryFromS3(bucket, key string) error {
-	sess, err := InitS3Session()
-	if err != nil {
-		return err
-	}
-
-	byteValue, err := FetchFileFromS3(sess, bucket, key)
+// LoadDictionary loads the dictionary from a local JSON file
+func LoadDictionary(path string) error {
+	byteValue, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -47,11 +42,15 @@ func IsWordInDictionary(word string) bool {
 }
 
 func init() {
-	bucket := os.Getenv("S3_BUCKET_NAME")
-	key := "aspirant-website/games/wordweaver/eng_dict.json"
-	err := LoadDictionaryFromS3(bucket, key)
+	basePath := os.Getenv("ASSET_BASE_PATH")
+	if basePath == "" {
+		basePath = "/data/assets"
+	}
+	dictPath := basePath + "/games/dictionary.json"
+
+	err := LoadDictionary(dictPath)
 	if err != nil {
-		log.Printf("Warning: Failed to load dictionary from S3 bucket '%s' and key '%s': %v", bucket, key, err)
+		log.Printf("Warning: Failed to load dictionary from %s: %v", dictPath, err)
 		log.Println("Word validation features will not be available. The application will continue to run without dictionary functionality.")
 		// Initialize an empty dictionary to prevent nil pointer issues
 		dictionary = make(map[string]map[string][]struct {
@@ -59,7 +58,7 @@ func init() {
 			Example    string `json:"example,omitempty"`
 		})
 	} else {
-		log.Printf("Successfully loaded dictionary from S3 bucket '%s'", bucket)
+		log.Printf("Successfully loaded dictionary (%d words) from %s", len(dictionary), dictPath)
 	}
 }
 
