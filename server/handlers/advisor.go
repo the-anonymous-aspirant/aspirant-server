@@ -11,8 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Longer timeout for advisor — LLM generation on CPU can take 60s+
-var advisorClient = &http.Client{Timeout: 120 * time.Second}
+// Longer timeout for advisor — LLM generation on CPU can take 2-3 minutes
+var advisorClient = &http.Client{Timeout: 300 * time.Second}
 
 func advisorURL() string {
 	if url := os.Getenv("ADVISOR_URL"); url != "" {
