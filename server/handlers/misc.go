@@ -130,6 +130,31 @@ func UploadImageHandler(c *gin.Context) {
 	RespondWithSuccess(c, nil, "File uploaded successfully")
 }
 
+// DeleteAssetHandler deletes an asset by its key path
+func DeleteAssetHandler(c *gin.Context) {
+	key := c.Query("key")
+	if key == "" {
+		RespondWithError(c, http.StatusBadRequest, "Key parameter is required")
+		return
+	}
+
+	store, exists := c.Get("storage")
+	if !exists || store == nil {
+		RespondWithError(c, http.StatusInternalServerError, "Asset storage not configured")
+		return
+	}
+	assets := store.(*storage.LocalStorage)
+
+	if err := assets.Delete(key); err != nil {
+		log.Printf("Failed to delete asset %s: %v", key, err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to delete asset")
+		return
+	}
+
+	log.Printf("Deleted asset: %s", key)
+	RespondWithSuccess(c, nil, "Asset deleted successfully")
+}
+
 // ListAssetsHandler lists all assets in storage
 func ListAssetsHandler(c *gin.Context) {
 	store, exists := c.Get("storage")
