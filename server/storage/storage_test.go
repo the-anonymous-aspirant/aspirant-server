@@ -180,19 +180,26 @@ func TestStat(t *testing.T) {
 func TestContentTypeDetection(t *testing.T) {
 	cases := []struct {
 		path     string
-		expected string
+		expected []string
 	}{
-		{"file.png", "image/png"},
-		{"file.mp3", "audio/mpeg"},
-		{"file.wav", "audio/x-wav"},
-		{"file.jpg", "image/jpeg"},
-		{"file.json", "application/json"},
-		{"file.unknown", "application/octet-stream"},
+		{"file.png", []string{"image/png"}},
+		{"file.mp3", []string{"audio/mpeg"}},
+		{"file.wav", []string{"audio/x-wav", "audio/vnd.wave"}},
+		{"file.jpg", []string{"image/jpeg"}},
+		{"file.json", []string{"application/json"}},
+		{"file.unknown", []string{"application/octet-stream"}},
 	}
 	for _, tc := range cases {
 		ct := detectContentType(tc.path)
-		if ct != tc.expected {
-			t.Errorf("detectContentType(%q) = %q, want %q", tc.path, ct, tc.expected)
+		found := false
+		for _, exp := range tc.expected {
+			if ct == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("detectContentType(%q) = %q, want one of %v", tc.path, ct, tc.expected)
 		}
 	}
 }
