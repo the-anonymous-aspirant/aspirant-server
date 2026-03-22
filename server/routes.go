@@ -131,6 +131,8 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	{
 		adminRoutes.Use(handlers.ValidateRole("Admin"))
 		adminRoutes.GET("/assets", handlers.ListAssetsHandler)
+		adminRoutes.POST("/assets/upload", handlers.UploadImageHandler)
+		adminRoutes.DELETE("/assets", handlers.DeleteAssetHandler)
 		adminRoutes.GET("/data_models/roles", handlers.GetAllRolesHandler)
 		adminRoutes.POST("/data_models/users", handlers.CreateUserHandler)
 		adminRoutes.PUT("/data_models/users/:id", handlers.UpdateUserHandler)
