@@ -130,7 +130,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	adminRoutes.Use(authMiddleware)
 	{
 		adminRoutes.Use(handlers.ValidateRole("Admin"))
-		adminRoutes.GET("/s3-assets", handlers.ListS3AssetsHandler)
+		adminRoutes.GET("/assets", handlers.ListAssetsHandler)
 		adminRoutes.GET("/data_models/roles", handlers.GetAllRolesHandler)
 		adminRoutes.POST("/data_models/users", handlers.CreateUserHandler)
 		adminRoutes.PUT("/data_models/users/:id", handlers.UpdateUserHandler)
