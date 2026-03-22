@@ -1,14 +1,13 @@
 package data_functions
 
 import (
-	"os"
 	"testing"
 )
 
 func requireDictionary(t *testing.T) {
 	t.Helper()
-	if os.Getenv("S3_BUCKET_NAME") == "" || len(dictionary) == 0 {
-		t.Skip("Skipping: dictionary not loaded (requires S3 credentials)")
+	if len(dictionary) == 0 {
+		t.Skip("Skipping: dictionary not loaded (requires dictionary file at ASSET_BASE_PATH/games/dictionary.json)")
 	}
 }
 

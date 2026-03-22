@@ -2,16 +2,13 @@ package main
 
 import (
 	"aspirant-online/server"
-	"aspirant-online/server/data_functions"
+	"aspirant-online/server/storage"
 	"log"
 	"os"
 
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
-
-var s3Session *session.Session
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -28,9 +25,7 @@ func main() {
 	log.Printf("DB_NAME: %s", os.Getenv("DB_NAME"))
 	log.Printf("DB_USER: %s", os.Getenv("DB_USER"))
 	log.Printf("DB_PORT: %s", os.Getenv("DB_PORT"))
-	log.Printf("AWS_REGION: %s", os.Getenv("AWS_REGION"))
-	log.Printf("S3_BUCKET_NAME: %s", os.Getenv("S3_BUCKET_NAME"))
-	// Note: Not printing passwords or access keys for security
+	log.Printf("ASSET_BASE_PATH: %s", os.Getenv("ASSET_BASE_PATH"))
 
 	// Set Gin mode based on GIN_MODE environment variable, which we store in the docker-compose for now
 	if mode := os.Getenv("GIN_MODE"); mode != "" {
@@ -40,12 +35,12 @@ func main() {
 	}
 	log.Printf("Gin mode set to %s, adjust the compose file to enable more logging", gin.Mode())
 
-	// Initialize the database connection (non-fatal: server can start without DB for S3-only mode)
+	// Initialize the database connection (non-fatal: server can start without DB)
 	db, err := server.SetupDBConnection()
 	if err != nil {
 		log.Printf("WARNING: Database connection failed: %v", err)
 		log.Println("WARNING: Server starting without database — DB-dependent routes will not work")
-		log.Println("WARNING: S3 assets, health checks, and static content will still be served")
+		log.Println("WARNING: Assets, health checks, and static content will still be served")
 	} else {
 		defer db.Close()
 		// Set up the database tables (migrations)
@@ -53,11 +48,17 @@ func main() {
 		log.Println("Database connected and migrated successfully")
 	}
 
-	// Initialize S3 session
-	s3Session, err = data_functions.InitS3Session()
+	// Initialize local asset storage
+	assetPath := os.Getenv("ASSET_BASE_PATH")
+	if assetPath == "" {
+		assetPath = "/data/assets"
+	}
+	assets, err := storage.NewLocalStorage(assetPath)
 	if err != nil {
-		log.Fatalf("Error initializing S3 session: %v", err)
-		return
+		log.Printf("WARNING: Asset storage init failed: %v", err)
+		log.Println("WARNING: Asset-dependent routes will not work")
+	} else {
+		log.Printf("Asset storage initialized at %s (%d files indexed)", assetPath, assets.IndexSize())
 	}
 
 	// Initialize the Gin engine
@@ -69,6 +70,12 @@ func main() {
 	// Add the database connection we setup into the context of gin (may be nil if DB unavailable)
 	r.Use(func(c *gin.Context) {
 		c.Set("db", db)
+		c.Next()
+	})
+
+	// Add asset storage to context
+	r.Use(func(c *gin.Context) {
+		c.Set("storage", assets)
 		c.Next()
 	})
 

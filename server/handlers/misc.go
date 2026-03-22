@@ -1,14 +1,13 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"runtime"
 	"time"
 
 	"aspirant-online/server/data_functions"
+	"aspirant-online/server/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -62,7 +61,7 @@ func HealthCheckHandler(c *gin.Context) {
 	}, "Health check complete")
 }
 
-// FetchObjectHandler handles fetching an object from S3 and serving it to the frontend
+// FetchObjectHandler serves an asset by its ETag (MD5 hash)
 func FetchObjectHandler(c *gin.Context) {
 	etag := c.Param("etag")
 	if etag == "" {
@@ -70,61 +69,30 @@ func FetchObjectHandler(c *gin.Context) {
 		return
 	}
 
-	bucket := os.Getenv("S3_BUCKET_NAME")
-	if bucket == "" {
-		RespondWithError(c, http.StatusInternalServerError, "S3 bucket not configured")
+	store, exists := c.Get("storage")
+	if !exists || store == nil {
+		RespondWithError(c, http.StatusInternalServerError, "Asset storage not configured")
 		return
 	}
+	assets := store.(*storage.LocalStorage)
 
-	// Ensure the ETag is wrapped in double quotes
-	if etag[0] != '"' {
-		etag = fmt.Sprintf("\"%s\"", etag)
-	}
-
-	log.Printf("Fetching object with ETag: %s from bucket: %s", etag, bucket)
-	sess, err := data_functions.InitS3Session()
+	data, info, err := assets.GetByETag(etag)
 	if err != nil {
-		log.Printf("Failed to initialize S3 session: %v", err)
-		RespondWithError(c, http.StatusInternalServerError, "Failed to initialize S3 session")
+		log.Printf("Failed to fetch asset by ETag %s: %v", etag, err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to fetch asset")
 		return
 	}
 
-	key, err := data_functions.FindKeyByETag(sess, bucket, etag)
-	if err != nil {
-		log.Printf("Failed to find object by ETag %s: %v", etag, err)
-		RespondWithError(c, http.StatusInternalServerError, "Failed to find object by ETag")
+	if data == nil {
+		RespondWithError(c, http.StatusNotFound, "Asset not found")
 		return
 	}
 
-	if key == "" {
-		RespondWithError(c, http.StatusNotFound, "Object not found")
-		return
-	}
-
-	objectData, err := data_functions.FetchFileFromS3(sess, bucket, key)
-	if err != nil {
-		log.Printf("Failed to fetch object from S3 at key %s: %v", key, err)
-		RespondWithError(c, http.StatusInternalServerError, "Failed to fetch object from S3")
-		return
-	}
-
-	// Determine the content type based on the file extension
-	contentType := "application/octet-stream"
-	if len(key) > 4 {
-		switch key[len(key)-4:] {
-		case ".mp3":
-			contentType = "audio/mpeg"
-		case ".wav":
-			contentType = "audio/wav"
-		case ".png":
-			contentType = "image/png"
-		}
-	}
-
-	log.Printf("Successfully fetched object with key: %s, content type: %s", key, contentType)
-	c.Data(http.StatusOK, contentType, objectData)
+	log.Printf("Serving asset: %s (%s, %d bytes)", info.Key, info.ContentType, len(data))
+	c.Data(http.StatusOK, info.ContentType, data)
 }
 
+// UploadImageHandler uploads a file to the asset storage
 func UploadImageHandler(c *gin.Context) {
 	file, err := c.FormFile("image")
 	if err != nil {
@@ -138,17 +106,12 @@ func UploadImageHandler(c *gin.Context) {
 		return
 	}
 
-	bucket := os.Getenv("S3_BUCKET_NAME")
-	if bucket == "" {
-		RespondWithError(c, http.StatusInternalServerError, "S3 bucket not configured")
+	store, exists := c.Get("storage")
+	if !exists || store == nil {
+		RespondWithError(c, http.StatusInternalServerError, "Asset storage not configured")
 		return
 	}
-
-	sess, err := data_functions.InitS3Session()
-	if err != nil {
-		RespondWithError(c, http.StatusInternalServerError, "Failed to initialize S3 session")
-		return
-	}
+	assets := store.(*storage.LocalStorage)
 
 	fileContent, err := file.Open()
 	if err != nil {
@@ -157,33 +120,29 @@ func UploadImageHandler(c *gin.Context) {
 	}
 	defer fileContent.Close()
 
-	key := path
-	err = data_functions.UploadFileToS3(sess, bucket, key, fileContent)
+	err = assets.Put(path, fileContent)
 	if err != nil {
-		RespondWithError(c, http.StatusInternalServerError, "Failed to upload file to S3")
+		log.Printf("Failed to store asset at %s: %v", path, err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to upload file")
 		return
 	}
 
 	RespondWithSuccess(c, nil, "File uploaded successfully")
 }
 
-// ListS3AssetsHandler handles listing all S3 assets
-func ListS3AssetsHandler(c *gin.Context) {
-	bucket := os.Getenv("S3_BUCKET_NAME")
-	if bucket == "" {
-		RespondWithError(c, http.StatusInternalServerError, "S3 bucket not configured")
+// ListAssetsHandler lists all assets in storage
+func ListAssetsHandler(c *gin.Context) {
+	store, exists := c.Get("storage")
+	if !exists || store == nil {
+		RespondWithError(c, http.StatusInternalServerError, "Asset storage not configured")
 		return
 	}
+	assets := store.(*storage.LocalStorage)
 
-	sess, err := data_functions.InitS3Session()
+	objects, err := assets.List("")
 	if err != nil {
-		RespondWithError(c, http.StatusInternalServerError, "Failed to initialize S3 session")
-		return
-	}
-
-	objects, err := data_functions.ListObjects(sess, bucket, "")
-	if err != nil {
-		RespondWithError(c, http.StatusInternalServerError, "Failed to list S3 objects")
+		log.Printf("Failed to list assets: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to list assets")
 		return
 	}
 
