@@ -117,6 +117,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// Wikipedia (proxied to kiwix-serve)
 		trustedRoutes.Any("/wikipedia/*path", handlers.WikipediaProxyHandler)
 
+		// Advisor (proxied to advisor service)
+		trustedRoutes.GET("/advisor/health", handlers.GetAdvisorHealthHandler)
+		trustedRoutes.GET("/advisor/sources", handlers.GetAdvisorSourcesHandler)
+		trustedRoutes.POST("/advisor/query", handlers.QueryAdvisorHandler)
+		trustedRoutes.GET("/advisor/documents", handlers.ListAdvisorDocumentsHandler)
+		trustedRoutes.GET("/advisor/documents/:id", handlers.GetAdvisorDocumentHandler)
+		trustedRoutes.GET("/advisor/documents/:id/chunks", handlers.GetAdvisorDocumentChunksHandler)
+
 		// Ludde feeding times
 		trustedRoutes.POST("/upload", handlers.UploadImageHandler)
 		trustedRoutes.GET("/data_models/ludde_feeding_times", handlers.GetAllFeedingTimesHandler)
@@ -185,6 +193,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.POST("/remarkable/to-device/upload", handlers.UploadRemarkableToDeviceHandler)
 		adminRoutes.GET("/remarkable/to-device/pending", handlers.ListRemarkablePendingHandler)
 		adminRoutes.DELETE("/remarkable/to-device/:id", handlers.DeleteRemarkablePendingHandler)
+
+		// Advisor admin (proxied to advisor service)
+		adminRoutes.POST("/advisor/documents", handlers.UploadAdvisorDocumentHandler)
+		adminRoutes.DELETE("/advisor/documents/:id", handlers.DeleteAdvisorDocumentHandler)
+		adminRoutes.POST("/advisor/documents/:id/reprocess", handlers.ReprocessAdvisorDocumentHandler)
+		adminRoutes.POST("/advisor/laws", handlers.IngestAdvisorLawsHandler)
 
 		// Finance (proxied to finance service)
 		adminRoutes.GET("/finance/health", handlers.GetFinanceHealthHandler)
