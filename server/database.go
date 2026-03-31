@@ -101,6 +101,9 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.Message{})
 	db.AutoMigrate(&data_models.LuddeFeedingTime{})
 	db.AutoMigrate(&data_models.GameScore{})
+	db.AutoMigrate(&data_models.EasterHuntGame{})
+	db.AutoMigrate(&data_models.EasterHuntClick{})
+	db.AutoMigrate(&data_models.EasterHuntScore{})
 
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
