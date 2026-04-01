@@ -131,11 +131,11 @@ The server computes this once per game and caches the result in memory. The egg 
 
 ### Egg Colors
 
-Each egg gets a color assigned deterministically from the seed. Use a palette of 8 distinct pastel colors, assigned round-robin with a PRNG shuffle:
+Each egg gets a color assigned deterministically from the seed. Use a palette of 8 vivid colors, assigned round-robin with a PRNG shuffle:
 
 ```
-#FF9AA2 (pink), #FFB7B2 (salmon), #FFDAC1 (peach), #E2F0CB (lime),
-#B5EAD7 (mint), #C7CEEA (lavender), #F0E6FF (lilac), #FFE5B4 (cream)
+#FF4057 (red), #FF6B35 (orange), #FFD23F (yellow), #06D6A0 (green),
+#118AB2 (blue), #7B2FF7 (purple), #F72585 (magenta), #2EC4B6 (teal)
 ```
 
 ---
@@ -166,8 +166,8 @@ Returns the current game board state. No authentication required (allows spectat
         {"x": 12, "y": 7, "egg_id": 2, "user_id": 5, "username": "bob"}
       ],
       "eggs": [
-        {"egg_id": 0, "color": "#FF9AA2", "squares": 16, "revealed": 9, "completed": false, "completed_by": null},
-        {"egg_id": 1, "color": "#FFB7B2", "squares": 16, "revealed": 16, "completed": true, "completed_by": "alice"}
+        {"egg_id": 0, "color": "#FF4057", "squares": 16, "revealed": 9, "completed": false, "completed_by": null},
+        {"egg_id": 1, "color": "#FF6B35", "squares": 16, "revealed": 16, "completed": true, "completed_by": "alice"}
       ]
     },
     "scores": [
@@ -342,8 +342,8 @@ Returns the full board with all egg positions. For admin debugging — does not 
     "game_id": 1,
     "seed": 1743500000,
     "eggs": [
-      {"egg_id": 0, "color": "#FF9AA2", "squares": [{"x": 5, "y": 3}, {"x": 5, "y": 4}, ...]},
-      {"egg_id": 1, "color": "#FFB7B2", "squares": [{"x": 14, "y": 9}, ...]}
+      {"egg_id": 0, "color": "#FF4057", "squares": [{"x": 5, "y": 3}, {"x": 5, "y": 4}, ...]},
+      {"egg_id": 1, "color": "#FF6B35", "squares": [{"x": 14, "y": 9}, ...]}
     ]
   },
   "message": "Full board revealed"
