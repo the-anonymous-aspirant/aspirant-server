@@ -1,6 +1,7 @@
 package data_models
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jinzhu/gorm"
@@ -92,6 +93,11 @@ func GetLastEasterHuntClick(db *gorm.DB, gameID uint, userID uint) (*EasterHuntC
 }
 
 func CreateEasterHuntClick(db *gorm.DB, gameID uint, userID uint, x int, y int) (*EasterHuntClick, error) {
+	// Check if already revealed
+	var existing EasterHuntClick
+	if err := db.Where("game_id = ? AND x = ? AND y = ?", gameID, x, y).First(&existing).Error; err == nil {
+		return nil, fmt.Errorf("already revealed")
+	}
 	click := EasterHuntClick{
 		GameID: gameID,
 		UserID: userID,
