@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	easterHuntCooldown     = 5 * time.Minute
-	easterHuntDefaultLock  = "2026-04-05T16:00:00Z" // 18:00 CEST = 16:00 UTC
+	easterHuntCooldown    = 5 * time.Minute
+	easterHuntDefaultLock = "2026-04-05T16:00:00Z" // 18:00 CEST = 16:00 UTC
 )
 
 // ---------- Public ----------
@@ -30,11 +30,25 @@ func GetEasterHuntStateHandler(c *gin.Context) {
 		return
 	}
 
-	board := data_functions.GenerateEggBoard(game.Seed)
+	// Load eggs from DB
+	eggs, err := data_models.GetEasterHuntEggs(db, game.ID)
+	if err != nil {
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving eggs")
+		return
+	}
+
+	// Load all clicks
 	clicks, err := data_models.GetEasterHuntClicks(db, game.ID)
 	if err != nil {
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving clicks")
 		return
+	}
+
+	// Load egg cells to build grid lookup
+	eggCells, _ := data_models.GetEasterHuntEggCells(db, game.ID)
+	cellToEgg := make(map[[2]int]int) // (x,y) → egg_index
+	for _, cell := range eggCells {
+		cellToEgg[[2]int{cell.X, cell.Y}] = cell.EggIndex
 	}
 
 	// Build username lookup
@@ -43,21 +57,52 @@ func GetEasterHuntStateHandler(c *gin.Context) {
 	// Build revealed squares list
 	revealed := make([]gin.H, 0, len(clicks))
 	for _, click := range clicks {
-		eggID := board.Grid[click.X][click.Y]
+		eggIndex := -1
+		if idx, ok := cellToEgg[[2]int{click.X, click.Y}]; ok {
+			eggIndex = idx
+		}
 		revealed = append(revealed, gin.H{
 			"x":        click.X,
 			"y":        click.Y,
-			"egg_id":   eggID,
+			"egg_id":   eggIndex,
 			"user_id":  click.UserID,
 			"username": usernames[click.UserID],
 		})
 	}
 
-	// Build egg progress — all eggs with reveal counts
-	revealedPerEgg := countRevealed(clicks, board)
-	eggs := buildEggProgress(board, revealedPerEgg, db, game.ID)
+	// Build egg progress from DB eggs
+	// Count revealed cells per egg from clicks
+	revealedPerEgg := make(map[int]int)
+	for _, click := range clicks {
+		if idx, ok := cellToEgg[[2]int{click.X, click.Y}]; ok {
+			revealedPerEgg[idx]++
+		}
+	}
 
-	// Scores
+	eggProgress := make([]gin.H, 0, len(eggs))
+	for _, egg := range eggs {
+		revCount := revealedPerEgg[egg.EggIndex]
+		if revCount > egg.TotalCells {
+			revCount = egg.TotalCells
+		}
+		completed := egg.CompletedByUserID != nil
+		var completedBy interface{} = nil
+		if completed && egg.CompletedByUserID != nil {
+			var user data_models.User
+			if err := db.Where("id = ?", *egg.CompletedByUserID).First(&user).Error; err == nil {
+				completedBy = user.Username
+			}
+		}
+		eggProgress = append(eggProgress, gin.H{
+			"egg_id":       egg.EggIndex,
+			"color":        egg.Color,
+			"squares":      egg.TotalCells,
+			"revealed":     revCount,
+			"completed":    completed,
+			"completed_by": completedBy,
+		})
+	}
+
 	scores := loadScoreboard(db, game.ID)
 
 	now := time.Now().UTC()
@@ -70,7 +115,7 @@ func GetEasterHuntStateHandler(c *gin.Context) {
 			"width":    data_functions.BoardWidth,
 			"height":   data_functions.BoardHeight,
 			"revealed": revealed,
-			"eggs":     eggs,
+			"eggs":     eggProgress,
 		},
 		"scores": scores,
 	}, "Game state retrieved")
@@ -170,10 +215,15 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 		return
 	}
 
-	// Area reveal: all cells within ±RevealRadius of the clicked cell
-	board := data_functions.GenerateEggBoard(game.Seed)
-	radius := data_functions.RevealRadius
+	// Load egg cell lookup for this game
+	eggCells, _ := data_models.GetEasterHuntEggCells(db, game.ID)
+	cellToEgg := make(map[[2]int]int)
+	for _, cell := range eggCells {
+		cellToEgg[[2]int{cell.X, cell.Y}] = cell.EggIndex
+	}
 
+	// Area reveal: all cells within ±RevealRadius of the clicked cell
+	radius := data_functions.RevealRadius
 	var newClicks []data_models.EasterHuntClick
 	for dx := -radius; dx <= radius; dx++ {
 		for dy := -radius; dy <= radius; dy++ {
@@ -194,31 +244,36 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 		return
 	}
 
-	// Check which eggs were completed by this area reveal
-	allClicks, _ := data_models.GetEasterHuntClicks(db, game.ID)
-	revealedPerEgg := make(map[int]int)
-	for _, cl := range allClicks {
-		eggID := board.Grid[cl.X][cl.Y]
-		if eggID >= 0 {
-			revealedPerEgg[eggID]++
+	// Determine which eggs were touched by newly revealed cells
+	touchedEggs := make(map[int]bool)
+	for _, cl := range newClicks {
+		if idx, ok := cellToEgg[[2]int{cl.X, cl.Y}]; ok {
+			touchedEggs[idx] = true
 		}
 	}
 
-	eggSize := data_functions.EggSize()
+	// Check completion for each touched egg using DB counts
 	completedEggs := []int{}
-	// Check eggs that had new cells revealed
-	touchedEggs := make(map[int]bool)
-	for _, cl := range newClicks {
-		eggID := board.Grid[cl.X][cl.Y]
-		if eggID >= 0 {
-			touchedEggs[eggID] = true
+	for eggIndex := range touchedEggs {
+		eggs, _ := data_models.GetEasterHuntEggs(db, game.ID)
+		var egg *data_models.EasterHuntEgg
+		for i := range eggs {
+			if eggs[i].EggIndex == eggIndex {
+				egg = &eggs[i]
+				break
+			}
 		}
-	}
-	for eggID := range touchedEggs {
-		if revealedPerEgg[eggID] == eggSize {
-			completedEggs = append(completedEggs, eggID)
-			if err := data_models.UpsertEasterHuntScore(db, game.ID, userID); err != nil {
-				log.Printf("Error upserting score for egg %d: %v", eggID, err)
+		if egg == nil || egg.CompletedByUserID != nil {
+			continue // already completed or not found
+		}
+
+		revealedCount := data_models.CountRevealedCellsForEgg(db, game.ID, eggIndex)
+		if revealedCount >= egg.TotalCells {
+			if data_models.MarkEggCompleted(db, game.ID, eggIndex, userID) {
+				completedEggs = append(completedEggs, eggIndex)
+				if err := data_models.UpsertEasterHuntScore(db, game.ID, userID); err != nil {
+					log.Printf("Error upserting score for egg %d: %v", eggIndex, err)
+				}
 			}
 		}
 	}
@@ -226,10 +281,14 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 	// Build revealed cells response
 	revealedCells := make([]gin.H, 0, len(newClicks))
 	for _, cl := range newClicks {
+		eggIndex := -1
+		if idx, ok := cellToEgg[[2]int{cl.X, cl.Y}]; ok {
+			eggIndex = idx
+		}
 		revealedCells = append(revealedCells, gin.H{
 			"x":      cl.X,
 			"y":      cl.Y,
-			"egg_id": board.Grid[cl.X][cl.Y],
+			"egg_id": eggIndex,
 		})
 	}
 
@@ -240,14 +299,14 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 		cooldownUntil = newClicks[0].CreatedAt
 	}
 	RespondWithSuccess(c, gin.H{
-		"x":                  body.X,
-		"y":                  body.Y,
-		"revealed":           revealedCells,
-		"revealed_count":     len(newClicks),
-		"eggs_completed":     completedEggs,
+		"x":                   body.X,
+		"y":                   body.Y,
+		"revealed":            revealedCells,
+		"revealed_count":      len(newClicks),
+		"eggs_completed":      completedEggs,
 		"eggs_completed_count": len(completedEggs),
-		"cooldown_until":     cooldownUntil.UTC().Format(time.RFC3339),
-		"next_click_seconds": cooldownSeconds,
+		"cooldown_until":      cooldownUntil.UTC().Format(time.RFC3339),
+		"next_click_seconds":  cooldownSeconds,
 	}, "Area revealed")
 }
 
@@ -261,7 +320,6 @@ func GetEasterHuntCooldownHandler(c *gin.Context) {
 		return
 	}
 
-	// Admins never have cooldown
 	role, _ := c.Get("role")
 	if role == "Admin" {
 		RespondWithSuccess(c, gin.H{
@@ -338,7 +396,32 @@ func PostEasterHuntResetHandler(c *gin.Context) {
 		return
 	}
 
+	// Generate board and persist eggs + cells to DB
 	board := data_functions.GenerateEggBoard(game.Seed)
+	for _, egg := range board.Eggs {
+		dbEgg := data_models.EasterHuntEgg{
+			GameID:     game.ID,
+			EggIndex:   egg.ID,
+			Color:      egg.Color,
+			TotalCells: len(egg.Squares),
+		}
+		if err := data_models.CreateEasterHuntEgg(db, &dbEgg); err != nil {
+			log.Printf("Error persisting egg %d: %v", egg.ID, err)
+		}
+
+		cells := make([]data_models.EasterHuntEggCell, 0, len(egg.Squares))
+		for _, sq := range egg.Squares {
+			cells = append(cells, data_models.EasterHuntEggCell{
+				GameID:   game.ID,
+				EggIndex: egg.ID,
+				X:        sq.X,
+				Y:        sq.Y,
+			})
+		}
+		if err := data_models.CreateEasterHuntEggCells(db, cells); err != nil {
+			log.Printf("Error persisting egg %d cells: %v", egg.ID, err)
+		}
+	}
 
 	RespondWithSuccess(c, gin.H{
 		"game_id":   game.ID,
@@ -357,18 +440,22 @@ func GetEasterHuntRevealHandler(c *gin.Context) {
 		return
 	}
 
-	board := data_functions.GenerateEggBoard(game.Seed)
+	// Read eggs and cells from DB
+	dbEggs, _ := data_models.GetEasterHuntEggs(db, game.ID)
+	allCells, _ := data_models.GetEasterHuntEggCells(db, game.ID)
 
-	eggs := make([]gin.H, 0, len(board.Eggs))
-	for _, egg := range board.Eggs {
-		squares := make([]gin.H, 0, len(egg.Squares))
-		for _, sq := range egg.Squares {
-			squares = append(squares, gin.H{"x": sq.X, "y": sq.Y})
-		}
+	// Group cells by egg index
+	cellsByEgg := make(map[int][]gin.H)
+	for _, cell := range allCells {
+		cellsByEgg[cell.EggIndex] = append(cellsByEgg[cell.EggIndex], gin.H{"x": cell.X, "y": cell.Y})
+	}
+
+	eggs := make([]gin.H, 0, len(dbEggs))
+	for _, egg := range dbEggs {
 		eggs = append(eggs, gin.H{
-			"egg_id":  egg.ID,
+			"egg_id":  egg.EggIndex,
 			"color":   egg.Color,
-			"squares": squares,
+			"squares": cellsByEgg[egg.EggIndex],
 		})
 	}
 
@@ -395,68 +482,6 @@ func loadUsernames(db *gorm.DB, clicks []data_models.EasterHuntClick) map[uint]s
 		}
 	}
 	return usernames
-}
-
-func countRevealed(clicks []data_models.EasterHuntClick, board *data_functions.EggBoard) map[int]int {
-	counts := make(map[int]int)
-	for _, click := range clicks {
-		eggID := board.Grid[click.X][click.Y]
-		if eggID >= 0 {
-			counts[eggID]++
-		}
-	}
-	return counts
-}
-
-func buildEggProgress(board *data_functions.EggBoard, revealedPerEgg map[int]int, db *gorm.DB, gameID uint) []gin.H {
-	eggSize := data_functions.EggSize()
-	eggs := make([]gin.H, 0, len(board.Eggs))
-	for _, egg := range board.Eggs {
-		revealed := revealedPerEgg[egg.ID]
-		completed := revealed == eggSize
-		var completedBy interface{} = nil
-		if completed {
-			completedBy = findEggCompleter(db, gameID, board, egg.ID)
-		}
-		eggs = append(eggs, gin.H{
-			"egg_id":       egg.ID,
-			"color":        egg.Color,
-			"squares":      eggSize,
-			"revealed":     revealed,
-			"completed":    completed,
-			"completed_by": completedBy,
-		})
-	}
-	return eggs
-}
-
-func findEggCompleter(db *gorm.DB, gameID uint, board *data_functions.EggBoard, eggID int) string {
-	// Find the last click that revealed a square of this egg
-	var clicks []data_models.EasterHuntClick
-	db.Where("game_id = ?", gameID).Order("created_at ASC").Find(&clicks)
-
-	eggSize := data_functions.EggSize()
-	var lastClickUserID uint
-	count := 0
-	for _, click := range clicks {
-		if board.Grid[click.X][click.Y] == eggID {
-			count++
-			if count == eggSize {
-				lastClickUserID = click.UserID
-				break
-			}
-		}
-	}
-
-	if lastClickUserID == 0 {
-		return ""
-	}
-
-	var user data_models.User
-	if err := db.Where("id = ?", lastClickUserID).First(&user).Error; err != nil {
-		return ""
-	}
-	return user.Username
 }
 
 func loadScoreboard(db *gorm.DB, gameID uint) []gin.H {

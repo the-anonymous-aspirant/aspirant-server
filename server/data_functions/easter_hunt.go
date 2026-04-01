@@ -9,7 +9,7 @@ const (
 	BoardWidth   = 128
 	BoardHeight  = 128
 	EggCount     = 24
-	RevealRadius = 4 // ±4 cells = 9x9 area
+	RevealRadius = 2 // ±2 cells = 5x5 area
 )
 
 // EggColors are pastel colors assigned to eggs round-robin.
