@@ -12,10 +12,10 @@ const (
 	RevealRadius = 2 // ±2 cells = 5x5 area
 )
 
-// EggColors are pastel colors assigned to eggs round-robin.
+// EggColors are vivid colors assigned to eggs round-robin.
 var EggColors = []string{
-	"#FF9AA2", "#FFB7B2", "#FFDAC1", "#E2F0CB",
-	"#B5EAD7", "#C7CEEA", "#F0E6FF", "#FFE5B4",
+	"#FF4057", "#FF6B35", "#FFD23F", "#06D6A0",
+	"#118AB2", "#7B2FF7", "#F72585", "#2EC4B6",
 }
 
 // Point is a grid coordinate.
