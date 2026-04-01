@@ -71,8 +71,6 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	router.POST("/games/word_weaver", handlers.GetLongestWordsHandler)
 	router.GET("/fetch-object/:etag", handlers.FetchObjectHandler)
 	router.GET("/games/scores", handlers.GetGameScoresHandler)
-	router.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
-	router.GET("/games/easter-hunt/scores", handlers.GetEasterHuntScoresHandler)
 	// Bootstrap route for creating first admin user when no users exist
 	router.POST("/bootstrap/admin", handlers.BootstrapUserHandler)
 
@@ -86,8 +84,6 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		authRoutes.GET("/data_models/users/:id", handlers.GetUserHandler)
 		authRoutes.GET("/data_models/users", handlers.GetAllUsersHandler)
 		authRoutes.POST("/games/scores", handlers.SaveGameScoreHandler)
-		authRoutes.POST("/games/easter-hunt/clicks", handlers.PostEasterHuntClickHandler)
-		authRoutes.GET("/games/easter-hunt/cooldown", handlers.GetEasterHuntCooldownHandler)
 	}
 
 	// Trusted-specific routes (requires Trusted or Admin role)
@@ -95,6 +91,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	trustedRoutes.Use(authMiddleware)
 	{
 		trustedRoutes.Use(handlers.ValidateRole("Trusted", "Admin"))
+
+		// Easter Egg Hunt
+		trustedRoutes.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
+		trustedRoutes.GET("/games/easter-hunt/scores", handlers.GetEasterHuntScoresHandler)
+		trustedRoutes.POST("/games/easter-hunt/clicks", handlers.PostEasterHuntClickHandler)
+		trustedRoutes.GET("/games/easter-hunt/cooldown", handlers.GetEasterHuntCooldownHandler)
 
 		// Message board
 		trustedRoutes.GET("/data_models/message", handlers.GetAllMessagesHandler)
