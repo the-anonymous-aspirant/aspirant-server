@@ -47,9 +47,10 @@ func TestGenerateEggBoard_CorrectCounts(t *testing.T) {
 		t.Fatalf("expected %d eggs, got %d", EggCount, len(board.Eggs))
 	}
 
+	eggSize := EggSize()
 	for i, egg := range board.Eggs {
-		if len(egg.Squares) != EggSize {
-			t.Errorf("egg %d: expected %d squares, got %d", i, EggSize, len(egg.Squares))
+		if len(egg.Squares) != eggSize {
+			t.Errorf("egg %d: expected %d squares, got %d", i, eggSize, len(egg.Squares))
 		}
 	}
 
@@ -61,7 +62,7 @@ func TestGenerateEggBoard_CorrectCounts(t *testing.T) {
 			}
 		}
 	}
-	expected := EggCount * EggSize
+	expected := EggCount * eggSize
 	if occupiedCount != expected {
 		t.Errorf("expected %d occupied squares, got %d", expected, occupiedCount)
 	}
@@ -72,7 +73,6 @@ func TestGenerateEggBoard_NoOverlap(t *testing.T) {
 	ClearBoardCache(seed)
 	board := GenerateEggBoard(seed)
 
-	// Each occupied cell should belong to exactly one egg
 	seen := make(map[Point]int)
 	for _, egg := range board.Eggs {
 		for _, sq := range egg.Squares {
@@ -140,6 +140,36 @@ func TestGenerateEggBoard_EggColors(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("egg %d has invalid color %s", egg.ID, egg.Color)
+		}
+	}
+}
+
+func TestEggTemplate_Size(t *testing.T) {
+	size := EggSize()
+	if size < 80 || size > 120 {
+		t.Errorf("egg template size %d is outside expected range [80, 120]", size)
+	}
+}
+
+func TestRotateTemplate_PreservesSize(t *testing.T) {
+	baseSize := EggSize()
+	for rot := 0; rot < 4; rot++ {
+		offsets, _, _ := rotateTemplate(rot)
+		if len(offsets) != baseSize {
+			t.Errorf("rotation %d: expected %d cells, got %d", rot, baseSize, len(offsets))
+		}
+	}
+}
+
+func TestRotateTemplate_NoDuplicates(t *testing.T) {
+	for rot := 0; rot < 4; rot++ {
+		offsets, _, _ := rotateTemplate(rot)
+		seen := make(map[Point]bool)
+		for _, p := range offsets {
+			if seen[p] {
+				t.Errorf("rotation %d: duplicate point (%d,%d)", rot, p.X, p.Y)
+			}
+			seen[p] = true
 		}
 	}
 }

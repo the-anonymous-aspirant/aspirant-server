@@ -53,7 +53,7 @@ func GetEasterHuntStateHandler(c *gin.Context) {
 		})
 	}
 
-	// Build egg progress — only eggs with at least 1 revealed square
+	// Build egg progress — all eggs with reveal counts
 	revealedPerEgg := countRevealed(clicks, board)
 	eggs := buildEggProgress(board, revealedPerEgg, db, game.ID)
 
@@ -137,17 +137,21 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 		return
 	}
 
-	// Check cooldown
-	lastClick, err := data_models.GetLastEasterHuntClick(db, game.ID, userID)
-	if err == nil {
-		cooldownUntil := lastClick.CreatedAt.Add(easterHuntCooldown)
-		if now.Before(cooldownUntil) {
-			remaining := cooldownUntil.Sub(now)
-			mins := int(remaining.Minutes())
-			secs := int(remaining.Seconds()) % 60
-			respondError(c, http.StatusTooManyRequests, "cooldown",
-				fmt.Sprintf("You can click again in %dm %ds", mins, secs))
-			return
+	// Check cooldown (admins bypass)
+	role, _ := c.Get("role")
+	isAdmin := role == "Admin"
+	if !isAdmin {
+		lastClick, err := data_models.GetLastEasterHuntClick(db, game.ID, userID)
+		if err == nil {
+			cooldownUntil := lastClick.CreatedAt.Add(easterHuntCooldown)
+			if now.Before(cooldownUntil) {
+				remaining := cooldownUntil.Sub(now)
+				mins := int(remaining.Minutes())
+				secs := int(remaining.Seconds()) % 60
+				respondError(c, http.StatusTooManyRequests, "cooldown",
+					fmt.Sprintf("You can click again in %dm %ds", mins, secs))
+				return
+			}
 		}
 	}
 
@@ -162,52 +166,89 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 	}
 
 	if body.X < 0 || body.X >= data_functions.BoardWidth || body.Y < 0 || body.Y >= data_functions.BoardHeight {
-		RespondWithError(c, http.StatusBadRequest, "x and y must be between 0 and 31")
+		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("x and y must be between 0 and %d", data_functions.BoardWidth-1))
 		return
 	}
 
-	// Attempt to create click (unique constraint prevents duplicates)
-	click, err := data_models.CreateEasterHuntClick(db, game.ID, userID, body.X, body.Y)
-	if err != nil {
-		respondError(c, http.StatusConflict, "conflict", "Square already revealed")
-		return
-	}
-
-	// Check what's under this square
+	// Area reveal: all cells within ±RevealRadius of the clicked cell
 	board := data_functions.GenerateEggBoard(game.Seed)
-	eggID := board.Grid[body.X][body.Y]
+	radius := data_functions.RevealRadius
 
-	eggCompleted := false
-	scored := false
-
-	if eggID >= 0 {
-		// Count revealed squares for this egg
-		clicks, _ := data_models.GetEasterHuntClicks(db, game.ID)
-		count := 0
-		for _, cl := range clicks {
-			if board.Grid[cl.X][cl.Y] == eggID {
-				count++
+	var newClicks []data_models.EasterHuntClick
+	for dx := -radius; dx <= radius; dx++ {
+		for dy := -radius; dy <= radius; dy++ {
+			cx, cy := body.X+dx, body.Y+dy
+			if cx < 0 || cx >= data_functions.BoardWidth || cy < 0 || cy >= data_functions.BoardHeight {
+				continue
 			}
+			click, err := data_models.CreateEasterHuntClick(db, game.ID, userID, cx, cy)
+			if err != nil {
+				continue // already revealed, skip
+			}
+			newClicks = append(newClicks, *click)
 		}
-		if count == data_functions.EggSize {
-			eggCompleted = true
-			scored = true
+	}
+
+	if len(newClicks) == 0 {
+		respondError(c, http.StatusConflict, "conflict", "All squares in this area already revealed")
+		return
+	}
+
+	// Check which eggs were completed by this area reveal
+	allClicks, _ := data_models.GetEasterHuntClicks(db, game.ID)
+	revealedPerEgg := make(map[int]int)
+	for _, cl := range allClicks {
+		eggID := board.Grid[cl.X][cl.Y]
+		if eggID >= 0 {
+			revealedPerEgg[eggID]++
+		}
+	}
+
+	eggSize := data_functions.EggSize()
+	completedEggs := []int{}
+	// Check eggs that had new cells revealed
+	touchedEggs := make(map[int]bool)
+	for _, cl := range newClicks {
+		eggID := board.Grid[cl.X][cl.Y]
+		if eggID >= 0 {
+			touchedEggs[eggID] = true
+		}
+	}
+	for eggID := range touchedEggs {
+		if revealedPerEgg[eggID] == eggSize {
+			completedEggs = append(completedEggs, eggID)
 			if err := data_models.UpsertEasterHuntScore(db, game.ID, userID); err != nil {
-				log.Printf("Error upserting score: %v", err)
+				log.Printf("Error upserting score for egg %d: %v", eggID, err)
 			}
 		}
 	}
 
-	cooldownUntil := click.CreatedAt.Add(easterHuntCooldown)
+	// Build revealed cells response
+	revealedCells := make([]gin.H, 0, len(newClicks))
+	for _, cl := range newClicks {
+		revealedCells = append(revealedCells, gin.H{
+			"x":      cl.X,
+			"y":      cl.Y,
+			"egg_id": board.Grid[cl.X][cl.Y],
+		})
+	}
+
+	cooldownSeconds := int(easterHuntCooldown.Seconds())
+	cooldownUntil := newClicks[0].CreatedAt.Add(easterHuntCooldown)
+	if isAdmin {
+		cooldownSeconds = 0
+		cooldownUntil = newClicks[0].CreatedAt
+	}
 	RespondWithSuccess(c, gin.H{
 		"x":                  body.X,
 		"y":                  body.Y,
-		"egg_id":             eggID,
-		"egg_completed":      eggCompleted,
-		"scored":             scored,
+		"revealed":           revealedCells,
+		"revealed_count":     len(newClicks),
+		"eggs_completed":     completedEggs,
+		"eggs_completed_count": len(completedEggs),
 		"cooldown_until":     cooldownUntil.UTC().Format(time.RFC3339),
-		"next_click_seconds": int(easterHuntCooldown.Seconds()),
-	}, "Square revealed")
+		"next_click_seconds": cooldownSeconds,
+	}, "Area revealed")
 }
 
 func GetEasterHuntCooldownHandler(c *gin.Context) {
@@ -217,6 +258,17 @@ func GetEasterHuntCooldownHandler(c *gin.Context) {
 	game, err := data_models.GetActiveEasterHuntGame(db)
 	if err != nil {
 		RespondWithError(c, http.StatusNotFound, "No active game")
+		return
+	}
+
+	// Admins never have cooldown
+	role, _ := c.Get("role")
+	if role == "Admin" {
+		RespondWithSuccess(c, gin.H{
+			"on_cooldown":       false,
+			"cooldown_until":    time.Time{}.UTC().Format(time.RFC3339),
+			"remaining_seconds": 0,
+		}, "Cooldown status retrieved")
 		return
 	}
 
@@ -248,6 +300,7 @@ func PostEasterHuntResetHandler(c *gin.Context) {
 
 	var body struct {
 		LockAt string `json:"lock_at"`
+		Seed   *int64 `json:"seed"`
 	}
 	c.ShouldBindJSON(&body)
 
@@ -272,9 +325,12 @@ func PostEasterHuntResetHandler(c *gin.Context) {
 		data_models.DeleteEasterHuntGameData(db, oldGame.ID)
 	}
 
-	seed := time.Now().UnixNano()
-	// Use crypto-quality randomness for the seed isn't needed — time is fine
-	seed = int64(rand.New(rand.NewSource(seed)).Int63())
+	var seed int64
+	if body.Seed != nil {
+		seed = *body.Seed
+	} else {
+		seed = int64(rand.New(rand.NewSource(time.Now().UnixNano())).Int63())
+	}
 
 	game, err := data_models.CreateEasterHuntGame(db, seed, lockAt)
 	if err != nil {
@@ -353,13 +409,11 @@ func countRevealed(clicks []data_models.EasterHuntClick, board *data_functions.E
 }
 
 func buildEggProgress(board *data_functions.EggBoard, revealedPerEgg map[int]int, db *gorm.DB, gameID uint) []gin.H {
-	eggs := make([]gin.H, 0)
+	eggSize := data_functions.EggSize()
+	eggs := make([]gin.H, 0, len(board.Eggs))
 	for _, egg := range board.Eggs {
-		revealed, hasRevealed := revealedPerEgg[egg.ID]
-		if !hasRevealed {
-			continue
-		}
-		completed := revealed == data_functions.EggSize
+		revealed := revealedPerEgg[egg.ID]
+		completed := revealed == eggSize
 		var completedBy interface{} = nil
 		if completed {
 			completedBy = findEggCompleter(db, gameID, board, egg.ID)
@@ -367,7 +421,7 @@ func buildEggProgress(board *data_functions.EggBoard, revealedPerEgg map[int]int
 		eggs = append(eggs, gin.H{
 			"egg_id":       egg.ID,
 			"color":        egg.Color,
-			"squares":      data_functions.EggSize,
+			"squares":      eggSize,
 			"revealed":     revealed,
 			"completed":    completed,
 			"completed_by": completedBy,
@@ -381,12 +435,13 @@ func findEggCompleter(db *gorm.DB, gameID uint, board *data_functions.EggBoard, 
 	var clicks []data_models.EasterHuntClick
 	db.Where("game_id = ?", gameID).Order("created_at ASC").Find(&clicks)
 
+	eggSize := data_functions.EggSize()
 	var lastClickUserID uint
 	count := 0
 	for _, click := range clicks {
 		if board.Grid[click.X][click.Y] == eggID {
 			count++
-			if count == data_functions.EggSize {
+			if count == eggSize {
 				lastClickUserID = click.UserID
 				break
 			}
