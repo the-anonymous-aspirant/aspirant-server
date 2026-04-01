@@ -6,10 +6,10 @@ import (
 )
 
 const (
-	BoardWidth  = 32
-	BoardHeight = 32
-	EggCount    = 24
-	EggSize     = 16
+	BoardWidth   = 128
+	BoardHeight  = 128
+	EggCount     = 24
+	RevealRadius = 4 // ±4 cells = 9x9 area
 )
 
 // EggColors are pastel colors assigned to eggs round-robin.
@@ -18,18 +18,13 @@ var EggColors = []string{
 	"#B5EAD7", "#C7CEEA", "#F0E6FF", "#FFE5B4",
 }
 
-// EggShape defines relative (dx, dy) offsets for one egg variant.
-type EggShape struct {
-	Offsets []Point
-	Width   int
-	Height  int
-}
-
+// Point is a grid coordinate.
 type Point struct {
 	X int `json:"x"`
 	Y int `json:"y"`
 }
 
+// Egg holds one egg's metadata and cell positions.
 type Egg struct {
 	ID      int     `json:"egg_id"`
 	Color   string  `json:"color"`
@@ -38,81 +33,100 @@ type Egg struct {
 
 // EggBoard holds the computed egg layout for one game seed.
 type EggBoard struct {
-	Eggs    []Egg
-	Grid    [BoardWidth][BoardHeight]int // -1 = empty, 0..23 = egg ID
+	Eggs []Egg
+	Grid [][]int // BoardWidth x BoardHeight, -1 = empty, 0..23 = egg ID
 }
 
-// Three egg shape variants — each has 16 cells.
+// eggTemplate defines the canonical egg shape as relative offsets.
+// Approximately 100 cells arranged in an egg silhouette (tall oval,
+// wider at top, narrower at bottom). 15 rows tall, up to 9 wide.
 //
-// Variant A (tall, 4 wide x 5 tall):
+//	Row 0:        . . . . X X . . .   (2)
+//	Row 1:        . . . X X X X . .   (4)
+//	Row 2:        . . X X X X X X .   (6)
+//	Row 3:        . X X X X X X X .   (7)
+//	Row 4:        . X X X X X X X X   (8)
+//	Row 5:        X X X X X X X X X   (9)
+//	Row 6:        X X X X X X X X X   (9)
+//	Row 7:        X X X X X X X X X   (9)
+//	Row 8:        . X X X X X X X X   (8)
+//	Row 9:        . X X X X X X X .   (7)
+//	Row 10:       . . X X X X X X .   (6)
+//	Row 11:       . . X X X X X . .   (5)
+//	Row 12:       . . . X X X X . .   (4)
+//	Row 13:       . . . . X X X . .   (3)
+//	Row 14:       . . . . . X . . .   (1)
 //
-//	. X X .
-//	X X X X
-//	X X X X
-//	X X X X
-//	. X X .
-var shapeA = EggShape{
-	Offsets: []Point{
-		{1, 0}, {2, 0},
-		{0, 1}, {1, 1}, {2, 1}, {3, 1},
-		{0, 2}, {1, 2}, {2, 2}, {3, 2},
-		{0, 3}, {1, 3}, {2, 3}, {3, 3},
-		{1, 4}, {2, 4},
-	},
-	Width: 4, Height: 5,
-}
-
-// Variant B (wide, 6 wide x 4 tall):
-//
-//	. . X X . .
-//	. X X X X .
-//	X X X X X X
-//	. X X X X .
-var shapeB = EggShape{
-	Offsets: []Point{
-		{2, 0}, {3, 0},
-		{1, 1}, {2, 1}, {3, 1}, {4, 1},
-		{0, 2}, {1, 2}, {2, 2}, {3, 2}, {4, 2}, {5, 2},
-		{1, 3}, {2, 3}, {3, 3}, {4, 3},
-	},
-	Width: 6, Height: 4,
-}
-
-// Variant C (round, 4 wide x 5 tall):
-//
-//	. X X .
-//	X X X X
-//	X X X X
-//	X X X X
-//	. X X .
-//
-// Same silhouette as A but shifted weight — the top is narrower
-// giving a slightly different egg personality when rotated by
-// the random placement.
-var shapeC = EggShape{
-	Offsets: []Point{
-		{1, 0}, {2, 0},
-		{0, 1}, {1, 1}, {2, 1}, {3, 1},
-		{0, 2}, {1, 2}, {2, 2}, {3, 2},
-		{0, 3}, {1, 3}, {2, 3}, {3, 3},
-		{1, 4}, {2, 4},
-	},
-	Width: 4, Height: 5,
-}
-
-var shapes = []EggShape{shapeA, shapeB, shapeC}
-
-// boardCache stores computed boards keyed by seed.
-var boardCache sync.Map
+// Total: 88 cells
+var eggTemplate []Point
 
 func init() {
-	// Verify each shape has exactly EggSize offsets.
-	for _, s := range shapes {
-		if len(s.Offsets) != EggSize {
-			panic("easter_hunt: shape variant has wrong number of offsets")
+	// rows defines (startX, count) for each row of the egg shape
+	rows := []struct{ start, count int }{
+		{4, 2},  // row 0
+		{3, 4},  // row 1
+		{2, 6},  // row 2
+		{1, 7},  // row 3
+		{1, 8},  // row 4
+		{0, 9},  // row 5
+		{0, 9},  // row 6
+		{0, 9},  // row 7
+		{1, 8},  // row 8
+		{1, 7},  // row 9
+		{2, 6},  // row 10
+		{2, 5},  // row 11
+		{3, 4},  // row 12
+		{4, 3},  // row 13
+		{5, 1},  // row 14
+	}
+	for y, row := range rows {
+		for dx := 0; dx < row.count; dx++ {
+			eggTemplate = append(eggTemplate, Point{X: row.start + dx, Y: y})
 		}
 	}
 }
+
+// EggSize returns the number of cells per egg (template size).
+func EggSize() int {
+	return len(eggTemplate)
+}
+
+// templateWidth and templateHeight for the canonical orientation.
+const templateWidth = 9
+const templateHeight = 15
+
+// rotateTemplate returns the egg template rotated by 0, 90, 180, or 270 degrees.
+// Returns the rotated offsets and the bounding width/height.
+func rotateTemplate(rotation int) ([]Point, int, int) {
+	switch rotation {
+	case 0:
+		out := make([]Point, len(eggTemplate))
+		copy(out, eggTemplate)
+		return out, templateWidth, templateHeight
+	case 1: // 90° CW: (x,y) → (maxY-y, x)
+		out := make([]Point, len(eggTemplate))
+		for i, p := range eggTemplate {
+			out[i] = Point{X: (templateHeight - 1) - p.Y, Y: p.X}
+		}
+		return out, templateHeight, templateWidth
+	case 2: // 180°: (x,y) → (maxX-x, maxY-y)
+		out := make([]Point, len(eggTemplate))
+		for i, p := range eggTemplate {
+			out[i] = Point{X: (templateWidth - 1) - p.X, Y: (templateHeight - 1) - p.Y}
+		}
+		return out, templateWidth, templateHeight
+	case 3: // 270° CW: (x,y) → (y, maxX-x)
+		out := make([]Point, len(eggTemplate))
+		for i, p := range eggTemplate {
+			out[i] = Point{X: p.Y, Y: (templateWidth - 1) - p.X}
+		}
+		return out, templateHeight, templateWidth
+	}
+	panic("invalid rotation")
+}
+
+// boardCache stores computed boards keyed by seed.
+var boardCache sync.Map
 
 // GenerateEggBoard computes the egg layout for a given seed.
 // Results are cached — repeated calls with the same seed return the same board.
@@ -120,7 +134,6 @@ func GenerateEggBoard(seed int64) *EggBoard {
 	if cached, ok := boardCache.Load(seed); ok {
 		return cached.(*EggBoard)
 	}
-
 	board := computeEggBoard(seed)
 	boardCache.Store(seed, board)
 	return board
@@ -131,30 +144,36 @@ func ClearBoardCache(seed int64) {
 	boardCache.Delete(seed)
 }
 
+func newGrid() [][]int {
+	grid := make([][]int, BoardWidth)
+	for x := 0; x < BoardWidth; x++ {
+		grid[x] = make([]int, BoardHeight)
+		for y := 0; y < BoardHeight; y++ {
+			grid[x][y] = -1
+		}
+	}
+	return grid
+}
+
 func computeEggBoard(seed int64) *EggBoard {
 	rng := rand.New(rand.NewSource(seed))
 
-	board := &EggBoard{}
-	for x := 0; x < BoardWidth; x++ {
-		for y := 0; y < BoardHeight; y++ {
-			board.Grid[x][y] = -1
-		}
-	}
+	board := &EggBoard{Grid: newGrid()}
 
-	// Shuffle color assignment
 	colorOrder := rng.Perm(len(EggColors))
 
 	for eggID := 0; eggID < EggCount; eggID++ {
-		shape := shapes[rng.Intn(len(shapes))]
+		rotation := rng.Intn(4)
+		offsets, w, h := rotateTemplate(rotation)
 		color := EggColors[colorOrder[eggID%len(EggColors)]]
 
 		placed := false
-		for attempt := 0; attempt < 200; attempt++ {
-			ax := rng.Intn(BoardWidth - shape.Width + 1)
-			ay := rng.Intn(BoardHeight - shape.Height + 1)
+		for attempt := 0; attempt < 500; attempt++ {
+			ax := rng.Intn(BoardWidth - w + 1)
+			ay := rng.Intn(BoardHeight - h + 1)
 
-			if canPlace(board, shape, ax, ay) {
-				squares := placeEgg(board, shape, ax, ay, eggID)
+			if canPlace(board, offsets, ax, ay) {
+				squares := placeEgg(board, offsets, ax, ay, eggID)
 				board.Eggs = append(board.Eggs, Egg{
 					ID:      eggID,
 					Color:   color,
@@ -166,8 +185,7 @@ func computeEggBoard(seed int64) *EggBoard {
 		}
 
 		if !placed {
-			// Extremely unlikely with 24 eggs on a 32x32 board.
-			// Retry the whole board with a shifted seed.
+			// Retry with shifted seed
 			return computeEggBoard(seed + 1)
 		}
 	}
@@ -175,8 +193,8 @@ func computeEggBoard(seed int64) *EggBoard {
 	return board
 }
 
-func canPlace(board *EggBoard, shape EggShape, ax, ay int) bool {
-	for _, off := range shape.Offsets {
+func canPlace(board *EggBoard, offsets []Point, ax, ay int) bool {
+	for _, off := range offsets {
 		x, y := ax+off.X, ay+off.Y
 		if board.Grid[x][y] != -1 {
 			return false
@@ -185,9 +203,9 @@ func canPlace(board *EggBoard, shape EggShape, ax, ay int) bool {
 	return true
 }
 
-func placeEgg(board *EggBoard, shape EggShape, ax, ay, eggID int) []Point {
-	squares := make([]Point, 0, EggSize)
-	for _, off := range shape.Offsets {
+func placeEgg(board *EggBoard, offsets []Point, ax, ay, eggID int) []Point {
+	squares := make([]Point, 0, len(offsets))
+	for _, off := range offsets {
 		x, y := ax+off.X, ay+off.Y
 		board.Grid[x][y] = eggID
 		squares = append(squares, Point{X: x, Y: y})
