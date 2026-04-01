@@ -92,6 +92,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	{
 		trustedRoutes.Use(handlers.ValidateRole("Trusted", "Admin"))
 
+		// Easter Egg Hunt
+		trustedRoutes.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
+		trustedRoutes.GET("/games/easter-hunt/scores", handlers.GetEasterHuntScoresHandler)
+		trustedRoutes.POST("/games/easter-hunt/clicks", handlers.PostEasterHuntClickHandler)
+		trustedRoutes.GET("/games/easter-hunt/cooldown", handlers.GetEasterHuntCooldownHandler)
+
 		// Message board
 		trustedRoutes.GET("/data_models/message", handlers.GetAllMessagesHandler)
 		trustedRoutes.POST("/data_models/message", handlers.PostMessageHandler)
@@ -216,6 +222,10 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.POST("/finance/re-enrich", handlers.ReEnrichFinanceHandler)
 		adminRoutes.GET("/finance/accounts", handlers.ListFinanceAccountsHandler)
 		adminRoutes.POST("/finance/import-local", handlers.ImportLocalFinanceHandler)
+
+		// Easter Egg Hunt admin
+		adminRoutes.POST("/games/easter-hunt/admin/reset", handlers.PostEasterHuntResetHandler)
+		adminRoutes.GET("/games/easter-hunt/admin/reveal", handlers.GetEasterHuntRevealHandler)
 	}
 
 	log.Println("Routes registered successfully")
