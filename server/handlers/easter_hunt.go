@@ -15,9 +15,22 @@ import (
 )
 
 const (
-	easterHuntCooldown    = 5 * time.Minute
-	easterHuntDefaultLock = "2026-04-05T16:00:00Z" // 18:00 CEST = 16:00 UTC
+	easterHuntInitialBudget = 5
+	easterHuntDefaultLock   = "2026-04-05T16:00:00Z" // 18:00 CEST = 16:00 UTC
 )
+
+// computeClickBudget returns remaining clicks and when the next one is added.
+func computeClickBudget(gameCreatedAt time.Time, clicksUsed int) (remaining int, nextRefillAt time.Time) {
+	now := time.Now().UTC()
+	hoursElapsed := int(now.Sub(gameCreatedAt).Hours())
+	totalBudget := easterHuntInitialBudget + hoursElapsed
+	remaining = totalBudget - clicksUsed
+	if remaining < 0 {
+		remaining = 0
+	}
+	nextRefillAt = gameCreatedAt.Add(time.Duration(hoursElapsed+1) * time.Hour)
+	return
+}
 
 // ---------- Public ----------
 
@@ -182,21 +195,23 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 		return
 	}
 
-	// Check cooldown (admins bypass)
+	// Check click budget (admins bypass)
 	role, _ := c.Get("role")
 	isAdmin := role == "Admin"
 	if !isAdmin {
-		lastClick, err := data_models.GetLastEasterHuntClick(db, game.ID, userID)
-		if err == nil {
-			cooldownUntil := lastClick.CreatedAt.Add(easterHuntCooldown)
-			if now.Before(cooldownUntil) {
-				remaining := cooldownUntil.Sub(now)
-				mins := int(remaining.Minutes())
-				secs := int(remaining.Seconds()) % 60
-				respondError(c, http.StatusTooManyRequests, "cooldown",
-					fmt.Sprintf("You can click again in %dm %ds", mins, secs))
-				return
-			}
+		score, _ := data_models.GetOrCreateEasterHuntScore(db, game.ID, userID)
+		clicksUsed := 0
+		if score != nil {
+			clicksUsed = score.ClicksUsed
+		}
+		remaining, nextRefill := computeClickBudget(game.CreatedAt, clicksUsed)
+		if remaining <= 0 {
+			untilRefill := nextRefill.Sub(now)
+			mins := int(untilRefill.Minutes())
+			secs := int(untilRefill.Seconds()) % 60
+			respondError(c, http.StatusTooManyRequests, "no_clicks",
+				fmt.Sprintf("No clicks remaining. Next click in %dm %ds", mins, secs))
+			return
 		}
 	}
 
@@ -242,6 +257,13 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 	if len(newClicks) == 0 {
 		respondError(c, http.StatusConflict, "conflict", "All squares in this area already revealed")
 		return
+	}
+
+	// Deduct one click from the user's budget
+	if !isAdmin {
+		if err := data_models.IncrementClicksUsed(db, game.ID, userID); err != nil {
+			log.Printf("Error incrementing clicks_used: %v", err)
+		}
 	}
 
 	// Determine which eggs were touched by newly revealed cells
@@ -292,21 +314,34 @@ func PostEasterHuntClickHandler(c *gin.Context) {
 		})
 	}
 
-	cooldownSeconds := int(easterHuntCooldown.Seconds())
-	cooldownUntil := newClicks[0].CreatedAt.Add(easterHuntCooldown)
-	if isAdmin {
-		cooldownSeconds = 0
-		cooldownUntil = newClicks[0].CreatedAt
+	// Compute remaining budget for response
+	budgetRemaining := 999 // admin default
+	nextRefillAt := time.Time{}
+	nextRefillSeconds := 0
+	if !isAdmin {
+		score, _ := data_models.GetOrCreateEasterHuntScore(db, game.ID, userID)
+		clicksUsed := 0
+		if score != nil {
+			clicksUsed = score.ClicksUsed
+		}
+		budgetRemaining, nextRefillAt = computeClickBudget(game.CreatedAt, clicksUsed)
+		if budgetRemaining <= 0 {
+			nextRefillSeconds = int(nextRefillAt.Sub(time.Now().UTC()).Seconds())
+			if nextRefillSeconds < 0 {
+				nextRefillSeconds = 0
+			}
+		}
 	}
 	RespondWithSuccess(c, gin.H{
-		"x":                   body.X,
-		"y":                   body.Y,
-		"revealed":            revealedCells,
-		"revealed_count":      len(newClicks),
-		"eggs_completed":      completedEggs,
+		"x":                    body.X,
+		"y":                    body.Y,
+		"revealed":             revealedCells,
+		"revealed_count":       len(newClicks),
+		"eggs_completed":       completedEggs,
 		"eggs_completed_count": len(completedEggs),
-		"cooldown_until":      cooldownUntil.UTC().Format(time.RFC3339),
-		"next_click_seconds":  cooldownSeconds,
+		"clicks_remaining":     budgetRemaining,
+		"next_refill_at":       nextRefillAt.UTC().Format(time.RFC3339),
+		"next_refill_seconds":  nextRefillSeconds,
 	}, "Area revealed")
 }
 
@@ -323,32 +358,33 @@ func GetEasterHuntCooldownHandler(c *gin.Context) {
 	role, _ := c.Get("role")
 	if role == "Admin" {
 		RespondWithSuccess(c, gin.H{
-			"on_cooldown":       false,
-			"cooldown_until":    time.Time{}.UTC().Format(time.RFC3339),
-			"remaining_seconds": 0,
-		}, "Cooldown status retrieved")
+			"clicks_remaining":    999,
+			"next_refill_at":      time.Time{}.UTC().Format(time.RFC3339),
+			"next_refill_seconds": 0,
+		}, "Budget status retrieved")
 		return
 	}
 
-	now := time.Now().UTC()
-	onCooldown := false
-	var cooldownUntil time.Time
-	var remaining float64
+	score, _ := data_models.GetOrCreateEasterHuntScore(db, game.ID, userID)
+	clicksUsed := 0
+	if score != nil {
+		clicksUsed = score.ClicksUsed
+	}
+	remaining, nextRefillAt := computeClickBudget(game.CreatedAt, clicksUsed)
 
-	lastClick, err := data_models.GetLastEasterHuntClick(db, game.ID, userID)
-	if err == nil {
-		cooldownUntil = lastClick.CreatedAt.Add(easterHuntCooldown)
-		if now.Before(cooldownUntil) {
-			onCooldown = true
-			remaining = cooldownUntil.Sub(now).Seconds()
+	nextRefillSeconds := 0
+	if remaining <= 0 {
+		nextRefillSeconds = int(nextRefillAt.Sub(time.Now().UTC()).Seconds())
+		if nextRefillSeconds < 0 {
+			nextRefillSeconds = 0
 		}
 	}
 
 	RespondWithSuccess(c, gin.H{
-		"on_cooldown":       onCooldown,
-		"cooldown_until":    cooldownUntil.UTC().Format(time.RFC3339),
-		"remaining_seconds": int(remaining),
-	}, "Cooldown status retrieved")
+		"clicks_remaining":    remaining,
+		"next_refill_at":      nextRefillAt.UTC().Format(time.RFC3339),
+		"next_refill_seconds": nextRefillSeconds,
+	}, "Budget status retrieved")
 }
 
 // ---------- Admin ----------

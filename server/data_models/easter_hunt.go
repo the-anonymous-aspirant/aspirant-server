@@ -24,9 +24,10 @@ type EasterHuntClick struct {
 
 type EasterHuntScore struct {
 	gorm.Model
-	GameID uint `json:"game_id" gorm:"not null;uniqueIndex:idx_game_user"`
-	UserID uint `json:"user_id" gorm:"not null;uniqueIndex:idx_game_user"`
-	Score  int  `json:"score" gorm:"not null;default:0"`
+	GameID     uint `json:"game_id" gorm:"not null;uniqueIndex:idx_game_user"`
+	UserID     uint `json:"user_id" gorm:"not null;uniqueIndex:idx_game_user"`
+	Score      int  `json:"score" gorm:"not null;default:0"`
+	ClicksUsed int  `json:"clicks_used" gorm:"not null;default:0"`
 }
 
 // EasterHuntEgg stores one egg's metadata for a game.
@@ -123,6 +124,32 @@ func UpsertEasterHuntScore(db *gorm.DB, gameID uint, userID uint) error {
 		return err
 	}
 	return db.Model(&score).Update("score", score.Score+1).Error
+}
+
+// GetOrCreateEasterHuntScore returns the score row for a user, creating it if needed.
+func GetOrCreateEasterHuntScore(db *gorm.DB, gameID uint, userID uint) (*EasterHuntScore, error) {
+	var score EasterHuntScore
+	err := db.Where("game_id = ? AND user_id = ?", gameID, userID).First(&score).Error
+	if err == gorm.ErrRecordNotFound {
+		score = EasterHuntScore{GameID: gameID, UserID: userID, Score: 0, ClicksUsed: 0}
+		if err := db.Create(&score).Error; err != nil {
+			return nil, err
+		}
+		return &score, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &score, nil
+}
+
+// IncrementClicksUsed adds 1 to the user's clicks_used counter.
+func IncrementClicksUsed(db *gorm.DB, gameID uint, userID uint) error {
+	score, err := GetOrCreateEasterHuntScore(db, gameID, userID)
+	if err != nil {
+		return err
+	}
+	return db.Model(score).Update("clicks_used", score.ClicksUsed+1).Error
 }
 
 func GetEasterHuntScores(db *gorm.DB, gameID uint) ([]EasterHuntScore, error) {
