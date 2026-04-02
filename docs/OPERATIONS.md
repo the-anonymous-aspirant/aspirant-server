@@ -6,7 +6,6 @@
 
 - Go 1.16+ (module uses `aspirant-online` as module name -- no refactoring needed)
 - PostgreSQL (any recent version)
-- AWS credentials with S3 read/write access
 - Docker (for containerized deployment)
 
 ### Environment Configuration
@@ -19,11 +18,6 @@ DB_USER=postgres
 DB_PASSWORD=your_password
 DB_NAME=aspirant
 DB_PORT=5432
-
-AWS_ACCESS_KEY_ID=your_key
-AWS_SECRET_ACCESS_KEY=your_secret
-AWS_REGION=eu-central-1
-S3_BUCKET_NAME=your_bucket
 
 # Optional: microservice URLs (defaults to Docker network names)
 TRANSCRIBER_URL=http://localhost:8001
@@ -72,10 +66,6 @@ docker build \
   --build-arg DB_PASSWORD=secret \
   --build-arg DB_NAME=aspirant \
   --build-arg DB_PORT=5432 \
-  --build-arg AWS_ACCESS_KEY_ID=... \
-  --build-arg AWS_SECRET_ACCESS_KEY=... \
-  --build-arg AWS_REGION=eu-central-1 \
-  --build-arg S3_BUCKET_NAME=... \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   -t aspirant-server .
 
@@ -112,7 +102,6 @@ Returns git commit hash and server status.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `Error opening database` | PostgreSQL not running or wrong credentials | Check DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env |
-| `Error initializing S3 session` | Missing AWS credentials | Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION |
 | `Translator service unavailable` | Translator container not running | Start translator or set TRANSLATOR_URL |
 | `Transcriber service unavailable` | Transcriber container not running | Start transcriber or set TRANSCRIBER_URL |
 | `Commander service unavailable` | Commander container not running | Start commander or set COMMANDER_URL |
