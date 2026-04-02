@@ -45,7 +45,6 @@ See [docs/SPEC.md](docs/SPEC.md) for the full route table.
     v
   aspirant-server (:8080)
     ├── PostgreSQL (users, roles, messages, scores, feedings)
-    ├── AWS S3 (assets, dictionary)
     ├── Local filesystem (/data/files/ -- 50GB per user)
     └── Microservice proxies
          ├── transcriber (voice-to-text)
@@ -64,10 +63,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed diagrams.
 | `DB_PASSWORD` | Yes | -- | PostgreSQL password |
 | `DB_NAME` | Yes | -- | PostgreSQL database |
 | `DB_PORT` | No | 5432 | PostgreSQL port |
-| `AWS_ACCESS_KEY_ID` | Yes | -- | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | Yes | -- | AWS secret key |
-| `AWS_REGION` | Yes | -- | AWS region |
-| `S3_BUCKET_NAME` | Yes | -- | S3 bucket name |
 | `GIN_MODE` | No | debug | `debug` or `release` |
 | `TRANSCRIBER_URL` | No | `http://transcriber:8000` | Transcriber service |
 | `COMMANDER_URL` | No | `http://commander:8000` | Commander service |
