@@ -38,46 +38,47 @@ type EggBoard struct {
 }
 
 // eggTemplate defines the canonical egg shape as relative offsets.
-// Approximately 100 cells arranged in an egg silhouette (tall oval,
-// wider at top, narrower at bottom). 15 rows tall, up to 9 wide.
+// Symmetrical egg silhouette: pointy top (fast taper), wide body,
+// rounded bottom (gradual taper). 15 rows tall, up to 9 wide.
+// All row widths are odd so they center exactly in the 9-wide grid.
 //
-//	Row 0:        . . . . X X . . .   (2)
-//	Row 1:        . . . X X X X . .   (4)
-//	Row 2:        . . X X X X X X .   (6)
+//	Row 0:        . . . . X . . . .   (1)
+//	Row 1:        . . . X X X . . .   (3)
+//	Row 2:        . . X X X X X . .   (5)
 //	Row 3:        . X X X X X X X .   (7)
-//	Row 4:        . X X X X X X X X   (8)
+//	Row 4:        X X X X X X X X X   (9)
 //	Row 5:        X X X X X X X X X   (9)
 //	Row 6:        X X X X X X X X X   (9)
 //	Row 7:        X X X X X X X X X   (9)
-//	Row 8:        . X X X X X X X X   (8)
+//	Row 8:        X X X X X X X X X   (9)
 //	Row 9:        . X X X X X X X .   (7)
-//	Row 10:       . . X X X X X X .   (6)
+//	Row 10:       . X X X X X X X .   (7)
 //	Row 11:       . . X X X X X . .   (5)
-//	Row 12:       . . . X X X X . .   (4)
-//	Row 13:       . . . . X X X . .   (3)
-//	Row 14:       . . . . . X . . .   (1)
+//	Row 12:       . . X X X X X . .   (5)
+//	Row 13:       . . . X X X . . .   (3)
+//	Row 14:       . . . . X . . . .   (1)
 //
-// Total: 88 cells
+// Total: 89 cells
 var eggTemplate []Point
 
 func init() {
 	// rows defines (startX, count) for each row of the egg shape
 	rows := []struct{ start, count int }{
-		{4, 2},  // row 0
-		{3, 4},  // row 1
-		{2, 6},  // row 2
+		{4, 1},  // row 0
+		{3, 3},  // row 1
+		{2, 5},  // row 2
 		{1, 7},  // row 3
-		{1, 8},  // row 4
+		{0, 9},  // row 4
 		{0, 9},  // row 5
 		{0, 9},  // row 6
 		{0, 9},  // row 7
-		{1, 8},  // row 8
+		{0, 9},  // row 8
 		{1, 7},  // row 9
-		{2, 6},  // row 10
+		{1, 7},  // row 10
 		{2, 5},  // row 11
-		{3, 4},  // row 12
-		{4, 3},  // row 13
-		{5, 1},  // row 14
+		{2, 5},  // row 12
+		{3, 3},  // row 13
+		{4, 1},  // row 14
 	}
 	for y, row := range rows {
 		for dx := 0; dx < row.count; dx++ {
