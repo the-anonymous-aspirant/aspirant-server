@@ -137,6 +137,7 @@ func getDefaultAssetMappings() AssetMappingsConfig {
 		"wordweaver_icon":         {Hash: "3c6eba6921724336db8cd9e1723609ba", Type: "image"},
 		"flappyduo_icon":          {Hash: "be63c826259552d6d98c1c0fa138a71c", Type: "image"},
 		"transparency_icon":       {Hash: "6f6accdcb3a9e77c7a66a41e6fb0f949", Type: "image"},
+		"easter_hunt_icon":        {Hash: "edda268a0bcda395182e32cd35700765", Type: "image"},
 		"home_icon":               {Hash: "6a9cd5807678009a717d5f472d179876", Type: "image"},
 		"default_user":            {Hash: "1802de25dec1a75d49e6bd5649d135d2", Type: "image"},
 		"message_user_icon":       {Hash: "1802de25dec1a75d49e6bd5649d135d2", Type: "image"},
