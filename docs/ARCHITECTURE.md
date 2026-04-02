@@ -15,30 +15,30 @@
   │          ┌────────────────────────────────────────┼───────┐      │
   │          │                    │                    │       │      │
   │          v                    v                    v       v      │
-  │   ┌─────────────┐    ┌──────────────┐    ┌──────┐ ┌─────────┐  │
-  │   │  Handlers    │    │  Data Models  │    │ S3   │ │ Proxy   │  │
-  │   │  (business   │    │  (GORM ORM)   │    │ Func │ │ Clients │  │
-  │   │   logic)     │    │              │    │      │ │         │  │
-  │   └──────┬──────┘    └──────┬───────┘    └──┬───┘ └────┬────┘  │
-  │          │                   │               │          │        │
-  └──────────┼───────────────────┼───────────────┼──────────┼────────┘
-             │                   │               │          │
-             v                   v               v          v
-      ┌─────────────┐   ┌──────────────┐  ┌─────────┐  ┌────────────┐
-      │  Local Files │   │  PostgreSQL   │  │  AWS S3  │  │ Microsvcs  │
-      │  /data/files │   │  (users,      │  │  (assets,│  │            │
-      │              │   │   roles,      │  │   dict)  │  │ transcriber│
-      │  50GB/user   │   │   messages,   │  │          │  │ commander  │
-      │  50GB shared │   │   scores,     │  │          │  │ translator │
-      │              │   │   feedings)   │  │          │  │            │
-      └─────────────┘   └──────────────┘  └─────────┘  └────────────┘
+  │   ┌─────────────┐    ┌──────────────┐    ┌─────────┐            │
+  │   │  Handlers    │    │  Data Models  │    │ Proxy   │            │
+  │   │  (business   │    │  (GORM ORM)   │    │ Clients │            │
+  │   │   logic)     │    │              │    │         │            │
+  │   └──────┬──────┘    └──────┬───────┘    └────┬────┘            │
+  │          │                   │                 │                  │
+  └──────────┼───────────────────┼─────────────────┼──────────────────┘
+             │                   │                 │
+             v                   v                 v
+      ┌─────────────┐   ┌──────────────┐    ┌────────────┐
+      │  Local Files │   │  PostgreSQL   │    │ Microsvcs  │
+      │  /data/files │   │  (users,      │    │            │
+      │              │   │   roles,      │    │ transcriber│
+      │  50GB/user   │   │   messages,   │    │ commander  │
+      │  50GB shared │   │   scores,     │    │ translator │
+      │              │   │   feedings)   │    │            │
+      └─────────────┘   └──────────────┘    └────────────┘
 ```
 
 ## Package Structure
 
 ```
 aspirant-server/
-├── main.go                          # Entry point: env loading, DB/S3 init, Gin setup
+├── main.go                          # Entry point: env loading, DB init, Gin setup
 ├── go.mod / go.sum                  # Dependencies (module: aspirant-online)
 ├── Dockerfile                       # Multi-stage build (golang → alpine)
 ├── .gitignore
@@ -107,7 +107,6 @@ aspirant-server/
 5. **Role validation** (for trusted/admin routes) checks `role_name` claim
 6. **Handler** processes the request:
    - Direct DB access via GORM for data model operations
-   - S3 SDK calls for asset/file operations
    - HTTP proxy to microservices for transcriber/commander/translator
 7. **Response** returned with appropriate status code and content type
 
