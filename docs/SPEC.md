@@ -14,7 +14,7 @@ aspirant-server is a Go/Gin HTTP API gateway providing authentication, file mana
 | GET | `/login:username` | LoginUserHandler | Check if username exists |
 | GET | `/health` | HealthCheckHandler | Service health check |
 | POST | `/games/word_weaver` | GetLongestWordsHandler | Process Word Weaver board |
-| GET | `/fetch-object/:etag` | FetchObjectHandler | Fetch S3 object by ETag |
+| GET | `/fetch-object/:etag` | FetchObjectHandler | Fetch object by ETag |
 | GET | `/games/scores` | GetGameScoresHandler | Get game leaderboard |
 | POST | `/bootstrap/admin` | BootstrapUserHandler | Create first admin (only when no users exist) |
 
@@ -46,7 +46,7 @@ aspirant-server is a Go/Gin HTTP API gateway providing authentication, file mana
 | GET | `/translator/languages` | GetTranslatorLanguagesHandler | List languages |
 | POST | `/translator/languages/install` | InstallTranslatorLanguageHandler | Install a language |
 | POST | `/translator/translations` | TranslateHandler | Translate text |
-| POST | `/upload` | UploadImageHandler | Upload image to S3 |
+| POST | `/upload` | UploadImageHandler | Upload image |
 | GET | `/data_models/ludde_feeding_times` | GetAllFeedingTimesHandler | List feeding times |
 | GET | `/data_models/ludde_feeding_times/:id` | GetFeedingTimeHandler | Get feeding time |
 | POST | `/data_models/ludde_feeding_times` | AddFeedingTimeHandler | Add feeding time |
@@ -56,7 +56,7 @@ aspirant-server is a Go/Gin HTTP API gateway providing authentication, file mana
 
 | Method | Path | Handler | Description |
 |--------|------|---------|-------------|
-| GET | `/s3-assets` | ListS3AssetsHandler | List S3 bucket contents |
+| GET | `/s3-assets` | ListS3AssetsHandler | List assets |
 | GET | `/data_models/roles` | GetAllRolesHandler | List all roles |
 | POST | `/data_models/users` | CreateUserHandler | Create a user |
 | PUT | `/data_models/users/:id` | UpdateUserHandler | Update a user |
@@ -104,7 +104,7 @@ Six roles seeded at startup:
 
 ## Game Scoring
 
-- Word Weaver: Board submitted via POST, server finds longest valid words using S3-loaded dictionary
+- Word Weaver: Board submitted via POST, server finds longest valid words using locally loaded dictionary
 - Generic game scores with JSONB metadata for flexible game-specific data
 - Leaderboard queries with game-type filtering
 
