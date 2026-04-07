@@ -7,3 +7,7 @@
 .vscode/
 *.swp
 docker-compose.override.yml
+server/utils/dictionary_*.json
+server/utils/words_*.txt
+server/utils/word_definitions.json
+server/utils/words.txt
