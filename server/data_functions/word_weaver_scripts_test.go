@@ -6,7 +6,7 @@ import (
 
 func requireDictionary(t *testing.T) {
 	t.Helper()
-	if len(dictionary) == 0 {
+	if len(dictionaries["en"]) == 0 {
 		t.Skip("Skipping: dictionary not loaded (requires dictionary file at ASSET_BASE_PATH/games/dictionary.json)")
 	}
 }
@@ -14,7 +14,7 @@ func requireDictionary(t *testing.T) {
 func TestWordExistsInDictionary(t *testing.T) {
 	requireDictionary(t)
 	word := "abandons"
-	if _, exists := dictionary[word]; !exists {
+	if _, exists := dictionaries["en"][word]; !exists {
 		t.Errorf("Expected word %s to be in the dictionary", word)
 	}
 }
@@ -22,7 +22,7 @@ func TestWordExistsInDictionary(t *testing.T) {
 func TestWordDoesNotExistInDictionary(t *testing.T) {
 	requireDictionary(t)
 	word := "nonexistentword"
-	if _, exists := dictionary[word]; exists {
+	if _, exists := dictionaries["en"][word]; exists {
 		t.Errorf("Did not expect word %s to be in the dictionary", word)
 	}
 }
@@ -87,7 +87,7 @@ func TestGetLongestValidWord(t *testing.T) {
 	words := []string{"cat", "caterpillar", "dog", "elephant"}
 	expected := "caterpillar"
 
-	longestWord := GetLongestValidWord(words)
+	longestWord := GetLongestValidWord(words, "en")
 	if longestWord != expected {
 		t.Errorf("Expected longest valid word to be %s, but got %s", expected, longestWord)
 	}
@@ -98,7 +98,7 @@ func TestGetLongestValidWordNoValidWords(t *testing.T) {
 	words := []string{"nonexistentword1", "nonexistentword2"}
 	expected := ""
 
-	longestWord := GetLongestValidWord(words)
+	longestWord := GetLongestValidWord(words, "en")
 	if longestWord != expected {
 		t.Errorf("Expected longest valid word to be %s, but got %s", expected, longestWord)
 	}
@@ -109,7 +109,7 @@ func TestGetLongestValidWordEmptyList(t *testing.T) {
 	words := []string{}
 	expected := ""
 
-	longestWord := GetLongestValidWord(words)
+	longestWord := GetLongestValidWord(words, "en")
 	if longestWord != expected {
 		t.Errorf("Expected longest valid word to be %s, but got %s", expected, longestWord)
 	}
@@ -126,7 +126,7 @@ func TestGetLongestWordsFromBoard(t *testing.T) {
 	expectedRows := []string{"cat", "", ""}
 	expectedCols := []string{"cab", "", ""}
 
-	longestWordsInRows, longestWordsInCols := GetLongestWordsFromBoard(board)
+	longestWordsInRows, longestWordsInCols := GetLongestWordsFromBoard(board, "en")
 
 	if !equalUnordered(longestWordsInRows, expectedRows) {
 		t.Errorf("Expected longest words in rows to be %v, but got %v", expectedRows, longestWordsInRows)
@@ -148,7 +148,7 @@ func TestGetLongestWordsFromBoardEmptyBoard(t *testing.T) {
 	expectedRows := []string{"", "", ""}
 	expectedCols := []string{"", "", ""}
 
-	longestWordsInRows, longestWordsInCols := GetLongestWordsFromBoard(board)
+	longestWordsInRows, longestWordsInCols := GetLongestWordsFromBoard(board, "en")
 
 	if !equalUnordered(longestWordsInRows, expectedRows) {
 		t.Errorf("Expected longest words in rows to be %v, but got %v", expectedRows, longestWordsInRows)
@@ -170,7 +170,7 @@ func TestGetLongestWordsFromBoardNoValidWords(t *testing.T) {
 	expectedRows := []string{"", "", ""}
 	expectedCols := []string{"", "", ""}
 
-	longestWordsInRows, longestWordsInCols := GetLongestWordsFromBoard(board)
+	longestWordsInRows, longestWordsInCols := GetLongestWordsFromBoard(board, "en")
 
 	if !equalUnordered(longestWordsInRows, expectedRows) {
 		t.Errorf("Expected longest words in rows to be %v, but got %v", expectedRows, longestWordsInRows)
@@ -178,5 +178,16 @@ func TestGetLongestWordsFromBoardNoValidWords(t *testing.T) {
 
 	if !equalUnordered(longestWordsInCols, expectedCols) {
 		t.Errorf("Expected longest words in columns to be %v, but got %v", expectedCols, longestWordsInCols)
+	}
+}
+
+func TestDefaultLanguageIsEnglish(t *testing.T) {
+	requireDictionary(t)
+	// Empty language should default to English
+	if !IsWordInDictionary("cat", "") {
+		t.Error("Expected 'cat' to be found with empty language (defaults to English)")
+	}
+	if !IsWordInDictionary("cat", "en") {
+		t.Error("Expected 'cat' to be found with 'en' language")
 	}
 }
