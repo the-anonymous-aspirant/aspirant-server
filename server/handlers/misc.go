@@ -3,8 +3,6 @@ package handlers
 import (
 	"log"
 	"net/http"
-	"runtime"
-	"time"
 
 	"aspirant-online/server/data_functions"
 	"aspirant-online/server/storage"
@@ -13,52 +11,38 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
-var serverStartTime = time.Now()
-
-// HealthCheckHandler handles the health check route
+// HealthCheckHandler handles the health check route.
+// Response follows the convention schema: { status, service, version, checks }
 func HealthCheckHandler(c *gin.Context) {
+	checks := gin.H{}
 	allHealthy := true
 
 	// Database check
-	dbStatus := gin.H{"status": "unavailable"}
 	if db, exists := c.Get("db"); exists && db != nil {
 		if gormDB, ok := db.(*gorm.DB); ok {
 			if err := gormDB.DB().Ping(); err != nil {
-				dbStatus = gin.H{"status": "unhealthy", "error": err.Error()}
+				checks["database"] = "error: " + err.Error()
 				allHealthy = false
 			} else {
-				dbStatus = gin.H{"status": "healthy"}
+				checks["database"] = "connected"
 			}
 		}
 	} else {
+		checks["database"] = "unavailable"
 		allHealthy = false
 	}
 
-	// Memory stats
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-
-	// Overall status
-	status := "healthy"
+	status := "ok"
 	if !allHealthy {
 		status = "degraded"
 	}
 
-	RespondWithSuccess(c, gin.H{
-		"status": status,
-		"commit": data_functions.GetGitCommit(),
-		"uptime": time.Since(serverStartTime).Truncate(time.Second).String(),
-		"database": dbStatus,
-		"memory": gin.H{
-			"alloc_mb":       mem.Alloc / 1024 / 1024,
-			"total_alloc_mb": mem.TotalAlloc / 1024 / 1024,
-			"sys_mb":         mem.Sys / 1024 / 1024,
-			"heap_objects":   mem.HeapObjects,
-			"gc_cycles":      mem.NumGC,
-			"goroutines":     runtime.NumGoroutine(),
-		},
-		"go_version": runtime.Version(),
-	}, "Health check complete")
+	c.JSON(http.StatusOK, gin.H{
+		"status":  status,
+		"service": "server",
+		"version": data_functions.GetGitCommit(),
+		"checks":  checks,
+	})
 }
 
 // FetchObjectHandler serves an asset by its ETag (MD5 hash)
