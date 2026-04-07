@@ -15,7 +15,8 @@ import (
 // GetLongestWordsHandler handles the request for getting the longest words from rows and columns
 func GetLongestWordsHandler(c *gin.Context) {
 	var boardRequest struct {
-		Board [][]string `json:"board" binding:"required"`
+		Board    [][]string `json:"board" binding:"required"`
+		Language string     `json:"language"`
 	}
 
 	if err := c.ShouldBindJSON(&boardRequest); err != nil {
@@ -31,7 +32,7 @@ func GetLongestWordsHandler(c *gin.Context) {
 	}
 
 	longestWordsInRows, rowDefinitions, longestWordsInCols, colDefinitions :=
-		data_functions.GetLongestWordsWithDefinitionsFromBoard(boardRequest.Board)
+		data_functions.GetLongestWordsWithDefinitionsFromBoard(boardRequest.Board, boardRequest.Language)
 
 	log.Printf("Processed word weaver board: found %d row words and %d column words",
 		len(longestWordsInRows), len(longestWordsInCols))
