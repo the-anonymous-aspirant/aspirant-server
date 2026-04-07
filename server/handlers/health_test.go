@@ -24,32 +24,36 @@ func TestHealthCheckHandler_Returns200(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	// Parse response body
-	var body SuccessResponse
+	// Parse response body into convention schema
+	var body map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("failed to parse response body: %v", err)
 	}
 
-	if body.Status != "success" {
-		t.Errorf("expected status 'success', got '%s'", body.Status)
-	}
-
-	// Verify the data contains expected fields
-	data, ok := body.Data.(map[string]interface{})
-	if !ok {
-		t.Fatal("expected data to be a map")
-	}
-
-	requiredFields := []string{"status", "commit", "uptime", "database", "memory", "go_version"}
+	// Verify required top-level fields
+	requiredFields := []string{"status", "service", "version", "checks"}
 	for _, field := range requiredFields {
-		if _, exists := data[field]; !exists {
-			t.Errorf("expected field '%s' in health response data", field)
+		if _, exists := body[field]; !exists {
+			t.Errorf("expected field '%s' in health response", field)
 		}
 	}
 
 	// Without a DB, the status should be "degraded"
-	if data["status"] != "degraded" {
-		t.Errorf("expected health status 'degraded' without DB, got '%s'", data["status"])
+	if body["status"] != "degraded" {
+		t.Errorf("expected status 'degraded' without DB, got '%s'", body["status"])
+	}
+
+	if body["service"] != "server" {
+		t.Errorf("expected service 'server', got '%s'", body["service"])
+	}
+
+	// Verify checks contains database
+	checks, ok := body["checks"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected checks to be a map")
+	}
+	if _, exists := checks["database"]; !exists {
+		t.Error("expected 'database' in checks")
 	}
 }
 
@@ -68,17 +72,17 @@ func TestHealthCheckHandler_ResponseStructure(t *testing.T) {
 		t.Errorf("expected Content-Type 'application/json; charset=utf-8', got '%s'", contentType)
 	}
 
-	// Verify the response is valid JSON
-	var raw map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+	// Verify the response is valid JSON with convention schema
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
 
-	// Verify top-level structure has status, data, message
-	if _, exists := raw["status"]; !exists {
-		t.Error("expected 'status' field in response")
+	// Should NOT have the old SuccessResponse envelope fields
+	if _, exists := body["data"]; exists {
+		t.Error("response should not have 'data' wrapper (old envelope format)")
 	}
-	if _, exists := raw["data"]; !exists {
-		t.Error("expected 'data' field in response")
+	if _, exists := body["message"]; exists {
+		t.Error("response should not have 'message' field (old envelope format)")
 	}
 }
