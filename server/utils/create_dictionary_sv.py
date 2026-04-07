@@ -2,6 +2,11 @@
 Generate Swedish dictionary for WordWeaver.
 
 Word source: FrequencyWords Swedish frequency list (OpenSubtitles corpus)
+  - https://github.com/hermitdave/FrequencyWords
+  - Words are ranked by frequency (most common first) from ~62M subtitle tokens
+  - We take the top 15,000 words (after filtering for 3-7 letter alphabetic words)
+  - This ensures players encounter common, recognizable Swedish words
+
 Definitions: Swedish Wiktionary (sv.wiktionary.org, CC-BY-SA)
 
 Usage:
@@ -21,7 +26,8 @@ import re
 WIKTIONARY_API = "https://sv.wiktionary.org/w/api.php"
 HEADERS = {"User-Agent": "WordWeaverDictBot/1.0 (game dictionary builder)"}
 
-# Swedish frequency word list from FrequencyWords project (OpenSubtitles corpus)
+# Swedish frequency word list from FrequencyWords project (OpenSubtitles corpus).
+# File is pre-sorted by frequency (most common words first). Format: "word count" per line.
 WORD_LIST_URL = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/sv/sv_50k.txt"
 
 local_file = "./words_sv.txt"
@@ -45,7 +51,8 @@ if not os.path.exists(local_file):
         words = words[:15000]
         with open(local_file, "w", encoding="utf-8") as f:
             f.write("\n".join(words))
-        print(f"Saved {len(words)} words to {local_file}")
+        print(f"Saved {len(words)} frequency-ranked words to {local_file}")
+        print(f"Top 20 most frequent words: {', '.join(words[:20])}")
     except requests.exceptions.RequestException as e:
         print(f"Failed to download word list: {e}")
         exit(1)
