@@ -216,6 +216,10 @@ func CreateNodeHandler(c *gin.Context) {
 }
 
 // ListNodesHandler returns all non-deleted nodes for a tree.
+// Supports optional timeline filtering via query parameters:
+//   ?period=day|week|month|quarter|year|custom
+//   &value=<period-specific value>
+//   &mode=planned|achieved|combined (default: planned)
 func ListNodesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
@@ -229,10 +233,19 @@ func ListNodesHandler(c *gin.Context) {
 		return
 	}
 
+	periodRange, mode, err := parseTimelineParams(c)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_period", err.Error())
+		return
+	}
+
+	query := db.Where("tree_id = ? AND deleted_at IS NULL", tree.ID)
+	if periodRange != nil {
+		query = applyTimelineFilter(query, periodRange, mode)
+	}
+
 	var nodes []data_models.GoalNode
-	if err := db.Where("tree_id = ? AND deleted_at IS NULL", tree.ID).
-		Order("sort_order ASC").
-		Find(&nodes).Error; err != nil {
+	if err := query.Order("sort_order ASC").Find(&nodes).Error; err != nil {
 		log.Printf("Error listing nodes: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to list nodes")
 		return
