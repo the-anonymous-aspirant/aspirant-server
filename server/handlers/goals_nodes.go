@@ -140,6 +140,10 @@ func CreateNodeHandler(c *gin.Context) {
 		return
 	}
 
+	if !ValidateEditingSession(c, db, tree) {
+		return
+	}
+
 	var req createNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "bad_request", "Name and node_type are required")
@@ -303,6 +307,10 @@ func UpdateNodeHandler(c *gin.Context) {
 		return
 	}
 
+	if !ValidateEditingSession(c, db, tree) {
+		return
+	}
+
 	nodeID := c.Param("id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
@@ -356,6 +364,10 @@ func DeleteNodeHandler(c *gin.Context) {
 
 	tree := getTreeForUser(c, db, userID)
 	if tree == nil {
+		return
+	}
+
+	if !ValidateEditingSession(c, db, tree) {
 		return
 	}
 
@@ -566,6 +578,10 @@ func CompleteNodeHandler(c *gin.Context) {
 		return
 	}
 
+	if !ValidateEditingSession(c, db, tree) {
+		return
+	}
+
 	nodeID := c.Param("id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
@@ -615,6 +631,10 @@ func UncompleteNodeHandler(c *gin.Context) {
 
 	tree := getTreeForUser(c, db, userID)
 	if tree == nil {
+		return
+	}
+
+	if !ValidateEditingSession(c, db, tree) {
 		return
 	}
 

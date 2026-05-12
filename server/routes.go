@@ -137,6 +137,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.PATCH("/goals/trees/:id", handlers.UpdateTreeHandler)
 		trustedRoutes.DELETE("/goals/trees/:id", handlers.DeleteTreeHandler)
 
+		// Goal Mapper — Session Lock
+		trustedRoutes.POST("/goals/trees/:id/open", handlers.OpenTreeForEditingHandler)
+		trustedRoutes.POST("/goals/trees/:id/take-over", handlers.TakeOverTreeEditingHandler)
+		trustedRoutes.POST("/goals/trees/:id/release", handlers.ReleaseTreeEditingHandler)
+
 		// Goal Mapper — Nodes
 		trustedRoutes.POST("/goals/trees/:tree_id/nodes", handlers.CreateNodeHandler)
 		trustedRoutes.GET("/goals/trees/:tree_id/nodes", handlers.ListNodesHandler)
