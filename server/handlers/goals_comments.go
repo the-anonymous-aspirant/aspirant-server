@@ -76,6 +76,13 @@ func CreateCommentHandler(c *gin.Context) {
 		return
 	}
 
+	var tree data_models.GoalTree
+	if err := db.Where("id = ? AND deleted_at IS NULL", node.TreeID).First(&tree).Error; err == nil {
+		if !ValidateEditingSession(c, db, &tree) {
+			return
+		}
+	}
+
 	var req createCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "bad_request", "Body is required")
@@ -162,6 +169,10 @@ func UpdateCommentHandler(c *gin.Context) {
 		return
 	}
 
+	if !ValidateEditingSession(c, db, &tree) {
+		return
+	}
+
 	var req updateCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "bad_request", "Body is required")
@@ -211,6 +222,10 @@ func DeleteCommentHandler(c *gin.Context) {
 	if err := db.Where("id = ? AND user_id = ? AND deleted_at IS NULL", node.TreeID, userID).
 		First(&tree).Error; err != nil {
 		respondError(c, http.StatusNotFound, "not_found", "Comment not found")
+		return
+	}
+
+	if !ValidateEditingSession(c, db, &tree) {
 		return
 	}
 
