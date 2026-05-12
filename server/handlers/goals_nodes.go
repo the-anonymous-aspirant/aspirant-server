@@ -29,36 +29,38 @@ type updateNodeRequest struct {
 }
 
 type nodeResponse struct {
-	ID           uint       `json:"id"`
-	TreeID       uint       `json:"tree_id"`
-	ParentID     *uint      `json:"parent_id"`
-	Name         string     `json:"name"`
-	NodeType     string     `json:"node_type"`
-	Color        string     `json:"color"`
-	Body         string     `json:"body"`
-	SortOrder    int        `json:"sort_order"`
-	PlannedStart *time.Time `json:"planned_start,omitempty"`
-	PlannedEnd   *time.Time `json:"planned_end,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID             uint       `json:"id"`
+	TreeID         uint       `json:"tree_id"`
+	ParentID       *uint      `json:"parent_id"`
+	Name           string     `json:"name"`
+	NodeType       string     `json:"node_type"`
+	Color          string     `json:"color"`
+	Body           string     `json:"body"`
+	SortOrder      int        `json:"sort_order"`
+	PlannedStart   *time.Time `json:"planned_start,omitempty"`
+	PlannedEnd     *time.Time `json:"planned_end,omitempty"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	ManualComplete bool       `json:"manual_complete"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 func toNodeResponse(n *data_models.GoalNode) nodeResponse {
 	return nodeResponse{
-		ID:           n.ID,
-		TreeID:       n.TreeID,
-		ParentID:     n.ParentID,
-		Name:         n.Name,
-		NodeType:     n.NodeType,
-		Color:        n.Color,
-		Body:         n.Body,
-		SortOrder:    n.SortOrder,
-		PlannedStart: n.PlannedStart,
-		PlannedEnd:   n.PlannedEnd,
-		CompletedAt:  n.CompletedAt,
-		CreatedAt:    n.CreatedAt,
-		UpdatedAt:    n.UpdatedAt,
+		ID:             n.ID,
+		TreeID:         n.TreeID,
+		ParentID:       n.ParentID,
+		Name:           n.Name,
+		NodeType:       n.NodeType,
+		Color:          n.Color,
+		Body:           n.Body,
+		SortOrder:      n.SortOrder,
+		PlannedStart:   n.PlannedStart,
+		PlannedEnd:     n.PlannedEnd,
+		CompletedAt:    n.CompletedAt,
+		ManualComplete: n.ManualComplete,
+		CreatedAt:      n.CreatedAt,
+		UpdatedAt:      n.UpdatedAt,
 	}
 }
 
@@ -457,7 +459,87 @@ func DeleteNodeHandler(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// CompleteNodeHandler marks a node as completed.
+type completeNodeRequest struct {
+	ManualComplete *bool `json:"manual_complete"`
+}
+
+// allChildrenCompleted checks whether every direct child of parentID is completed.
+func allChildrenCompleted(db *gorm.DB, treeID uint, parentID uint) bool {
+	var incomplete int
+	db.Model(&data_models.GoalNode{}).
+		Where("parent_id = ? AND tree_id = ? AND deleted_at IS NULL AND completed_at IS NULL", parentID, treeID).
+		Count(&incomplete)
+	return incomplete == 0
+}
+
+// hasChildren checks whether the node has any non-deleted children.
+func hasChildren(db *gorm.DB, treeID uint, nodeID uint) bool {
+	var count int
+	db.Model(&data_models.GoalNode{}).
+		Where("parent_id = ? AND tree_id = ? AND deleted_at IS NULL", nodeID, treeID).
+		Count(&count)
+	return count > 0
+}
+
+// rollupComplete cascades auto-completion upward from nodeID.
+// When all siblings are completed, the parent gets auto-completed (unless manual_complete is set).
+func rollupComplete(db *gorm.DB, treeID uint, parentID *uint, now time.Time) {
+	if parentID == nil {
+		return
+	}
+
+	var parent data_models.GoalNode
+	if err := db.Where("id = ? AND tree_id = ? AND deleted_at IS NULL", *parentID, treeID).
+		First(&parent).Error; err != nil {
+		return
+	}
+
+	if parent.CompletedAt != nil {
+		return
+	}
+
+	if parent.ManualComplete {
+		return
+	}
+
+	if !allChildrenCompleted(db, treeID, parent.ID) {
+		return
+	}
+
+	parent.CompletedAt = &now
+	db.Save(&parent)
+
+	rollupComplete(db, treeID, parent.ParentID, now)
+}
+
+// rollupUncomplete cascades uncomplete upward.
+// If a parent was auto-completed (manual_complete=false), clear its completed_at.
+func rollupUncomplete(db *gorm.DB, treeID uint, parentID *uint) {
+	if parentID == nil {
+		return
+	}
+
+	var parent data_models.GoalNode
+	if err := db.Where("id = ? AND tree_id = ? AND deleted_at IS NULL", *parentID, treeID).
+		First(&parent).Error; err != nil {
+		return
+	}
+
+	if parent.CompletedAt == nil {
+		return
+	}
+
+	if parent.ManualComplete {
+		return
+	}
+
+	parent.CompletedAt = nil
+	db.Save(&parent)
+
+	rollupUncomplete(db, treeID, parent.ParentID)
+}
+
+// CompleteNodeHandler marks a node as completed and cascades auto-completion upward.
 func CompleteNodeHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
@@ -489,18 +571,27 @@ func CompleteNodeHandler(c *gin.Context) {
 		return
 	}
 
+	var req completeNodeRequest
+	c.ShouldBindJSON(&req)
+
 	now := time.Now()
 	node.CompletedAt = &now
+	if req.ManualComplete != nil && *req.ManualComplete {
+		node.ManualComplete = true
+	}
+
 	if err := db.Save(&node).Error; err != nil {
 		log.Printf("Error completing node: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to complete node")
 		return
 	}
 
+	rollupComplete(db, tree.ID, node.ParentID, now)
+
 	c.JSON(http.StatusOK, toNodeResponse(&node))
 }
 
-// UncompleteNodeHandler clears the completed_at timestamp.
+// UncompleteNodeHandler clears the completed_at timestamp and propagates upward.
 func UncompleteNodeHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
@@ -533,11 +624,14 @@ func UncompleteNodeHandler(c *gin.Context) {
 	}
 
 	node.CompletedAt = nil
+	node.ManualComplete = false
 	if err := db.Save(&node).Error; err != nil {
 		log.Printf("Error uncompleting node: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to uncomplete node")
 		return
 	}
+
+	rollupUncomplete(db, tree.ID, node.ParentID)
 
 	c.JSON(http.StatusOK, toNodeResponse(&node))
 }

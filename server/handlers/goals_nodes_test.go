@@ -404,6 +404,275 @@ func TestUpdateNode_PartialUpdate(t *testing.T) {
 	}
 }
 
+// --- Auto-completion rollup tests ---
+
+func TestAutoComplete_AllChildrenCompleted_ParentAutoCompletes(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// Build: Root → [Child1, Child2, Child3]
+	root := data_models.GoalNode{TreeID: tree.ID, Name: "Root", NodeType: "goal", SortOrder: 100}
+	db.Create(&root)
+	child1 := data_models.GoalNode{TreeID: tree.ID, Name: "C1", NodeType: "step", ParentID: &root.ID, SortOrder: 100}
+	db.Create(&child1)
+	child2 := data_models.GoalNode{TreeID: tree.ID, Name: "C2", NodeType: "step", ParentID: &root.ID, SortOrder: 200}
+	db.Create(&child2)
+	child3 := data_models.GoalNode{TreeID: tree.ID, Name: "C3", NodeType: "step", ParentID: &root.ID, SortOrder: 300}
+	db.Create(&child3)
+
+	// Complete child1 and child2 — root should NOT auto-complete yet
+	for _, id := range []uint{child1.ID, child2.ID} {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, id), nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("complete child %d: expected 200, got %d: %s", id, w.Code, w.Body.String())
+		}
+	}
+
+	var rootCheck data_models.GoalNode
+	db.Where("id = ?", root.ID).First(&rootCheck)
+	if rootCheck.CompletedAt != nil {
+		t.Fatal("root should NOT be auto-completed yet (child3 still open)")
+	}
+
+	// Complete child3 — root should now auto-complete
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, child3.ID), nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete child3: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	db.Where("id = ?", root.ID).First(&rootCheck)
+	if rootCheck.CompletedAt == nil {
+		t.Fatal("root should be auto-completed after all children completed")
+	}
+	if rootCheck.ManualComplete {
+		t.Error("root should NOT have manual_complete flag (was auto-completed)")
+	}
+}
+
+func TestAutoComplete_CascadesUpMultipleLevels(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// Build: Grandparent → Parent → Leaf
+	gp := data_models.GoalNode{TreeID: tree.ID, Name: "GP", NodeType: "goal", SortOrder: 100}
+	db.Create(&gp)
+	parent := data_models.GoalNode{TreeID: tree.ID, Name: "Parent", NodeType: "milestone", ParentID: &gp.ID, SortOrder: 100}
+	db.Create(&parent)
+	leaf := data_models.GoalNode{TreeID: tree.ID, Name: "Leaf", NodeType: "step", ParentID: &parent.ID, SortOrder: 100}
+	db.Create(&leaf)
+
+	// Complete the leaf — should cascade through parent and grandparent
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, leaf.ID), nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var parentCheck data_models.GoalNode
+	db.Where("id = ?", parent.ID).First(&parentCheck)
+	if parentCheck.CompletedAt == nil {
+		t.Error("parent should be auto-completed")
+	}
+
+	var gpCheck data_models.GoalNode
+	db.Where("id = ?", gp.ID).First(&gpCheck)
+	if gpCheck.CompletedAt == nil {
+		t.Error("grandparent should be auto-completed")
+	}
+}
+
+func TestAutoComplete_ManualOverride_BlocksRollup(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// Build: GP → Parent(manual_complete=true) → Leaf
+	gp := data_models.GoalNode{TreeID: tree.ID, Name: "GP", NodeType: "goal", SortOrder: 100}
+	db.Create(&gp)
+	parent := data_models.GoalNode{TreeID: tree.ID, Name: "Parent", NodeType: "milestone", ParentID: &gp.ID, SortOrder: 100, ManualComplete: true}
+	db.Create(&parent)
+	leaf := data_models.GoalNode{TreeID: tree.ID, Name: "Leaf", NodeType: "step", ParentID: &parent.ID, SortOrder: 100}
+	db.Create(&leaf)
+
+	// Complete the leaf — parent has manual_complete so rollup stops there
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, leaf.ID), nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var parentCheck data_models.GoalNode
+	db.Where("id = ?", parent.ID).First(&parentCheck)
+	if parentCheck.CompletedAt != nil {
+		t.Error("parent should NOT auto-complete when manual_complete is set")
+	}
+
+	var gpCheck data_models.GoalNode
+	db.Where("id = ?", gp.ID).First(&gpCheck)
+	if gpCheck.CompletedAt != nil {
+		t.Error("grandparent should NOT auto-complete (blocked at parent)")
+	}
+}
+
+func TestAutoComplete_ManualCompleteOnNode(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// Build: Parent → [Child1(incomplete), Child2]
+	parent := data_models.GoalNode{TreeID: tree.ID, Name: "Parent", NodeType: "goal", SortOrder: 100}
+	db.Create(&parent)
+	child1 := data_models.GoalNode{TreeID: tree.ID, Name: "C1", NodeType: "step", ParentID: &parent.ID, SortOrder: 100}
+	db.Create(&child1)
+	child2 := data_models.GoalNode{TreeID: tree.ID, Name: "C2", NodeType: "step", ParentID: &parent.ID, SortOrder: 200}
+	db.Create(&child2)
+
+	// Complete parent with manual_complete flag (bypasses children check)
+	body := `{"manual_complete": true}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, parent.ID), bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp nodeResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.CompletedAt == nil {
+		t.Error("node should be completed")
+	}
+	if !resp.ManualComplete {
+		t.Error("node should have manual_complete=true")
+	}
+}
+
+func TestUncomplete_PropagatesUpward(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// Build: GP → Parent → [Leaf1, Leaf2]
+	gp := data_models.GoalNode{TreeID: tree.ID, Name: "GP", NodeType: "goal", SortOrder: 100}
+	db.Create(&gp)
+	parent := data_models.GoalNode{TreeID: tree.ID, Name: "Parent", NodeType: "milestone", ParentID: &gp.ID, SortOrder: 100}
+	db.Create(&parent)
+	leaf1 := data_models.GoalNode{TreeID: tree.ID, Name: "L1", NodeType: "step", ParentID: &parent.ID, SortOrder: 100}
+	db.Create(&leaf1)
+	leaf2 := data_models.GoalNode{TreeID: tree.ID, Name: "L2", NodeType: "step", ParentID: &parent.ID, SortOrder: 200}
+	db.Create(&leaf2)
+
+	// Complete both leaves — parent and GP auto-complete
+	for _, id := range []uint{leaf1.ID, leaf2.ID} {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, id), nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("complete %d: expected 200, got %d", id, w.Code)
+		}
+	}
+
+	// Verify GP is auto-completed
+	var gpCheck data_models.GoalNode
+	db.Where("id = ?", gp.ID).First(&gpCheck)
+	if gpCheck.CompletedAt == nil {
+		t.Fatal("GP should be auto-completed after all leaves done")
+	}
+
+	// Uncomplete leaf1 — should propagate up through parent and GP
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/uncomplete", tree.ID, leaf1.ID), nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("uncomplete leaf1: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var parentCheck data_models.GoalNode
+	db.Where("id = ?", parent.ID).First(&parentCheck)
+	if parentCheck.CompletedAt != nil {
+		t.Error("parent should be uncompleted after child uncompleted")
+	}
+
+	db.Where("id = ?", gp.ID).First(&gpCheck)
+	if gpCheck.CompletedAt != nil {
+		t.Error("GP should be uncompleted after descendant uncompleted")
+	}
+}
+
+func TestUncomplete_StopsAtManualComplete(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// Build: GP(manual_complete+completed) → Parent → Leaf
+	gp := data_models.GoalNode{TreeID: tree.ID, Name: "GP", NodeType: "goal", SortOrder: 100, ManualComplete: true}
+	db.Create(&gp)
+	db.Exec("UPDATE goal_nodes SET completed_at = datetime('now') WHERE id = ?", gp.ID)
+
+	parent := data_models.GoalNode{TreeID: tree.ID, Name: "Parent", NodeType: "milestone", ParentID: &gp.ID, SortOrder: 100}
+	db.Create(&parent)
+	leaf := data_models.GoalNode{TreeID: tree.ID, Name: "Leaf", NodeType: "step", ParentID: &parent.ID, SortOrder: 100}
+	db.Create(&leaf)
+
+	// Complete leaf and parent so they're all done
+	for _, id := range []uint{leaf.ID, parent.ID} {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, id), nil)
+		router.ServeHTTP(w, req)
+	}
+
+	// Uncomplete leaf — parent should uncomplete, but GP stays (manual_complete)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/uncomplete", tree.ID, leaf.ID), nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("uncomplete leaf: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var parentCheck data_models.GoalNode
+	db.Where("id = ?", parent.ID).First(&parentCheck)
+	if parentCheck.CompletedAt != nil {
+		t.Error("parent should be uncompleted")
+	}
+
+	var gpCheck data_models.GoalNode
+	db.Where("id = ?", gp.ID).First(&gpCheck)
+	if gpCheck.CompletedAt == nil {
+		t.Error("GP should stay completed (manual_complete=true blocks propagation)")
+	}
+}
+
+func TestAutoComplete_LeafNodeNoChildren(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	// A single root node with no children — completing it should just work
+	root := data_models.GoalNode{TreeID: tree.ID, Name: "Root", NodeType: "goal", SortOrder: 100}
+	db.Create(&root)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes/%d/complete", tree.ID, root.ID), nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp nodeResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.CompletedAt == nil {
+		t.Error("root should be completed")
+	}
+}
+
 func TestDeleteNode_MultipleChildren_EdgeSurvival(t *testing.T) {
 	db := setupTestDB(t)
 	tree := createTestTree(db, 1)
