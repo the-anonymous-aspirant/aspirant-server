@@ -20,23 +20,25 @@ type updateTreeRequest struct {
 }
 
 type treeResponse struct {
-	ID               uint       `json:"id"`
-	Name             string     `json:"name"`
-	RootNodeID       *uint      `json:"root_node_id"`
-	EditingSessionID *string    `json:"editing_session_id,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
+	ID                         uint       `json:"id"`
+	Name                       string     `json:"name"`
+	RootNodeID                 *uint      `json:"root_node_id"`
+	EditingSessionID           *string    `json:"editing_session_id,omitempty"`
+	EditingSessionLastActivity *time.Time `json:"editing_session_last_activity,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
+	DeletedAt                  *time.Time `json:"deleted_at,omitempty"`
 }
 
 func toTreeResponse(t *data_models.GoalTree) treeResponse {
 	return treeResponse{
-		ID:               t.ID,
-		Name:             t.Name,
-		RootNodeID:       t.RootNodeID,
-		EditingSessionID: t.EditingSessionID,
-		CreatedAt:        t.CreatedAt,
-		UpdatedAt:        t.UpdatedAt,
+		ID:                         t.ID,
+		Name:                       t.Name,
+		RootNodeID:                 t.RootNodeID,
+		EditingSessionID:           t.EditingSessionID,
+		EditingSessionLastActivity: t.EditingSessionLastActivity,
+		CreatedAt:                  t.CreatedAt,
+		UpdatedAt:                  t.UpdatedAt,
 	}
 }
 
@@ -154,6 +156,10 @@ func UpdateTreeHandler(c *gin.Context) {
 	if err := db.Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
 		First(&tree).Error; err != nil {
 		respondError(c, http.StatusNotFound, "not_found", "Tree not found")
+		return
+	}
+
+	if !ValidateEditingSession(c, db, &tree) {
 		return
 	}
 
