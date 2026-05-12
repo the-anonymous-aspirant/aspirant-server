@@ -145,6 +145,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.DELETE("/goals/trees/:tree_id/nodes/:id", handlers.DeleteNodeHandler)
 		trustedRoutes.POST("/goals/trees/:tree_id/nodes/:id/complete", handlers.CompleteNodeHandler)
 		trustedRoutes.POST("/goals/trees/:tree_id/nodes/:id/uncomplete", handlers.UncompleteNodeHandler)
+
+		// Goal Mapper — Comments
+		trustedRoutes.POST("/goals/nodes/:node_id/comments", handlers.CreateCommentHandler)
+		trustedRoutes.GET("/goals/nodes/:node_id/comments", handlers.ListCommentsHandler)
+		trustedRoutes.PATCH("/goals/comments/:id", handlers.UpdateCommentHandler)
+		trustedRoutes.DELETE("/goals/comments/:id", handlers.DeleteCommentHandler)
 	}
 
 	// Admin-specific routes
