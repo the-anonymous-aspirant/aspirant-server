@@ -129,6 +129,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/data_models/ludde_feeding_times/:id", handlers.GetFeedingTimeHandler)
 		trustedRoutes.POST("/data_models/ludde_feeding_times", handlers.AddFeedingTimeHandler)
 		trustedRoutes.DELETE("/data_models/ludde_feeding_times/:id", handlers.DeleteFeedingTimeHandler)
+
+		// Goal Mapper — Trees
+		trustedRoutes.POST("/goals/trees", handlers.CreateTreeHandler)
+		trustedRoutes.GET("/goals/trees", handlers.ListTreesHandler)
+		trustedRoutes.GET("/goals/trees/:id", handlers.GetTreeHandler)
+		trustedRoutes.PATCH("/goals/trees/:id", handlers.UpdateTreeHandler)
+		trustedRoutes.DELETE("/goals/trees/:id", handlers.DeleteTreeHandler)
 	}
 
 	// Admin-specific routes
