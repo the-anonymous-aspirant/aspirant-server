@@ -107,6 +107,12 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.EasterHuntEgg{})
 	db.AutoMigrate(&data_models.EasterHuntEggCell{})
 
+	// Step 4: Goal Mapper tables
+	db.AutoMigrate(&data_models.GoalTree{})
+	db.AutoMigrate(&data_models.GoalNode{})
+	db.AutoMigrate(&data_models.GoalEdge{})
+	db.AutoMigrate(&data_models.GoalComment{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
