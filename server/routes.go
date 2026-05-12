@@ -129,6 +129,22 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/data_models/ludde_feeding_times/:id", handlers.GetFeedingTimeHandler)
 		trustedRoutes.POST("/data_models/ludde_feeding_times", handlers.AddFeedingTimeHandler)
 		trustedRoutes.DELETE("/data_models/ludde_feeding_times/:id", handlers.DeleteFeedingTimeHandler)
+
+		// Goal Mapper — Trees
+		trustedRoutes.POST("/goals/trees", handlers.CreateTreeHandler)
+		trustedRoutes.GET("/goals/trees", handlers.ListTreesHandler)
+		trustedRoutes.GET("/goals/trees/:id", handlers.GetTreeHandler)
+		trustedRoutes.PATCH("/goals/trees/:id", handlers.UpdateTreeHandler)
+		trustedRoutes.DELETE("/goals/trees/:id", handlers.DeleteTreeHandler)
+
+		// Goal Mapper — Nodes
+		trustedRoutes.POST("/goals/trees/:tree_id/nodes", handlers.CreateNodeHandler)
+		trustedRoutes.GET("/goals/trees/:tree_id/nodes", handlers.ListNodesHandler)
+		trustedRoutes.GET("/goals/trees/:tree_id/nodes/:id", handlers.GetNodeHandler)
+		trustedRoutes.PATCH("/goals/trees/:tree_id/nodes/:id", handlers.UpdateNodeHandler)
+		trustedRoutes.DELETE("/goals/trees/:tree_id/nodes/:id", handlers.DeleteNodeHandler)
+		trustedRoutes.POST("/goals/trees/:tree_id/nodes/:id/complete", handlers.CompleteNodeHandler)
+		trustedRoutes.POST("/goals/trees/:tree_id/nodes/:id/uncomplete", handlers.UncompleteNodeHandler)
 	}
 
 	// Admin-specific routes
