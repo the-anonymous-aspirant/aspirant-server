@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"aspirant-online/server/data_models"
@@ -721,5 +722,71 @@ func TestDeleteNode_MultipleChildren_EdgeSurvival(t *testing.T) {
 	db.Where("from_id = ?", nodeA.ID).Find(&edges)
 	if len(edges) != 2 {
 		t.Errorf("expected 2 edges from A, got %d", len(edges))
+	}
+}
+
+func TestCreateNode_MissingName_FieldSpecificError(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	body := `{"type": "goal"}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &errResp)
+	if !strings.Contains(errResp.Error.Message, "'name' is required") {
+		t.Errorf("expected error to mention 'name', got: %s", errResp.Error.Message)
+	}
+}
+
+func TestCreateNode_MissingType_FieldSpecificError(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	body := `{"name": "Test"}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &errResp)
+	if !strings.Contains(errResp.Error.Message, "'type' is required") {
+		t.Errorf("expected error to mention 'type', got: %s", errResp.Error.Message)
+	}
+}
+
+func TestCreateNode_InvalidDateFormat_FieldSpecificError(t *testing.T) {
+	db := setupTestDB(t)
+	tree := createTestTree(db, 1)
+	router := setupNodeRouter(db, 1)
+
+	body := `{"name": "Test", "type": "goal", "planned_start": "not-a-date"}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &errResp)
+	if errResp.Error.Message == "Name and type are required" {
+		t.Errorf("should not return generic message for date parse error, got: %s", errResp.Error.Message)
 	}
 }
