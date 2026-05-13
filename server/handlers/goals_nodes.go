@@ -35,6 +35,7 @@ type nodeResponse struct {
 	Name           string     `json:"name"`
 	NodeType       string     `json:"node_type"`
 	Color          string     `json:"color"`
+	ResolvedColor  string     `json:"resolved_color"`
 	Body           string     `json:"body"`
 	SortOrder      int        `json:"sort_order"`
 	PlannedStart   *time.Time `json:"planned_start,omitempty"`
@@ -45,7 +46,29 @@ type nodeResponse struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-func toNodeResponse(n *data_models.GoalNode) nodeResponse {
+const defaultNodeColor = "#ffb300"
+
+// resolveColor walks up the parent chain to find the nearest ancestor with an
+// explicit color set. Returns defaultNodeColor if none found.
+func resolveColor(node *data_models.GoalNode, nodeIndex map[uint]*data_models.GoalNode) string {
+	if node.Color != "" {
+		return node.Color
+	}
+	current := node
+	for current.ParentID != nil {
+		parent, ok := nodeIndex[*current.ParentID]
+		if !ok {
+			break
+		}
+		if parent.Color != "" {
+			return parent.Color
+		}
+		current = parent
+	}
+	return defaultNodeColor
+}
+
+func toNodeResponse(n *data_models.GoalNode, nodeIndex map[uint]*data_models.GoalNode) nodeResponse {
 	return nodeResponse{
 		ID:             n.ID,
 		TreeID:         n.TreeID,
@@ -53,6 +76,7 @@ func toNodeResponse(n *data_models.GoalNode) nodeResponse {
 		Name:           n.Name,
 		NodeType:       n.NodeType,
 		Color:          n.Color,
+		ResolvedColor:  resolveColor(n, nodeIndex),
 		Body:           n.Body,
 		SortOrder:      n.SortOrder,
 		PlannedStart:   n.PlannedStart,
@@ -62,6 +86,22 @@ func toNodeResponse(n *data_models.GoalNode) nodeResponse {
 		CreatedAt:      n.CreatedAt,
 		UpdatedAt:      n.UpdatedAt,
 	}
+}
+
+// buildNodeIndex creates a lookup map from node ID to node pointer.
+func buildNodeIndex(nodes []data_models.GoalNode) map[uint]*data_models.GoalNode {
+	index := make(map[uint]*data_models.GoalNode, len(nodes))
+	for i := range nodes {
+		index[nodes[i].ID] = &nodes[i]
+	}
+	return index
+}
+
+// loadTreeNodeIndex loads all non-deleted nodes for a tree and returns the index.
+func loadTreeNodeIndex(db *gorm.DB, treeID uint) map[uint]*data_models.GoalNode {
+	var nodes []data_models.GoalNode
+	db.Where("tree_id = ? AND deleted_at IS NULL", treeID).Find(&nodes)
+	return buildNodeIndex(nodes)
 }
 
 // getTreeForUser loads a tree scoped to the authenticated user.
@@ -216,7 +256,9 @@ func CreateNodeHandler(c *gin.Context) {
 	}
 
 	tx.Commit()
-	c.JSON(http.StatusCreated, toNodeResponse(&node))
+
+	nodeIndex := loadTreeNodeIndex(db, tree.ID)
+	c.JSON(http.StatusCreated, toNodeResponse(&node, nodeIndex))
 }
 
 // ListNodesHandler returns all non-deleted nodes for a tree.
@@ -255,9 +297,10 @@ func ListNodesHandler(c *gin.Context) {
 		return
 	}
 
+	nodeIndex := buildNodeIndex(nodes)
 	resp := make([]nodeResponse, len(nodes))
 	for i := range nodes {
-		resp[i] = toNodeResponse(&nodes[i])
+		resp[i] = toNodeResponse(&nodes[i], nodeIndex)
 	}
 
 	c.JSON(http.StatusOK, resp)
@@ -290,7 +333,8 @@ func GetNodeHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, toNodeResponse(&node))
+	nodeIndex := loadTreeNodeIndex(db, tree.ID)
+	c.JSON(http.StatusOK, toNodeResponse(&node, nodeIndex))
 }
 
 // UpdateNodeHandler partially updates a node's fields.
@@ -349,7 +393,8 @@ func UpdateNodeHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, toNodeResponse(&node))
+	nodeIndex := loadTreeNodeIndex(db, tree.ID)
+	c.JSON(http.StatusOK, toNodeResponse(&node, nodeIndex))
 }
 
 // DeleteNodeHandler soft-deletes a node and reattaches its children to its parent.
@@ -617,7 +662,8 @@ func CompleteNodeHandler(c *gin.Context) {
 
 	rollupComplete(db, tree.ID, node.ParentID, now)
 
-	c.JSON(http.StatusOK, toNodeResponse(&node))
+	nodeIndex := loadTreeNodeIndex(db, tree.ID)
+	c.JSON(http.StatusOK, toNodeResponse(&node, nodeIndex))
 }
 
 // UncompleteNodeHandler clears the completed_at timestamp and propagates upward.
@@ -666,5 +712,6 @@ func UncompleteNodeHandler(c *gin.Context) {
 
 	rollupUncomplete(db, tree.ID, node.ParentID)
 
-	c.JSON(http.StatusOK, toNodeResponse(&node))
+	nodeIndex := loadTreeNodeIndex(db, tree.ID)
+	c.JSON(http.StatusOK, toNodeResponse(&node, nodeIndex))
 }
