@@ -44,7 +44,7 @@ func TestCreateNode_Success(t *testing.T) {
 	tree := createTestTree(db, 1)
 	router := setupNodeRouter(db, 1)
 
-	body := fmt.Sprintf(`{"name": "Root Goal", "node_type": "goal"}`)
+	body := fmt.Sprintf(`{"name": "Root Goal", "type": "goal"}`)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -85,7 +85,7 @@ func TestCreateNode_WithParent(t *testing.T) {
 	db.Create(&parent)
 
 	router := setupNodeRouter(db, 1)
-	body := fmt.Sprintf(`{"name": "Child", "node_type": "milestone", "parent_id": %d}`, parent.ID)
+	body := fmt.Sprintf(`{"name": "Child", "type": "milestone", "parent_id": %d}`, parent.ID)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -124,7 +124,7 @@ func TestCreateNode_MaxDepthExceeded(t *testing.T) {
 	}
 
 	router := setupNodeRouter(db, 1)
-	body := fmt.Sprintf(`{"name": "Too Deep", "node_type": "step", "parent_id": %d}`, lastID)
+	body := fmt.Sprintf(`{"name": "Too Deep", "type": "step", "parent_id": %d}`, lastID)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -148,7 +148,7 @@ func TestCreateNode_SortOrderAutoIncrement(t *testing.T) {
 
 	// Create three root siblings
 	for i := 0; i < 3; i++ {
-		body := fmt.Sprintf(`{"name": "Node %d", "node_type": "goal"}`, i)
+		body := fmt.Sprintf(`{"name": "Node %d", "type": "goal"}`, i)
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest("POST", fmt.Sprintf("/goals/trees/%d/nodes", tree.ID), bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
