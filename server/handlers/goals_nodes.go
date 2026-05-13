@@ -14,18 +14,22 @@ import (
 const maxNodeDepth = 5
 
 type createNodeRequest struct {
-	ParentID *uint  `json:"parent_id"`
-	Name     string `json:"name" binding:"required"`
-	NodeType string `json:"node_type" binding:"required"`
-	Color    string `json:"color"`
-	Body     string `json:"body"`
+	ParentID     *uint      `json:"parent_id"`
+	Name         string     `json:"name" binding:"required"`
+	NodeType     string     `json:"type" binding:"required"`
+	Color        string     `json:"color"`
+	Body         string     `json:"description"`
+	PlannedStart *time.Time `json:"planned_start"`
+	PlannedEnd   *time.Time `json:"planned_end"`
 }
 
 type updateNodeRequest struct {
-	Name     *string `json:"name"`
-	NodeType *string `json:"node_type"`
-	Color    *string `json:"color"`
-	Body     *string `json:"body"`
+	Name         *string    `json:"name"`
+	NodeType     *string    `json:"type"`
+	Color        *string    `json:"color"`
+	Body         *string    `json:"description"`
+	PlannedStart *time.Time `json:"planned_start"`
+	PlannedEnd   *time.Time `json:"planned_end"`
 }
 
 type nodeResponse struct {
@@ -33,10 +37,10 @@ type nodeResponse struct {
 	TreeID         uint       `json:"tree_id"`
 	ParentID       *uint      `json:"parent_id"`
 	Name           string     `json:"name"`
-	NodeType       string     `json:"node_type"`
+	NodeType       string     `json:"type"`
 	Color          string     `json:"color"`
 	ResolvedColor  string     `json:"resolved_color"`
-	Body           string     `json:"body"`
+	Body           string     `json:"description"`
 	SortOrder      int        `json:"sort_order"`
 	PlannedStart   *time.Time `json:"planned_start,omitempty"`
 	PlannedEnd     *time.Time `json:"planned_end,omitempty"`
@@ -186,7 +190,7 @@ func CreateNodeHandler(c *gin.Context) {
 
 	var req createNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "bad_request", "Name and node_type are required")
+		respondError(c, http.StatusBadRequest, "bad_request", "Name and type are required")
 		return
 	}
 
@@ -211,13 +215,15 @@ func CreateNodeHandler(c *gin.Context) {
 	sortOrder := maxSortOrder(db, tree.ID, req.ParentID) + 100
 
 	node := data_models.GoalNode{
-		TreeID:    tree.ID,
-		ParentID:  req.ParentID,
-		Name:      req.Name,
-		NodeType:  req.NodeType,
-		Color:     req.Color,
-		Body:      req.Body,
-		SortOrder: sortOrder,
+		TreeID:       tree.ID,
+		ParentID:     req.ParentID,
+		Name:         req.Name,
+		NodeType:     req.NodeType,
+		Color:        req.Color,
+		Body:         req.Body,
+		SortOrder:    sortOrder,
+		PlannedStart: req.PlannedStart,
+		PlannedEnd:   req.PlannedEnd,
 	}
 
 	tx := db.Begin()
@@ -263,9 +269,10 @@ func CreateNodeHandler(c *gin.Context) {
 
 // ListNodesHandler returns all non-deleted nodes for a tree.
 // Supports optional timeline filtering via query parameters:
-//   ?period=day|week|month|quarter|year|custom
-//   &value=<period-specific value>
-//   &mode=planned|achieved|combined (default: planned)
+//
+//	?period=day|week|month|quarter|year|custom
+//	&value=<period-specific value>
+//	&mode=planned|achieved|combined (default: planned)
 func ListNodesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
@@ -385,6 +392,12 @@ func UpdateNodeHandler(c *gin.Context) {
 	}
 	if req.Body != nil {
 		node.Body = *req.Body
+	}
+	if req.PlannedStart != nil {
+		node.PlannedStart = req.PlannedStart
+	}
+	if req.PlannedEnd != nil {
+		node.PlannedEnd = req.PlannedEnd
 	}
 
 	if err := db.Save(&node).Error; err != nil {

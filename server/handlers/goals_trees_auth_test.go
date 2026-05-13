@@ -38,7 +38,7 @@ func TestAuthBoundary_UserA_CannotMutate_UserB_Trees(t *testing.T) {
 	nodeRouterA := setupNodeRouter(db, userA)
 
 	t.Run("POST_create_node_on_other_users_tree_returns_404", func(t *testing.T) {
-		body := `{"name": "Injected Node", "node_type": "goal"}`
+		body := `{"name": "Injected Node", "type": "goal"}`
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest("POST",
 			fmt.Sprintf("/goals/trees/%d/nodes", treeB.ID),
