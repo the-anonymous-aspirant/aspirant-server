@@ -143,13 +143,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/goals/trees/:id/release", handlers.ReleaseTreeEditingHandler)
 
 		// Goal Mapper — Nodes
-		trustedRoutes.POST("/goals/trees/:tree_id/nodes", handlers.CreateNodeHandler)
-		trustedRoutes.GET("/goals/trees/:tree_id/nodes", handlers.ListNodesHandler)
-		trustedRoutes.GET("/goals/trees/:tree_id/nodes/:id", handlers.GetNodeHandler)
-		trustedRoutes.PATCH("/goals/trees/:tree_id/nodes/:id", handlers.UpdateNodeHandler)
-		trustedRoutes.DELETE("/goals/trees/:tree_id/nodes/:id", handlers.DeleteNodeHandler)
-		trustedRoutes.POST("/goals/trees/:tree_id/nodes/:id/complete", handlers.CompleteNodeHandler)
-		trustedRoutes.POST("/goals/trees/:tree_id/nodes/:id/uncomplete", handlers.UncompleteNodeHandler)
+		trustedRoutes.POST("/goals/trees/:id/nodes", handlers.CreateNodeHandler)
+		trustedRoutes.GET("/goals/trees/:id/nodes", handlers.ListNodesHandler)
+		trustedRoutes.GET("/goals/trees/:id/nodes/:node_id", handlers.GetNodeHandler)
+		trustedRoutes.PATCH("/goals/trees/:id/nodes/:node_id", handlers.UpdateNodeHandler)
+		trustedRoutes.DELETE("/goals/trees/:id/nodes/:node_id", handlers.DeleteNodeHandler)
+		trustedRoutes.POST("/goals/trees/:id/nodes/:node_id/complete", handlers.CompleteNodeHandler)
+		trustedRoutes.POST("/goals/trees/:id/nodes/:node_id/uncomplete", handlers.UncompleteNodeHandler)
 
 		// Goal Mapper — Comments
 		trustedRoutes.POST("/goals/nodes/:node_id/comments", handlers.CreateCommentHandler)
