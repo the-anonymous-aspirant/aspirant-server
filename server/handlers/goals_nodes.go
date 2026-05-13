@@ -1,17 +1,64 @@
 package handlers
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"aspirant-online/server/data_models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"github.com/jinzhu/gorm"
 )
 
 const maxNodeDepth = 5
+
+// formatBindingError inspects a ShouldBindJSON error and returns a
+// human-readable message indicating which field failed and why.
+func formatBindingError(err error) string {
+	var ve validator.ValidationErrors
+	if ok := errors.As(err, &ve); ok {
+		fields := make([]string, 0, len(ve))
+		for _, fe := range ve {
+			fields = append(fields, fmt.Sprintf("'%s' is required", jsonFieldName(fe.Field())))
+		}
+		return strings.Join(fields, ", ")
+	}
+
+	var ute *time.ParseError
+	if ok := errors.As(err, &ute); ok {
+		return fmt.Sprintf("Invalid date format for value %q (expected RFC3339, e.g. 2024-01-15T09:00:00Z)", ute.Value)
+	}
+
+	var jte *json.UnmarshalTypeError
+	if ok := errors.As(err, &jte); ok {
+		return fmt.Sprintf("Field '%s' has invalid type (expected %s)", jte.Field, jte.Type.String())
+	}
+
+	return err.Error()
+}
+
+// jsonFieldName maps Go struct field names to their JSON tag names.
+func jsonFieldName(goField string) string {
+	mapping := map[string]string{
+		"Name":         "name",
+		"NodeType":     "type",
+		"Color":        "color",
+		"Body":         "description",
+		"PlannedStart": "planned_start",
+		"PlannedEnd":   "planned_end",
+		"ParentID":     "parent_id",
+	}
+	if name, ok := mapping[goField]; ok {
+		return name
+	}
+	return strings.ToLower(goField)
+}
 
 type createNodeRequest struct {
 	ParentID     *uint      `json:"parent_id"`
@@ -190,7 +237,8 @@ func CreateNodeHandler(c *gin.Context) {
 
 	var req createNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "bad_request", "Name and type are required")
+		log.Printf("Binding error in CreateNode: %v", err)
+		respondError(c, http.StatusBadRequest, "bad_request", formatBindingError(err))
 		return
 	}
 
@@ -377,7 +425,8 @@ func UpdateNodeHandler(c *gin.Context) {
 
 	var req updateNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "bad_request", "Invalid request body")
+		log.Printf("Binding error in UpdateNode: %v", err)
+		respondError(c, http.StatusBadRequest, "bad_request", formatBindingError(err))
 		return
 	}
 
