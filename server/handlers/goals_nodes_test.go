@@ -23,13 +23,13 @@ func setupNodeRouter(db *gorm.DB, userID uint) *gin.Engine {
 		c.Set("user_id", userID)
 		c.Next()
 	})
-	r.POST("/goals/trees/:tree_id/nodes", CreateNodeHandler)
-	r.GET("/goals/trees/:tree_id/nodes", ListNodesHandler)
-	r.GET("/goals/trees/:tree_id/nodes/:id", GetNodeHandler)
-	r.PATCH("/goals/trees/:tree_id/nodes/:id", UpdateNodeHandler)
-	r.DELETE("/goals/trees/:tree_id/nodes/:id", DeleteNodeHandler)
-	r.POST("/goals/trees/:tree_id/nodes/:id/complete", CompleteNodeHandler)
-	r.POST("/goals/trees/:tree_id/nodes/:id/uncomplete", UncompleteNodeHandler)
+	r.POST("/goals/trees/:id/nodes", CreateNodeHandler)
+	r.GET("/goals/trees/:id/nodes", ListNodesHandler)
+	r.GET("/goals/trees/:id/nodes/:node_id", GetNodeHandler)
+	r.PATCH("/goals/trees/:id/nodes/:node_id", UpdateNodeHandler)
+	r.DELETE("/goals/trees/:id/nodes/:node_id", DeleteNodeHandler)
+	r.POST("/goals/trees/:id/nodes/:node_id/complete", CompleteNodeHandler)
+	r.POST("/goals/trees/:id/nodes/:node_id/uncomplete", UncompleteNodeHandler)
 	return r
 }
 
