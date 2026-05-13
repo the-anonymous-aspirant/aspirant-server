@@ -39,8 +39,8 @@ func setupSessionNodeRouter(db *gorm.DB, userID uint) *gin.Engine {
 		c.Set("user_id", userID)
 		c.Next()
 	})
-	r.POST("/goals/trees/:tree_id/nodes", CreateNodeHandler)
-	r.PATCH("/goals/trees/:tree_id/nodes/:id", UpdateNodeHandler)
+	r.POST("/goals/trees/:id/nodes", CreateNodeHandler)
+	r.PATCH("/goals/trees/:id/nodes/:node_id", UpdateNodeHandler)
 	return r
 }
 

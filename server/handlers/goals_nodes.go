@@ -107,7 +107,7 @@ func loadTreeNodeIndex(db *gorm.DB, treeID uint) map[uint]*data_models.GoalNode 
 // getTreeForUser loads a tree scoped to the authenticated user.
 // Returns nil and writes an HTTP error if not found.
 func getTreeForUser(c *gin.Context, db *gorm.DB, userID uint) *data_models.GoalTree {
-	treeID := c.Param("tree_id")
+	treeID := c.Param("id")
 	if treeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Tree ID is required")
 		return nil
@@ -320,7 +320,7 @@ func GetNodeHandler(c *gin.Context) {
 		return
 	}
 
-	nodeID := c.Param("id")
+	nodeID := c.Param("node_id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
 		return
@@ -355,7 +355,7 @@ func UpdateNodeHandler(c *gin.Context) {
 		return
 	}
 
-	nodeID := c.Param("id")
+	nodeID := c.Param("node_id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
 		return
@@ -416,7 +416,7 @@ func DeleteNodeHandler(c *gin.Context) {
 		return
 	}
 
-	nodeID := c.Param("id")
+	nodeID := c.Param("node_id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
 		return
@@ -627,7 +627,7 @@ func CompleteNodeHandler(c *gin.Context) {
 		return
 	}
 
-	nodeID := c.Param("id")
+	nodeID := c.Param("node_id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
 		return
@@ -684,7 +684,7 @@ func UncompleteNodeHandler(c *gin.Context) {
 		return
 	}
 
-	nodeID := c.Param("id")
+	nodeID := c.Param("node_id")
 	if nodeID == "" {
 		respondError(c, http.StatusBadRequest, "bad_request", "Node ID is required")
 		return
