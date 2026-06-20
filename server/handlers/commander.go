@@ -227,3 +227,64 @@ func DeleteCommanderNoteHandler(c *gin.Context) {
 func GetCommanderHealthHandler(c *gin.Context) {
 	commanderProxyGet(c, "/health")
 }
+
+// commanderProxyPassthrough forwards any method + body + headers to commander
+// and streams the response back, preserving Content-Type and Content-Disposition.
+// Used by the valuation-statement endpoints where the request is multipart or
+// the response is a binary file download.
+func commanderProxyPassthrough(c *gin.Context, method string, path string) {
+	url := fmt.Sprintf("%s%s", commanderURL(), path)
+
+	req, err := http.NewRequest(method, url, c.Request.Body)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+	if ct := c.GetHeader("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	req.ContentLength = c.Request.ContentLength
+
+	resp, err := commanderClient.Do(req)
+	if err != nil {
+		log.Printf("Failed to reach commander: %v", err)
+		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	// Preserve the Content-Disposition header so file downloads carry their
+	// suggested filename through to the browser.
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		c.Header("Content-Disposition", cd)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read commander response: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read commander response")
+		return
+	}
+
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+}
+
+// PostCommanderValuationExtractHandler proxies POST /valuation-statement/extract.
+// Multipart upload of one or more property-document PDFs.
+func PostCommanderValuationExtractHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "POST", "/valuation-statement/extract")
+}
+
+// PostCommanderValuationGenerateHandler proxies POST /valuation-statement/generate.
+// JSON body of reviewed values → docx file download.
+func PostCommanderValuationGenerateHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "POST", "/valuation-statement/generate")
+}
+
+// PutCommanderValuationOperatorDefaultsHandler proxies PUT
+// /valuation-statement/operator-defaults. Persists the appraiser-identity
+// fields the review step pre-fills.
+func PutCommanderValuationOperatorDefaultsHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "PUT", "/valuation-statement/operator-defaults")
+}
