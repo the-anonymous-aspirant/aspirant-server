@@ -232,8 +232,17 @@ func GetCommanderHealthHandler(c *gin.Context) {
 // and streams the response back, preserving Content-Type and Content-Disposition.
 // Used by the valuation-statement endpoints where the request is multipart or
 // the response is a binary file download.
+//
+// The original request's query string is appended verbatim — POST
+// /valuation-statement/generate?format=pdf must hit commander as
+// /valuation-statement/generate?format=pdf, otherwise commander defaults to
+// docx and the client receives a docx download when the operator asked for a
+// PDF. Locked by TestCommanderProxyPreservesQueryString.
 func commanderProxyPassthrough(c *gin.Context, method string, path string) {
 	url := fmt.Sprintf("%s%s", commanderURL(), path)
+	if raw := c.Request.URL.RawQuery; raw != "" {
+		url += "?" + raw
+	}
 
 	req, err := http.NewRequest(method, url, c.Request.Body)
 	if err != nil {
