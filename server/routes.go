@@ -125,6 +125,16 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/commander/valuation-statement/generate", handlers.PostCommanderValuationGenerateHandler)
 		trustedRoutes.PUT("/commander/valuation-statement/operator-defaults", handlers.PutCommanderValuationOperatorDefaultsHandler)
 
+		// Valuation Statement — processed-valuations store ('Tidigare värderingar' tab).
+		// export.csv is registered BEFORE the :id route so the literal path segment wins
+		// over the wildcard param matcher.
+		trustedRoutes.POST("/commander/valuation-statement/processed", handlers.PostCommanderValuationProcessedHandler)
+		trustedRoutes.GET("/commander/valuation-statement/processed", handlers.ListCommanderValuationProcessedHandler)
+		trustedRoutes.GET("/commander/valuation-statement/processed/export.csv", handlers.ExportCommanderValuationProcessedCsvHandler)
+		trustedRoutes.GET("/commander/valuation-statement/processed/:id", handlers.GetCommanderValuationProcessedHandler)
+		trustedRoutes.PATCH("/commander/valuation-statement/processed/:id", handlers.UpdateCommanderValuationProcessedHandler)
+		trustedRoutes.DELETE("/commander/valuation-statement/processed/:id", handlers.DeleteCommanderValuationProcessedHandler)
+
 		// Wikipedia (proxied to kiwix-serve)
 		trustedRoutes.Any("/wikipedia/*path", handlers.WikipediaProxyHandler)
 
