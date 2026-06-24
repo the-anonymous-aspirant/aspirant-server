@@ -56,6 +56,33 @@ func TestCommanderProxyPreservesQueryString(t *testing.T) {
 			body:        `{"ort":"Nynäshamn"}`,
 			contentType: "application/json",
 		},
+		{
+			name:        "POST /valuation-statement/processed (no query)",
+			method:      "POST",
+			handler:     PostCommanderValuationProcessedHandler,
+			path:        "/commander/valuation-statement/processed",
+			query:       "",
+			body:        `{"name":"sample","input_files":[]}`,
+			contentType: "application/json",
+		},
+		{
+			name:        "GET /valuation-statement/processed?limit=10&offset=5",
+			method:      "GET",
+			handler:     ListCommanderValuationProcessedHandler,
+			path:        "/commander/valuation-statement/processed",
+			query:       "limit=10&offset=5",
+			body:        "",
+			contentType: "application/json",
+		},
+		{
+			name:        "GET /valuation-statement/processed/export.csv",
+			method:      "GET",
+			handler:     ExportCommanderValuationProcessedCsvHandler,
+			path:        "/commander/valuation-statement/processed/export.csv",
+			query:       "",
+			body:        "",
+			contentType: "application/json",
+		},
 	}
 
 	for _, tc := range cases {
@@ -112,6 +139,79 @@ func TestCommanderProxyPreservesQueryString(t *testing.T) {
 			}
 			if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, ".pdf") {
 				t.Errorf("client sees Content-Disposition %q, want filename ending in .pdf", cd)
+			}
+		})
+	}
+}
+
+// Locks the /:id routes for the processed-valuations store: when the client
+// hits /api/commander/valuation-statement/processed/<uuid>, the upstream
+// commander call must carry the same id in the path. Regression guard for
+// the edit-in-place + delete + detail flows (system_3 #1154).
+func TestCommanderProcessedIDRoutesPreservePath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const sampleID = "8b1f4e3a-2c11-4d8d-9bb6-0a1234567890"
+
+	cases := []struct {
+		name    string
+		method  string
+		handler gin.HandlerFunc
+		body    string
+	}{
+		{
+			name:    "GET /valuation-statement/processed/:id",
+			method:  "GET",
+			handler: GetCommanderValuationProcessedHandler,
+			body:    "",
+		},
+		{
+			name:    "PATCH /valuation-statement/processed/:id",
+			method:  "PATCH",
+			handler: UpdateCommanderValuationProcessedHandler,
+			body:    `{"name":"renamed"}`,
+		},
+		{
+			name:    "DELETE /valuation-statement/processed/:id",
+			method:  "DELETE",
+			handler: DeleteCommanderValuationProcessedHandler,
+			body:    "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var receivedURL string
+			var receivedMethod string
+
+			fakeCommander := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedURL = r.URL.String()
+				receivedMethod = r.Method
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer fakeCommander.Close()
+			t.Setenv("COMMANDER_URL", fakeCommander.URL)
+
+			r := gin.New()
+			r.Handle(tc.method, "/commander/valuation-statement/processed/:id", tc.handler)
+
+			target := "/commander/valuation-statement/processed/" + sampleID
+			req, _ := http.NewRequest(tc.method, target, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if receivedMethod != tc.method {
+				t.Errorf("commander received method %q, want %q", receivedMethod, tc.method)
+			}
+			wantPath := "/valuation-statement/processed/" + sampleID
+			if receivedURL != wantPath {
+				t.Errorf("commander received URL %q, want %q", receivedURL, wantPath)
 			}
 		})
 	}
