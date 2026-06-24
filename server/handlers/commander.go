@@ -297,3 +297,45 @@ func PostCommanderValuationGenerateHandler(c *gin.Context) {
 func PutCommanderValuationOperatorDefaultsHandler(c *gin.Context) {
 	commanderProxyPassthrough(c, "PUT", "/valuation-statement/operator-defaults")
 }
+
+// ---------- processed-valuations store (system_3 #1154-B1) ----------
+//
+// Backs the 'Tidigare värderingar' tab in the Värdeutlåtande tool:
+// every persisted processing iteration is reached through these proxy
+// routes. Each handler is a thin pass-through to commander's
+// /valuation-statement/processed* endpoints — no business logic.
+
+// PostCommanderValuationProcessedHandler proxies POST /valuation-statement/processed.
+// Body is the extracted + final values + input file refs; commander persists the row.
+func PostCommanderValuationProcessedHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "POST", "/valuation-statement/processed")
+}
+
+// ListCommanderValuationProcessedHandler proxies GET /valuation-statement/processed.
+// Pagination (limit, offset) rides via the preserved query string.
+func ListCommanderValuationProcessedHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "GET", "/valuation-statement/processed")
+}
+
+// ExportCommanderValuationProcessedCsvHandler proxies GET
+// /valuation-statement/processed/export.csv. Registered before the :id route
+// so the literal 'export.csv' segment wins over the wildcard param matcher.
+func ExportCommanderValuationProcessedCsvHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "GET", "/valuation-statement/processed/export.csv")
+}
+
+// GetCommanderValuationProcessedHandler proxies GET /valuation-statement/processed/:id.
+func GetCommanderValuationProcessedHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "GET", fmt.Sprintf("/valuation-statement/processed/%s", c.Param("id")))
+}
+
+// UpdateCommanderValuationProcessedHandler proxies PATCH /valuation-statement/processed/:id.
+// Edit-in-place — mutates the existing row.
+func UpdateCommanderValuationProcessedHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "PATCH", fmt.Sprintf("/valuation-statement/processed/%s", c.Param("id")))
+}
+
+// DeleteCommanderValuationProcessedHandler proxies DELETE /valuation-statement/processed/:id.
+func DeleteCommanderValuationProcessedHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "DELETE", fmt.Sprintf("/valuation-statement/processed/%s", c.Param("id")))
+}
