@@ -297,3 +297,10 @@ func PostCommanderValuationGenerateHandler(c *gin.Context) {
 func PutCommanderValuationOperatorDefaultsHandler(c *gin.Context) {
 	commanderProxyPassthrough(c, "PUT", "/valuation-statement/operator-defaults")
 }
+
+// GetCommanderValuationAboutHandler proxies GET /valuation-statement/about.
+// Returns the classifier fingerprints + per-slot extraction strategies
+// rendered into the collapsible About section on the Värdeutlåtande page.
+func GetCommanderValuationAboutHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "GET", "/valuation-statement/about")
+}
