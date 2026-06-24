@@ -124,7 +124,6 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/commander/valuation-statement/extract", handlers.PostCommanderValuationExtractHandler)
 		trustedRoutes.POST("/commander/valuation-statement/generate", handlers.PostCommanderValuationGenerateHandler)
 		trustedRoutes.PUT("/commander/valuation-statement/operator-defaults", handlers.PutCommanderValuationOperatorDefaultsHandler)
-		trustedRoutes.GET("/commander/valuation-statement/about", handlers.GetCommanderValuationAboutHandler)
 
 		// Wikipedia (proxied to kiwix-serve)
 		trustedRoutes.Any("/wikipedia/*path", handlers.WikipediaProxyHandler)
