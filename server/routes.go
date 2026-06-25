@@ -263,6 +263,10 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.GET("/finance/accounts", handlers.ListFinanceAccountsHandler)
 		adminRoutes.POST("/finance/import-local", handlers.ImportLocalFinanceHandler)
 
+		// Browser flows (proxied to aspirant-browser JSON API)
+		adminRoutes.Any("/browser-flows", handlers.BrowserProxyHandler)
+		adminRoutes.Any("/browser-flows/*path", handlers.BrowserProxyHandler)
+
 		// Easter Egg Hunt admin
 		adminRoutes.POST("/games/easter-hunt/admin/reset", handlers.PostEasterHuntResetHandler)
 		adminRoutes.GET("/games/easter-hunt/admin/reveal", handlers.GetEasterHuntRevealHandler)
