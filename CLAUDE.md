@@ -84,6 +84,8 @@ The server listens on **port 8080**.
 | `messages` | Message board entries |
 | `game_scores` | Game scores with JSONB metadata and leaderboard support |
 | `ludde_feeding_times` | Pet feeding time tracker |
+| `pushup_entries` | Daily counts for the 60-day Pappas armhävningar challenge (date PK, count nullable). Trusted-gated via `/pushups/entries`. |
+| `pushup_milestones` | Seeded Swedish messages keyed by cumulative pushup count (e.g. 100, 500, 1000). Served via `/pushups/milestones`. |
 
 ## Conventions
 

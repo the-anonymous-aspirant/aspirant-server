@@ -171,6 +171,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/goals/nodes/:node_id/comments", handlers.ListCommentsHandler)
 		trustedRoutes.PATCH("/goals/comments/:id", handlers.UpdateCommentHandler)
 		trustedRoutes.DELETE("/goals/comments/:id", handlers.DeleteCommentHandler)
+
+		// Pappas armhävningar — 60-day pushup challenge
+		trustedRoutes.GET("/pushups/entries", handlers.GetPushupEntriesHandler)
+		trustedRoutes.PATCH("/pushups/entries/:date", handlers.PatchPushupEntryHandler)
+		trustedRoutes.GET("/pushups/milestones", handlers.GetPushupMilestonesHandler)
 	}
 
 	// Admin-specific routes
