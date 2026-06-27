@@ -25,6 +25,10 @@ const pushupEditWindowDays = 2
 // pushupDateLayout matches what the :date URL param and JSON payload use.
 const pushupDateLayout = "2006-01-02"
 
+// pushupNow returns the current UTC time. Tests swap this to drive the
+// edit-window rule deterministically.
+var pushupNow = func() time.Time { return time.Now().UTC() }
+
 // truncateToDay drops time-of-day to UTC midnight for consistent date PKs.
 func truncateToDay(t time.Time) time.Time {
 	y, m, d := t.UTC().Date()
@@ -113,7 +117,7 @@ func PatchPushupEntryHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusBadRequest, "Date outside challenge window (2026-07-01..2026-08-29)")
 		return
 	}
-	if !inPushupEditWindow(date, time.Now()) {
+	if !inPushupEditWindow(date, pushupNow()) {
 		RespondWithError(c, http.StatusForbidden, "Date outside edit window (current_date ± 2 days)")
 		return
 	}
