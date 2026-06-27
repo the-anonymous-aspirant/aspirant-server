@@ -113,6 +113,11 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.GoalEdge{})
 	db.AutoMigrate(&data_models.GoalComment{})
 
+	// Step 5: Pappas armhävningar challenge
+	db.AutoMigrate(&data_models.PushupEntry{})
+	db.AutoMigrate(&data_models.PushupMilestone{})
+	data_models.SeedPushupMilestones(db)
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
