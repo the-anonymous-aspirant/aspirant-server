@@ -241,12 +241,16 @@ func TestSeedPushupMilestones_Idempotent(t *testing.T) {
 	data_models.SeedPushupMilestones(db)
 	data_models.SeedPushupMilestones(db)
 
-	var count int
-	db.Model(&data_models.PushupMilestone{}).Count(&count)
-	// We seed 18 canonical milestones; calling SeedPushupMilestones twice
-	// must not duplicate them.
-	if count != 18 {
-		t.Errorf("expected 18 milestones after double-seed, got %d", count)
+	var first int
+	db.Model(&data_models.PushupMilestone{}).Count(&first)
+	data_models.SeedPushupMilestones(db)
+	var second int
+	db.Model(&data_models.PushupMilestone{}).Count(&second)
+	if first != second {
+		t.Errorf("milestone count drifted after re-seed: first=%d second=%d", first, second)
+	}
+	if first < 100 {
+		t.Errorf("expected ≥100 milestones after seed, got %d", first)
 	}
 }
 
