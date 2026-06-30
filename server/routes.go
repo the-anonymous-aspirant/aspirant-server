@@ -176,6 +176,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/pushups/entries", handlers.GetPushupEntriesHandler)
 		trustedRoutes.PATCH("/pushups/entries/:date", handlers.PatchPushupEntryHandler)
 		trustedRoutes.GET("/pushups/milestones", handlers.GetPushupMilestonesHandler)
+
+		// Jobs overview (proxied to aspirant-browser /api/jobs* — Trusted-role
+		// access to the deduplicated Berlin part-time English-job feed)
+		trustedRoutes.Any("/jobs", handlers.JobsProxyHandler)
+		trustedRoutes.Any("/jobs/*path", handlers.JobsProxyHandler)
 	}
 
 	// Admin-specific routes
