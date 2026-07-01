@@ -277,6 +277,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.Any("/browser-flows", handlers.BrowserProxyHandler)
 		adminRoutes.Any("/browser-flows/*path", handlers.BrowserProxyHandler)
 
+		// Internal subrequest target for nginx auth_request. Wraps the
+		// admin auth+role chain in a 200-vs-401/403 gate so nginx can
+		// protect upstreams (e.g. aspirant-browser matrix HTML) without
+		// each service re-implementing JWT parsing.
+		adminRoutes.GET("/internal/verify-admin", handlers.VerifyAdminHandler)
+
 		// Easter Egg Hunt admin
 		adminRoutes.POST("/games/easter-hunt/admin/reset", handlers.PostEasterHuntResetHandler)
 		adminRoutes.GET("/games/easter-hunt/admin/reveal", handlers.GetEasterHuntRevealHandler)

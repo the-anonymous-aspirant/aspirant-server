@@ -139,6 +139,16 @@ func DeleteAssetHandler(c *gin.Context) {
 	RespondWithSuccess(c, nil, "Asset deleted successfully")
 }
 
+// VerifyAdminHandler is a no-op endpoint whose sole purpose is to be
+// wrapped by AuthMiddleware + ValidateRole("Admin") so that nginx's
+// auth_request module can gate other upstream services on an Admin JWT.
+// A 200 means the caller holds a valid Admin token; the middleware
+// chain returns 401/403 otherwise, both of which nginx maps to a
+// /login redirect.
+func VerifyAdminHandler(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
 // ListAssetsHandler lists all assets in storage
 func ListAssetsHandler(c *gin.Context) {
 	store, exists := c.Get("storage")
