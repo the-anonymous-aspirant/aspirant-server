@@ -50,6 +50,14 @@ func LoginHandler(c *gin.Context) {
 
 	log.Printf("Successful login for user: %s with role: %s, token: %s", user.Username, user.Role.RoleName, token)
 
+	// Set the JWT as an HttpOnly Secure SameSite=Strict cookie in addition to
+	// returning it in the JSON body. Full-page browser navigations (e.g. to
+	// /browser-flows/) do not carry Authorization headers or localStorage, so
+	// the nginx auth_request gate needs the cookie to authenticate the request.
+	// HttpOnly also protects the token from XSS exfiltration.
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie("auth_token", token, 86400, "/", "", true, true)
+
 	c.Set("user_name", user.Username)
 	c.Set("user_id", user.ID)
 	c.Set("role", user.Role.RoleName)
