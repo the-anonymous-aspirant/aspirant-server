@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -166,4 +167,30 @@ func getDefaultAssetMappings() AssetMappingsConfig {
 		"game-flappyduo-sound": {Hash: "d2846c0c7beaae70942256c443315912", Type: "audio"},
 		"birthday-fanfare":     {Hash: "0ab465040e6198fae962940358d24f68", Type: "audio"},
 	}
+}
+
+// IsPubliclyPublishedETag reports whether the given MD5 ETag belongs
+// to an asset listed in the current publishing registry (either the
+// on-disk asset_mappings.json or the compiled-in defaults). Used by
+// FetchObjectHandler to refuse serving objects that were never
+// declared as public — e.g. files a Trusted user uploaded via
+// /upload that happen to share the LocalStorage backing tree with
+// the site's static assets. Fails closed on an unreadable registry:
+// an unreadable mappings file must not silently widen the public
+// surface (security-finding system_3 #1381).
+func IsPubliclyPublishedETag(etag string) bool {
+	etag = strings.Trim(etag, "\"")
+	if etag == "" {
+		return false
+	}
+	mappings, err := loadAssetMappings()
+	if err != nil {
+		return false
+	}
+	for _, m := range mappings {
+		if strings.Trim(m.Hash, "\"") == etag {
+			return true
+		}
+	}
+	return false
 }
