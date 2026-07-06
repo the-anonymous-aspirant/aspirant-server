@@ -64,9 +64,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		c.Next()
 	})
 
-	// Public routes - no authentication required
-	router.POST("/login", handlers.LoginHandler)
-	router.GET("/login/:username", handlers.LoginUserHandler)
+	// Public routes - no authentication required.
+	// POST /login sits behind LoginRateLimit to throttle credential-
+	// stuffing and per-IP brute force (security-finding #1380).
+	// GET /login/:username was removed by the same finding — it
+	// disclosed username+email+role for any username to unauth
+	// callers and had no client consumers.
+	router.POST("/login", middleware.LoginRateLimit(), handlers.LoginHandler)
 	router.GET("/health", handlers.HealthCheckHandler)
 	router.POST("/games/word_weaver", handlers.GetLongestWordsHandler)
 	router.GET("/fetch-object/:etag", handlers.FetchObjectHandler)

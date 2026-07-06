@@ -10,8 +10,7 @@ aspirant-server is a Go/Gin HTTP API gateway providing authentication, file mana
 
 | Method | Path | Handler | Description |
 |--------|------|---------|-------------|
-| POST | `/login` | LoginHandler | Authenticate user, return JWT |
-| GET | `/login:username` | LoginUserHandler | Check if username exists |
+| POST | `/login` | LoginHandler | Authenticate user, return JWT (rate-limited per IP and per username) |
 | GET | `/health` | HealthCheckHandler | Service health check |
 | POST | `/games/word_weaver` | GetLongestWordsHandler | Process Word Weaver board |
 | GET | `/fetch-object/:etag` | FetchObjectHandler | Fetch object by ETag |
@@ -22,8 +21,8 @@ aspirant-server is a Go/Gin HTTP API gateway providing authentication, file mana
 
 | Method | Path | Handler | Description |
 |--------|------|---------|-------------|
-| GET | `/data_models/users/:id` | GetUserHandler | Get user by ID |
-| GET | `/data_models/users` | GetAllUsersHandler | List all users |
+| GET | `/data_models/users/:id` | GetUserHandler | Get user by ID (Admin sees full profile; non-Admin may look up their own id only, receives PII-stripped `PublicUserResponse`) |
+| GET | `/data_models/users` | GetAllUsersHandler | List all users (Admin sees full `UserResponse`; non-Admin receives PII-stripped `PublicUserResponse` items) |
 | POST | `/games/scores` | SaveGameScoreHandler | Submit a game score |
 
 ### Trusted (Trusted or Admin role)

@@ -9,7 +9,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
+	"golang.org/x/crypto/bcrypt"
 )
+
+// dummyBcryptHash is a fixed bcrypt hash used to keep the failed-
+// login codepath's wall-clock time close to the successful path.
+// Without this, an unknown-username failure short-circuits before
+// bcrypt runs and leaks account existence via a timing oracle
+// (CWE-204 / CWE-208).
+//
+// Value is bcrypt("aspirant-timing-oracle-dummy", DefaultCost). Any
+// bytes work — nothing here is a secret; the hash's role is to make
+// bcrypt.CompareHashAndPassword do a cost=10 pass. Regenerated any
+// time bcrypt.DefaultCost changes.
+var dummyBcryptHash = []byte("$2a$10$aE8CuPL9uNk7api5ULC2eeI46UDnCZb7tqFnXsrwQaG0gEDhSjkOe")
 
 // LoginHandler handles user login
 func LoginHandler(c *gin.Context) {
@@ -27,9 +40,18 @@ func LoginHandler(c *gin.Context) {
 	}
 
 	var user data_models.User
+	userFound := true
 	if err := db.Preload("Role").Where("username= ?", input.UserName).First(&user).Error; err != nil {
-		// Use generic message for security - don't specify if username or password was incorrect
+		userFound = false
 		log.Printf("Failed login attempt for username: %s", input.UserName)
+	}
+
+	// Constant-time hardening: on an unknown username, run bcrypt
+	// against a dummy hash so the failure path takes as long as a
+	// real password check. Closes the CWE-204 timing oracle called
+	// out in security-finding #1380.
+	if !userFound {
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(input.Password))
 		RespondWithError(c, http.StatusUnauthorized, "Invalid login credentials")
 		return
 	}
@@ -48,7 +70,12 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Successful login for user: %s with role: %s, token: %s", user.Username, user.Role.RoleName, token)
+	// Successful login — release the per-username rate-limit bucket
+	// so a user who mistyped their password N-1 times before finally
+	// getting it right doesn't stay locked out.
+	middleware.ClearLoginBucketForUsername(user.Username)
+
+	log.Printf("Successful login for user: %s with role: %s", user.Username, user.Role.RoleName)
 
 	// Set the JWT as an HttpOnly Secure SameSite=Strict cookie in addition to
 	// returning it in the JSON body. Full-page browser navigations (e.g. to
