@@ -111,3 +111,41 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// ParseTokenIfPresent decodes the same Authorization/auth_token cookie
+// AuthMiddleware uses but never aborts the request — it returns
+// ok=false on any missing/invalid/expired token so a public-shaped
+// handler can grant an authenticated caller extra capability without
+// changing the endpoint's status-code contract for unauthenticated
+// callers. Used by /fetch-object so admins previewing uploaded
+// assets bypass the published-ETag whitelist (security-finding
+// system_3 #1381) without breaking the pre-JWT SPA shell.
+func ParseTokenIfPresent(c *gin.Context) (userID uint, role string, ok bool) {
+	tokenString := ""
+	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+		tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if cookie, err := c.Cookie("auth_token"); err == nil && cookie != "" {
+		tokenString = cookie
+	}
+	if tokenString == "" {
+		return 0, "", false
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return 0, "", false
+	}
+
+	claims, isMap := token.Claims.(jwt.MapClaims)
+	if !isMap {
+		return 0, "", false
+	}
+	r, hasRole := claims["role"].(string)
+	uidFloat, hasUID := claims["user_id"].(float64)
+	if !hasRole || !hasUID {
+		return 0, "", false
+	}
+	return uint(uidFloat), r, true
+}

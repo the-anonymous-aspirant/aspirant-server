@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"aspirant-online/server/data_functions"
+	"aspirant-online/server/middleware"
 	"aspirant-online/server/storage"
 
 	"github.com/gin-gonic/gin"
@@ -45,11 +46,31 @@ func HealthCheckHandler(c *gin.Context) {
 	})
 }
 
-// FetchObjectHandler serves an asset by its ETag (MD5 hash)
+// FetchObjectHandler serves an asset by its ETag (MD5 hash). The
+// endpoint is UNAUTHENTICATED because the SPA shell references
+// favicon/PWA-manifest/game-asset ETags before any JWT exists —
+// so the defence against arbitrary-object disclosure
+// (security-finding system_3 #1381, CWE-306/-285) is a hardcoded
+// whitelist: unauthenticated callers can only retrieve ETags that
+// appear in the asset_mappings publishing registry. Trusted-user
+// uploads via /upload land in LocalStorage but stay unreachable
+// through this handler even if their MD5 leaks. An authenticated
+// caller with role Trusted or Admin bypasses the whitelist so the
+// admin Assets.vue viewer can still preview newly uploaded files —
+// role check keeps the bypass in line with the /assets Admin routes
+// that already own the asset lifecycle.
 func FetchObjectHandler(c *gin.Context) {
 	etag := c.Param("etag")
 	if etag == "" {
 		RespondWithError(c, http.StatusBadRequest, "ETag parameter is required")
+		return
+	}
+
+	if !callerCanBypassPublicETagGate(c) && !IsPubliclyPublishedETag(etag) {
+		// Return 404 (not 401/403) so an unauthenticated probe cannot
+		// distinguish "not in registry" from "not in storage" — never
+		// leak the existence of a private object.
+		RespondWithError(c, http.StatusNotFound, "Asset not found")
 		return
 	}
 
@@ -74,6 +95,19 @@ func FetchObjectHandler(c *gin.Context) {
 
 	log.Printf("Serving asset: %s (%s, %d bytes)", info.Key, info.ContentType, len(data))
 	c.Data(http.StatusOK, info.ContentType, data)
+}
+
+// callerCanBypassPublicETagGate returns true when the caller presents
+// a valid JWT with a role that legitimately owns the asset lifecycle
+// (Trusted or Admin). Falls back to false for unauthenticated,
+// expired, or role-less tokens — no leak of tokens' internals to the
+// public code path.
+func callerCanBypassPublicETagGate(c *gin.Context) bool {
+	_, role, ok := middleware.ParseTokenIfPresent(c)
+	if !ok {
+		return false
+	}
+	return role == "Trusted" || role == "Admin"
 }
 
 // UploadImageHandler uploads a file to the asset storage
