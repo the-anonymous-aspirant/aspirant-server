@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
@@ -19,34 +20,56 @@ type userInput struct {
 	Comment    string `json:"comment"`
 }
 
-// LoginUserHandler handles retrieving a user by username
-func LoginUserHandler(c *gin.Context) {
-	db := c.MustGet("db").(*gorm.DB)
-	username := c.Param("username")
-	if username == "" {
-		RespondWithError(c, http.StatusBadRequest, "Username parameter is required")
-		return
+// callerIsAdmin returns true when the request carries an Admin role
+// in its JWT context (populated by AuthMiddleware). Any other value
+// — including a missing key — counts as non-Admin.
+func callerIsAdmin(c *gin.Context) bool {
+	role, exists := c.Get("role")
+	if !exists {
+		return false
 	}
-
-	var user data_models.User
-	if err := db.Preload("Role").Where("username= ?", username).First(&user).Error; err != nil {
-		log.Printf("User not found: %s", username)
-		RespondWithError(c, http.StatusNotFound, "User not found")
-		return
-	}
-
-	RespondWithSuccess(c, user.ToResponse(), "User retrieved successfully")
+	roleStr, ok := role.(string)
+	return ok && roleStr == "Admin"
 }
 
-// GetUserHandler handles retrieving a user by ID
+// callerOwnsUserID returns true when the JWT caller's user_id matches
+// the requested :id path parameter. Used to allow a caller to look
+// up their own profile without granting Admin.
+func callerOwnsUserID(c *gin.Context, targetID string) bool {
+	raw, exists := c.Get("user_id")
+	if !exists {
+		return false
+	}
+	callerID, ok := raw.(uint)
+	if !ok {
+		return false
+	}
+	return fmt.Sprintf("%d", callerID) == targetID
+}
+
+// GetUserHandler handles retrieving a user by ID. Admin sees the
+// full UserResponse (with email/comment); a non-Admin caller may
+// look up their own id and gets the PII-stripped PublicUserResponse
+// — cross-id lookups by non-Admin return 403 to close the CWE-639
+// PII-harvest surface called out in #1380.
 func GetUserHandler(c *gin.Context) {
-	db := c.MustGet("db").(*gorm.DB)
 	id := c.Param("id")
 	if id == "" {
 		RespondWithError(c, http.StatusBadRequest, "User ID is required")
 		return
 	}
 
+	// Auth gate runs BEFORE the DB fetch — cheaper 403 and safer
+	// against a misconfigured route (a missing db in context would
+	// otherwise panic before the guard trips).
+	isAdmin := callerIsAdmin(c)
+	if !isAdmin && !callerOwnsUserID(c, id) {
+		log.Printf("Non-Admin cross-id lookup denied on /data_models/users/%s", id)
+		RespondWithError(c, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	db := c.MustGet("db").(*gorm.DB)
 	user, err := data_models.GetUserById(db, id)
 	if err != nil {
 		log.Printf("User not found with ID %s: %v", id, err)
@@ -54,10 +77,18 @@ func GetUserHandler(c *gin.Context) {
 		return
 	}
 
-	RespondWithSuccess(c, user.ToResponse(), "User retrieved successfully")
+	if isAdmin {
+		RespondWithSuccess(c, user.ToResponse(), "User retrieved successfully")
+	} else {
+		RespondWithSuccess(c, user.ToPublicResponse(), "User retrieved successfully")
+	}
 }
 
-// GetAllUsersHandler handles retrieving all users with pagination
+// GetAllUsersHandler handles retrieving all users with pagination.
+// Admin callers see the full UserResponse in Items; non-Admin
+// authenticated callers see PublicUserResponse — the message board's
+// mapping of author_id → username still works while email and
+// comment stay behind an Admin gate (#1380).
 func GetAllUsersHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
@@ -78,13 +109,26 @@ func GetAllUsersHandler(c *gin.Context) {
 		return
 	}
 
-	responses := make([]data_models.UserResponse, len(users))
-	for i := range users {
-		responses[i] = users[i].ToResponse()
+	if callerIsAdmin(c) {
+		responses := make([]data_models.UserResponse, len(users))
+		for i := range users {
+			responses[i] = users[i].ToResponse()
+		}
+		c.JSON(http.StatusOK, PaginatedResponse{
+			Items:    responses,
+			Total:    total,
+			Page:     page,
+			PageSize: pageSize,
+		})
+		return
 	}
 
+	public := make([]data_models.PublicUserResponse, len(users))
+	for i := range users {
+		public[i] = users[i].ToPublicResponse()
+	}
 	c.JSON(http.StatusOK, PaginatedResponse{
-		Items:    responses,
+		Items:    public,
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
