@@ -1,32 +1,71 @@
 package middleware
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte(getJWTSecret())
+const (
+	jwtSecretEnv    = "JWT_SECRET"
+	jwtMinSecretLen = 32
+)
 
-func getJWTSecret() string {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		log.Println("WARNING: JWT_SECRET not set, using insecure default")
-		return "aspirant_secret_CHANGE_ME"
+// jwtPlaceholders enumerates values that must never reach production. If
+// any of these ends up in the environment LoadJWTSecret refuses to install
+// it — see system_3 #1374.
+var jwtPlaceholders = map[string]struct{}{
+	"change-me":                 {},
+	"aspirant_secret":           {},
+	"aspirant_secret_CHANGE_ME": {},
+}
+
+var (
+	jwtSecret []byte
+
+	// jwtParser pins HS256 at the parser layer so alg:none and
+	// alg-confusion attacks are rejected before the keyfunc runs. The
+	// keyfunc adds a second defence-in-depth SigningMethodHMAC assertion.
+	jwtParser = jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuedAt(),
+	)
+)
+
+// LoadJWTSecret reads JWT_SECRET from the environment and installs it
+// into the package-level jwtSecret. It refuses empty values, any known
+// placeholder, and values shorter than jwtMinSecretLen bytes. Callers
+// (main.go, TestMain) must invoke this before AuthMiddleware or
+// GenerateToken are used.
+func LoadJWTSecret() error {
+	raw := os.Getenv(jwtSecretEnv)
+	if raw == "" {
+		return errors.New("JWT_SECRET must be set (generate with: openssl rand -base64 32)")
 	}
-	return secret
+	if _, isPlaceholder := jwtPlaceholders[raw]; isPlaceholder {
+		return fmt.Errorf("JWT_SECRET is a known placeholder (%q); rotate before boot (openssl rand -base64 32)", raw)
+	}
+	if len(raw) < jwtMinSecretLen {
+		return fmt.Errorf("JWT_SECRET is too short (%d bytes; minimum %d)", len(raw), jwtMinSecretLen)
+	}
+	jwtSecret = []byte(raw)
+	return nil
 }
 
 func GenerateToken(userID uint, role string) (string, error) {
+	now := time.Now()
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"role":    role,
-		"exp":     time.Now().Add(24 * time.Hour).Unix(), // Token expires in 24 hours
+		"iat":     now.Unix(),
+		"exp":     now.Add(24 * time.Hour).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -34,10 +73,31 @@ func GenerateToken(userID uint, role string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	log.Printf("Generated token: %s", tokenString)
 	return tokenString, nil
+}
 
+// parseAndValidate runs a token string through jwtParser and returns
+// the claims map on success. Rejects any non-HMAC method and any token
+// whose Valid flag is false (jwt/v5 covers exp/nbf/iat validation via
+// the parser options).
+func parseAndValidate(tokenString string) (jwt.MapClaims, error) {
+	token, err := jwtParser.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jwtSecret, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !token.Valid {
+		return nil, errors.New("token invalid")
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, errors.New("invalid claims shape")
+	}
+	return claims, nil
 }
 
 // AuthMiddleware is a middleware function for the Gin framework that handles
@@ -66,24 +126,10 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		log.Printf("Token string received: %s", tokenString)
-
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return jwtSecret, nil
-		})
-
-		if err != nil || !token.Valid {
+		claims, err := parseAndValidate(tokenString)
+		if err != nil {
 			log.Printf("Invalid token: %v", err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-			c.Abort()
-			return
-		}
-
-		// Claims are key-value pairs that are encoded in the JWT token
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			log.Println("Invalid token claims")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
 			c.Abort()
 			return
 		}
@@ -131,15 +177,8 @@ func ParseTokenIfPresent(c *gin.Context) (userID uint, role string, ok bool) {
 		return 0, "", false
 	}
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
-	})
-	if err != nil || !token.Valid {
-		return 0, "", false
-	}
-
-	claims, isMap := token.Claims.(jwt.MapClaims)
-	if !isMap {
+	claims, err := parseAndValidate(tokenString)
+	if err != nil {
 		return 0, "", false
 	}
 	r, hasRole := claims["role"].(string)
