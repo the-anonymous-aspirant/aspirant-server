@@ -2,6 +2,7 @@ package main
 
 import (
 	"aspirant-online/server"
+	"aspirant-online/server/middleware"
 	"aspirant-online/server/storage"
 	"log"
 	"os"
@@ -18,6 +19,13 @@ func main() {
 	err := godotenv.Load(".env")
 	if err != nil {
 		log.Println("Warning: .env file not found, using environment variables")
+	}
+
+	// Refuse to serve traffic on empty / placeholder / short JWT_SECRET.
+	// system_3 #1374 — the previous insecure fallback let a forged admin
+	// token pass AuthMiddleware.
+	if err := middleware.LoadJWTSecret(); err != nil {
+		log.Fatalf("SECURITY: %v", err)
 	}
 
 	// Print environment variables for debugging (be careful with sensitive data in production)
