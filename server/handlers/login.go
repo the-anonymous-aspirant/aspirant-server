@@ -96,3 +96,40 @@ func LoginHandler(c *gin.Context) {
 		"role":     user.Role.RoleName,
 	}, "Login successful")
 }
+
+// LogoutHandler expires the auth_token cookie issued by LoginHandler.
+//
+// This has to happen server-side: auth_token is HttpOnly, and a
+// document.cookie write from the SPA cannot overwrite or delete an
+// HttpOnly cookie of the same name. The client's attempt to do so was a
+// silent no-op — JavaScript cannot even read the cookie, so it had no way
+// to notice the failure — which left a valid Admin credential in the
+// browser for the full 24h token lifetime after the user clicked logout,
+// while the UI reported a logged-out state (system_3 #2589).
+//
+// The cookie is the credential both enforcement points accept: the
+// /api/ auth middleware falls back to it when no Authorization header is
+// present (middleware/auth.go), and the nginx auth_request gate on
+// /browser-flows, /admin/penpot/ and /admin/histoire/ authenticates on it
+// alone. Not clearing it therefore leaves every admin surface reachable.
+//
+// The expiry MUST repeat the attributes the cookie was set with — same
+// path, domain, Secure and SameSite. A Set-Cookie whose attributes do not
+// match the original does not identify the same cookie, so the clear
+// silently fails to remove it: the same class of bug one layer down.
+//
+// Deliberately unauthenticated. Logging out has to work when the token is
+// already expired, malformed, or absent; requiring a valid token to log
+// out would strand exactly the sessions most in need of clearing. The
+// route reveals nothing and is idempotent.
+//
+// Scope: this ends the browser session. It does not revoke the JWT, which
+// stays valid until its own exp (24h) — a token already exfiltrated is
+// unaffected. Revocation needs a denylist or short-lived tokens plus
+// refresh; see system_3 #2589.
+func LogoutHandler(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie("auth_token", "", -1, "/", "", true, true)
+
+	RespondWithSuccess(c, gin.H{}, "Logout successful")
+}

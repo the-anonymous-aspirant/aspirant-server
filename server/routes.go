@@ -71,6 +71,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// disclosed username+email+role for any username to unauth
 	// callers and had no client consumers.
 	router.POST("/login", middleware.LoginRateLimit(), handlers.LoginHandler)
+	// POST /logout is public by design: it must clear the session cookie
+	// even when the token is already expired or malformed. Clearing the
+	// HttpOnly auth_token cannot be done from the SPA (security-finding
+	// #2589), so this route is the only way a session actually ends.
+	router.POST("/logout", handlers.LogoutHandler)
 	router.GET("/health", handlers.HealthCheckHandler)
 	router.POST("/games/word_weaver", handlers.GetLongestWordsHandler)
 	router.GET("/fetch-object/:etag", handlers.FetchObjectHandler)
