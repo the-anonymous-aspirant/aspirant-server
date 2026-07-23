@@ -43,18 +43,19 @@ func main() {
 	}
 	log.Printf("Gin mode set to %s, adjust the compose file to enable more logging", gin.Mode())
 
-	// Initialize the database connection (non-fatal: server can start without DB)
+	// Initialize the database connection. Fail fast: a nil DB reaches every
+	// handler as a non-nil interface wrapping a typed-nil *gorm.DB, so the
+	// db != nil guards pass and the first DB call panics. Exiting non-zero
+	// lets Docker's restart-policy retry until postgres is reachable, rather
+	// than serving traffic that panics on every DB-touching request.
 	db, err := server.SetupDBConnection()
 	if err != nil {
-		log.Printf("WARNING: Database connection failed: %v", err)
-		log.Println("WARNING: Server starting without database — DB-dependent routes will not work")
-		log.Println("WARNING: Assets, health checks, and static content will still be served")
-	} else {
-		defer db.Close()
-		// Set up the database tables (migrations)
-		server.AutoMigrate(db)
-		log.Println("Database connected and migrated successfully")
+		log.Fatalf("FATAL: database connection failed, exiting so the container restarts: %v", err)
 	}
+	defer db.Close()
+	// Set up the database tables (migrations)
+	server.AutoMigrate(db)
+	log.Println("Database connected and migrated successfully")
 
 	// Initialize local asset storage
 	assetPath := os.Getenv("ASSET_BASE_PATH")
@@ -75,7 +76,7 @@ func main() {
 	// Set up middleware
 	server.SetupMiddleware(r)
 
-	// Add the database connection we setup into the context of gin (may be nil if DB unavailable)
+	// Add the database connection we setup into the context of gin (always non-nil: we fail fast above)
 	r.Use(func(c *gin.Context) {
 		c.Set("db", db)
 		c.Next()
