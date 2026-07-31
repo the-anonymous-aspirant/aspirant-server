@@ -1,15 +1,19 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"aspirant-online/server/data_models"
+
 	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
-// --- callerIsAdmin / callerOwnsUserID helper tests ---
+// --- callerIsAdmin helper tests ---
 
 func TestCallerIsAdmin_TrueWhenRoleAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -39,68 +43,172 @@ func TestCallerIsAdmin_FalseWhenRoleAbsent(t *testing.T) {
 	}
 }
 
-func TestCallerOwnsUserID_TrueForSelfLookup(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Set("user_id", uint(42))
-	if !callerOwnsUserID(c, "42") {
-		t.Fatalf("expected true for matching id")
+// setupUserTestDB seeds an in-memory sqlite with an Admin and a User
+// role plus two users (alice = Admin, bob = User) and returns the db.
+func setupUserTestDB(t *testing.T) (*gorm.DB, uint, uint) {
+	t.Helper()
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
 	}
+	db.AutoMigrate(&data_models.Role{}, &data_models.User{})
+
+	adminRole := data_models.Role{RoleName: "Admin", RoleDescription: "Administrator"}
+	userRole := data_models.Role{RoleName: "User", RoleDescription: "Standard"}
+	if err := db.Create(&adminRole).Error; err != nil {
+		t.Fatalf("failed to seed admin role: %v", err)
+	}
+	if err := db.Create(&userRole).Error; err != nil {
+		t.Fatalf("failed to seed user role: %v", err)
+	}
+
+	alice := data_models.User{Username: "alice", Email: "alice@example.com", RoleID: adminRole.ID, Comment: "admin note"}
+	bob := data_models.User{Username: "bob", Email: "bob@example.com", RoleID: userRole.ID, Comment: "user note"}
+	if err := db.Create(&alice).Error; err != nil {
+		t.Fatalf("failed to seed alice: %v", err)
+	}
+	if err := db.Create(&bob).Error; err != nil {
+		t.Fatalf("failed to seed bob: %v", err)
+	}
+	return db, alice.ID, bob.ID
 }
 
-func TestCallerOwnsUserID_FalseForOtherID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Set("user_id", uint(42))
-	if callerOwnsUserID(c, "43") {
-		t.Fatalf("expected false for mismatched id")
-	}
-}
-
-// --- GetUserHandler auth-gate short-circuit ---
-
-// TestGetUserHandler_NonAdminCrossIDForbidden verifies the auth gate
-// added by #1380 blocks a non-Admin caller from harvesting arbitrary
-// users' emails. The DB call is never reached — the guard trips
-// before it, so this test needs no DB fixture.
-func TestGetUserHandler_NonAdminCrossIDForbidden(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+// routerAs builds a single-route engine whose middleware injects the db
+// plus a JWT-style role/user_id context, so a handler runs as that caller.
+func routerAs(db *gorm.DB, role string, userID uint, method, path string, h gin.HandlerFunc) *gin.Engine {
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
-		// Simulate a Trusted-role JWT looking up somebody else's id.
-		c.Set("role", "Trusted")
-		c.Set("user_id", uint(1))
+		c.Set("db", db)
+		c.Set("role", role)
+		c.Set("user_id", userID)
 		c.Next()
 	})
-	r.GET("/data_models/users/:id", GetUserHandler)
+	r.Handle(method, path, h)
+	return r
+}
 
-	req := httptest.NewRequest(http.MethodGet, "/data_models/users/2", nil)
+// --- GetUserHandler item-route DTO behaviour (#3093) ---
+
+// TestGetUserHandler_NonAdminCrossIDReturnsPublic locks the #3093
+// consistency fix: a non-Admin looking up another user's id no longer
+// gets a 403 (protection that wasn't there — the collection listed the
+// same fields), it gets the PII-stripped PublicUserResponse. The #1380
+// boundary still holds: no email/comment, and #3093 adds no access_role.
+func TestGetUserHandler_NonAdminCrossIDReturnsPublic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, aliceID, bobID := setupUserTestDB(t)
+	defer db.Close()
+
+	// bob (non-Admin) looks up alice (a different, Admin, id).
+	r := routerAs(db, "User", bobID, http.MethodGet, "/data_models/users/:id", GetUserHandler)
+	req := httptest.NewRequest(http.MethodGet, "/data_models/users/"+itoa(aliceID), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403, got %d — body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — body=%s", w.Code, w.Body.String())
 	}
-	var body ErrorResponse
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	if body.Error.Code != "forbidden" {
-		t.Fatalf("expected error.code=forbidden in response body, got %q", w.Body.String())
+	body := w.Body.String()
+	if !strings.Contains(body, "alice") {
+		t.Errorf("expected username in public response, got %s", body)
+	}
+	if strings.Contains(body, "access_role") {
+		t.Errorf("#3093: access_role must not leak to a non-Admin, got %s", body)
+	}
+	if strings.Contains(body, "alice@example.com") || strings.Contains(body, "\"email\"") {
+		t.Errorf("#1380: email must not leak to a non-Admin, got %s", body)
 	}
 }
 
-// TestGetUserHandler_MissingRoleForbidden covers the pathological
-// case where AuthMiddleware runs but doesn't set "role" (shouldn't
-// happen but the guard defaults to forbid).
-func TestGetUserHandler_MissingRoleForbidden(t *testing.T) {
+// TestGetUserHandler_AdminGetsFull confirms the Admin path is untouched:
+// email, comment, and access_role are all present for an Admin caller.
+func TestGetUserHandler_AdminGetsFull(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.GET("/data_models/users/:id", GetUserHandler)
+	db, aliceID, bobID := setupUserTestDB(t)
+	defer db.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/data_models/users/1", nil)
+	r := routerAs(db, "Admin", aliceID, http.MethodGet, "/data_models/users/:id", GetUserHandler)
+	req := httptest.NewRequest(http.MethodGet, "/data_models/users/"+itoa(bobID), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("want 403 when auth context missing, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — body=%s", w.Code, w.Body.String())
 	}
+	body := w.Body.String()
+	for _, want := range []string{"bob", "bob@example.com", "access_role"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Admin response missing %q, got %s", want, body)
+		}
+	}
+}
+
+// --- GetAllUsersHandler collection-route DTO behaviour (#3093) ---
+
+// TestGetAllUsersHandler_NonAdminOmitsAccessRole is the core #3093
+// regression lock: the collection route must not disclose access_role
+// (nor email/comment) to a non-Admin authenticated caller, so the Admin
+// account is not enumerable in bulk.
+func TestGetAllUsersHandler_NonAdminOmitsAccessRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, _, bobID := setupUserTestDB(t)
+	defer db.Close()
+
+	r := routerAs(db, "User", bobID, http.MethodGet, "/data_models/users", GetAllUsersHandler)
+	req := httptest.NewRequest(http.MethodGet, "/data_models/users", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "alice") || !strings.Contains(body, "bob") {
+		t.Errorf("expected both usernames in listing, got %s", body)
+	}
+	if strings.Contains(body, "access_role") {
+		t.Errorf("#3093: access_role must not appear in the non-Admin listing, got %s", body)
+	}
+	if strings.Contains(body, "@example.com") {
+		t.Errorf("#1380: emails must not appear in the non-Admin listing, got %s", body)
+	}
+}
+
+// TestGetAllUsersHandler_AdminSeesAccessRole confirms the Admin listing
+// still carries the full fields.
+func TestGetAllUsersHandler_AdminSeesAccessRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, aliceID, _ := setupUserTestDB(t)
+	defer db.Close()
+
+	r := routerAs(db, "Admin", aliceID, http.MethodGet, "/data_models/users", GetAllUsersHandler)
+	req := httptest.NewRequest(http.MethodGet, "/data_models/users", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{"access_role", "@example.com"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Admin listing missing %q, got %s", want, body)
+		}
+	}
+}
+
+// itoa is a tiny uint→string helper kept local to the test file so the
+// handler tests need not import strconv at call sites.
+func itoa(u uint) string {
+	if u == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for u > 0 {
+		i--
+		buf[i] = byte('0' + u%10)
+		u /= 10
+	}
+	return string(buf[i:])
 }

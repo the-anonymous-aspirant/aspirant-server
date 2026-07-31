@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 
@@ -32,40 +31,21 @@ func callerIsAdmin(c *gin.Context) bool {
 	return ok && roleStr == "Admin"
 }
 
-// callerOwnsUserID returns true when the JWT caller's user_id matches
-// the requested :id path parameter. Used to allow a caller to look
-// up their own profile without granting Admin.
-func callerOwnsUserID(c *gin.Context, targetID string) bool {
-	raw, exists := c.Get("user_id")
-	if !exists {
-		return false
-	}
-	callerID, ok := raw.(uint)
-	if !ok {
-		return false
-	}
-	return fmt.Sprintf("%d", callerID) == targetID
-}
-
 // GetUserHandler handles retrieving a user by ID. Admin sees the
-// full UserResponse (with email/comment); a non-Admin caller may
-// look up their own id and gets the PII-stripped PublicUserResponse
-// — cross-id lookups by non-Admin return 403 to close the CWE-639
-// PII-harvest surface called out in #1380.
+// full UserResponse (with email/comment); every other authenticated
+// caller gets the PII-stripped PublicUserResponse ({ID, username}).
+//
+// The item route deliberately mirrors the collection route
+// (GetAllUsersHandler): both hand a non-Admin only {ID, username}, and
+// neither the earlier 403-on-cross-id nor a per-id gate would add real
+// protection while the collection lists the same fields in bulk — the
+// 403 read as a boundary that wasn't there (security-finding #3093).
+// Email and comment stay Admin-only via the DTO split (#1380); that is
+// the boundary that actually matters and it is preserved here.
 func GetUserHandler(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		RespondWithError(c, http.StatusBadRequest, "User ID is required")
-		return
-	}
-
-	// Auth gate runs BEFORE the DB fetch — cheaper 403 and safer
-	// against a misconfigured route (a missing db in context would
-	// otherwise panic before the guard trips).
-	isAdmin := callerIsAdmin(c)
-	if !isAdmin && !callerOwnsUserID(c, id) {
-		log.Printf("Non-Admin cross-id lookup denied on /data_models/users/%s", id)
-		RespondWithError(c, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
@@ -77,7 +57,7 @@ func GetUserHandler(c *gin.Context) {
 		return
 	}
 
-	if isAdmin {
+	if callerIsAdmin(c) {
 		RespondWithSuccess(c, user.ToResponse(), "User retrieved successfully")
 	} else {
 		RespondWithSuccess(c, user.ToPublicResponse(), "User retrieved successfully")
@@ -86,9 +66,10 @@ func GetUserHandler(c *gin.Context) {
 
 // GetAllUsersHandler handles retrieving all users with pagination.
 // Admin callers see the full UserResponse in Items; non-Admin
-// authenticated callers see PublicUserResponse — the message board's
-// mapping of author_id → username still works while email and
-// comment stay behind an Admin gate (#1380).
+// authenticated callers see PublicUserResponse ({ID, username}) — the
+// message board's mapping of author_id → username still works while
+// email and comment stay behind an Admin gate (#1380) and access_role
+// is no longer enumerable by a non-Admin (#3093).
 func GetAllUsersHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
