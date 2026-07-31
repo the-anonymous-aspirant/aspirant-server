@@ -26,6 +26,12 @@ TRANSLATOR_URL=http://localhost:8003
 
 # Optional: Gin mode (debug/release)
 GIN_MODE=debug
+
+# Optional: CORS origin allowlist (comma-separated). Defaults to
+# https://the-aspirant.com. Cross-origin browser callers not on this list are
+# rejected; set it to include a dev origin (e.g. http://localhost:5173) when
+# running the frontend on a separate port.
+CORS_ALLOWED_ORIGINS=https://the-aspirant.com
 ```
 
 ### First Run

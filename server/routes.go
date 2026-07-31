@@ -30,7 +30,7 @@ func BuildTables() {
 
 // SetupMiddleware sets up the middleware for the Gin engine
 func SetupMiddleware(r *gin.Engine) {
-	r.Use(cors.Default())
+	r.Use(cors.New(corsConfig()))
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		// Custom log format including role and user
 		role, _ := param.Keys["role"].(string)
