@@ -255,6 +255,17 @@ func commanderProxyPassthrough(c *gin.Context, method string, path string) {
 	}
 	req.ContentLength = c.Request.ContentLength
 
+	// Propagate the authenticated caller's identity so commander can scope
+	// per-owner (security-finding #3096: the proxy previously dropped identity
+	// entirely, leaving commander structurally unable to authorise). The value
+	// comes from the server-verified user_id set by AuthMiddleware — never from
+	// the client. Because req is built fresh above (only Content-Type is copied
+	// across), any inbound client-supplied X-Aspirant-User-Id is not forwarded;
+	// setting it here from the authed id makes forgery impossible by construction.
+	if uid, ok := c.Get("user_id"); ok {
+		req.Header.Set("X-Aspirant-User-Id", fmt.Sprintf("%v", uid))
+	}
+
 	resp, err := commanderClient.Do(req)
 	if err != nil {
 		log.Printf("Failed to reach commander: %v", err)
