@@ -10,11 +10,29 @@ import (
 type User struct {
 	gorm.Model
 	Username string `json:"username" gorm:"unique;not null"`
-	Email    string `json:"email" gorm:"unique;not null"`
-	Password string `json:"password,omitempty"`
-	RoleID   uint   `json:"-"`
-	Role     Role   `json:"-" gorm:"foreignkey:RoleID;save_associations:false"`
-	Comment  string `json:"comment"`
+	// DisplayName is the public-facing identity shown on leaderboards and
+	// other public surfaces. It is decoupled from Username so the login
+	// credential never has to cross a public boundary (security-finding
+	// #3094). It defaults to Username (see BeforeSave) and is non-unique.
+	DisplayName string `json:"display_name" gorm:"not null;default:''"`
+	Email       string `json:"email" gorm:"unique;not null"`
+	Password    string `json:"password,omitempty"`
+	RoleID      uint   `json:"-"`
+	Role        Role   `json:"-" gorm:"foreignkey:RoleID;save_associations:false"`
+	Comment     string `json:"comment"`
+}
+
+// BeforeSave defaults DisplayName to Username whenever it is unset, so every
+// user-creation path (the create-user handlers, bootstrap, tests, and any
+// future caller) gets a display name without a per-call edit. The guard is
+// idempotent: an explicitly-set DisplayName is preserved. Using
+// scope.SetColumn is the gorm v1 way to have the mutation persisted to the
+// row rather than only to the in-memory struct.
+func (u *User) BeforeSave(scope *gorm.Scope) error {
+	if u.DisplayName == "" && u.Username != "" {
+		return scope.SetColumn("DisplayName", u.Username)
+	}
+	return nil
 }
 
 // UserResponse is the DTO used for API responses, exposing role as a string.

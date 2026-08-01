@@ -103,7 +103,7 @@ func GetEasterHuntStateHandler(c *gin.Context) {
 		if completed && egg.CompletedByUserID != nil {
 			var user data_models.User
 			if err := db.Where("id = ?", *egg.CompletedByUserID).First(&user).Error; err == nil {
-				completedBy = user.Username
+				completedBy = user.DisplayName
 			}
 		}
 		eggProgress = append(eggProgress, gin.H{
@@ -163,7 +163,7 @@ func GetEasterHuntScoresHandler(c *gin.Context) {
 		}
 		items = append(items, gin.H{
 			"user_id":  s.UserID,
-			"username": user.Username,
+			"username": user.DisplayName,
 			"score":    s.Score,
 		})
 	}
@@ -514,7 +514,7 @@ func loadUsernames(db *gorm.DB, clicks []data_models.EasterHuntClick) map[uint]s
 	for id := range userIDs {
 		var user data_models.User
 		if err := db.Where("id = ?", id).First(&user).Error; err == nil {
-			usernames[id] = user.Username
+			usernames[id] = user.DisplayName
 		}
 	}
 	return usernames
@@ -534,7 +534,7 @@ func loadScoreboard(db *gorm.DB, gameID uint) []gin.H {
 		}
 		result = append(result, gin.H{
 			"user_id":  s.UserID,
-			"username": user.Username,
+			"username": user.DisplayName,
 			"score":    s.Score,
 		})
 	}

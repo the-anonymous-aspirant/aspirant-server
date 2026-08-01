@@ -143,7 +143,10 @@ func GetGameScoresHandler(c *gin.Context) {
 		}
 
 		result = append(result, gin.H{
-			"username":   user.Username,
+			// Public, unauthenticated leaderboard: emit the display name, never
+			// the login username (security-finding #3094). JSON key stays
+			// "username" for the existing client contract.
+			"username":   user.DisplayName,
 			"score":      s.Score,
 			"mode":       s.Mode,
 			"metadata":   s.Metadata,
