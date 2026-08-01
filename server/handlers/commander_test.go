@@ -144,6 +144,66 @@ func TestCommanderProxyPreservesQueryString(t *testing.T) {
 	}
 }
 
+// Locks the identity-propagation contract (security-finding #3096): the proxy
+// must send commander an X-Aspirant-User-Id header carrying the server-verified
+// user_id (set by AuthMiddleware), and must NOT let a client forge it — an
+// inbound X-Aspirant-User-Id on the caller's request is overwritten by the
+// authed value, never forwarded. commander scopes per-owner off this header.
+func TestCommanderProxyPropagatesCallerIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("sets header from authed user_id", func(t *testing.T) {
+		var receivedUID string
+		fakeCommander := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedUID = r.Header.Get("X-Aspirant-User-Id")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer fakeCommander.Close()
+		t.Setenv("COMMANDER_URL", fakeCommander.URL)
+
+		r := gin.New()
+		// Stand in for AuthMiddleware: seed the authed identity in context.
+		r.Use(func(c *gin.Context) { c.Set("user_id", uint(42)) })
+		r.GET("/commander/valuation-statement/processed", ListCommanderValuationProcessedHandler)
+
+		req, _ := http.NewRequest("GET", "/commander/valuation-statement/processed", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if receivedUID != "42" {
+			t.Errorf("commander received X-Aspirant-User-Id %q, want %q", receivedUID, "42")
+		}
+	})
+
+	t.Run("client cannot forge the header", func(t *testing.T) {
+		var receivedUID string
+		fakeCommander := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedUID = r.Header.Get("X-Aspirant-User-Id")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer fakeCommander.Close()
+		t.Setenv("COMMANDER_URL", fakeCommander.URL)
+
+		r := gin.New()
+		r.Use(func(c *gin.Context) { c.Set("user_id", uint(42)) })
+		r.GET("/commander/valuation-statement/processed", ListCommanderValuationProcessedHandler)
+
+		req, _ := http.NewRequest("GET", "/commander/valuation-statement/processed", nil)
+		req.Header.Set("X-Aspirant-User-Id", "999") // attacker attempts to impersonate user 999
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if receivedUID != "42" {
+			t.Errorf("commander received X-Aspirant-User-Id %q, want %q (forged inbound value must not survive)", receivedUID, "42")
+		}
+	})
+}
+
 // Locks the /:id routes for the processed-valuations store: when the client
 // hits /api/commander/valuation-statement/processed/<uuid>, the upstream
 // commander call must carry the same id in the path. Regression guard for
