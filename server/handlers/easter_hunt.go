@@ -101,9 +101,9 @@ func GetEasterHuntStateHandler(c *gin.Context) {
 		completed := egg.CompletedByUserID != nil
 		var completedBy interface{} = nil
 		if completed && egg.CompletedByUserID != nil {
-			var user data_models.User
-			if err := db.Where("id = ?", *egg.CompletedByUserID).First(&user).Error; err == nil {
-				completedBy = user.Username
+			// Publish the display name, not the login username (security-finding #3094).
+			if name := data_models.CurrentDisplayName(db, *egg.CompletedByUserID); name != "" {
+				completedBy = name
 			}
 		}
 		eggProgress = append(eggProgress, gin.H{
@@ -157,13 +157,14 @@ func GetEasterHuntScoresHandler(c *gin.Context) {
 
 	items := make([]gin.H, 0, len(scores))
 	for _, s := range scores {
-		var user data_models.User
-		if err := db.Where("id = ?", s.UserID).First(&user).Error; err != nil {
+		// Publish the display name, not the login username (security-finding #3094).
+		name := data_models.CurrentDisplayName(db, s.UserID)
+		if name == "" {
 			continue
 		}
 		items = append(items, gin.H{
 			"user_id":  s.UserID,
-			"username": user.Username,
+			"username": name,
 			"score":    s.Score,
 		})
 	}
@@ -505,19 +506,16 @@ func GetEasterHuntRevealHandler(c *gin.Context) {
 // ---------- Helpers ----------
 
 func loadUsernames(db *gorm.DB, clicks []data_models.EasterHuntClick) map[uint]string {
-	userIDs := make(map[uint]bool)
+	seen := make(map[uint]bool)
+	ids := make([]uint, 0, len(clicks))
 	for _, click := range clicks {
-		userIDs[click.UserID] = true
-	}
-
-	usernames := make(map[uint]string)
-	for id := range userIDs {
-		var user data_models.User
-		if err := db.Where("id = ?", id).First(&user).Error; err == nil {
-			usernames[id] = user.Username
+		if !seen[click.UserID] {
+			seen[click.UserID] = true
+			ids = append(ids, click.UserID)
 		}
 	}
-	return usernames
+	// Publish display names, not login usernames (security-finding #3094).
+	return data_models.CurrentDisplayNames(db, ids)
 }
 
 func loadScoreboard(db *gorm.DB, gameID uint) []gin.H {
@@ -528,13 +526,14 @@ func loadScoreboard(db *gorm.DB, gameID uint) []gin.H {
 
 	result := make([]gin.H, 0, len(scores))
 	for _, s := range scores {
-		var user data_models.User
-		if err := db.Where("id = ?", s.UserID).First(&user).Error; err != nil {
+		// Publish the display name, not the login username (security-finding #3094).
+		name := data_models.CurrentDisplayName(db, s.UserID)
+		if name == "" {
 			continue
 		}
 		result = append(result, gin.H{
 			"user_id":  s.UserID,
-			"username": user.Username,
+			"username": name,
 			"score":    s.Score,
 		})
 	}

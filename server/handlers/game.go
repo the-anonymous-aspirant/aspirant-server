@@ -134,16 +134,27 @@ func GetGameScoresHandler(c *gin.Context) {
 		return
 	}
 
+	// Publish the display name, never the login username: this route is
+	// unauthenticated (routes.go), so emitting user.Username would hand
+	// anonymous callers a valid username list (security-finding #3094).
+	// Batch-resolve to avoid an N+1 across the page of scores.
+	userIDs := make([]uint, 0, len(scores))
+	for _, s := range scores {
+		userIDs = append(userIDs, uint(s.UserID))
+	}
+	displayNames := data_models.CurrentDisplayNames(db, userIDs)
+
 	var result []gin.H
 	for _, s := range scores {
-		var user data_models.User
-		if err := db.Where("id = ?", s.UserID).First(&user).Error; err != nil {
-			log.Printf("Error retrieving user data for ID %d: %v", s.UserID, err)
+		name := displayNames[uint(s.UserID)]
+		if name == "" {
+			// Orphan score with no resolvable user — skip, matching prior behaviour.
+			log.Printf("Skipping score with unresolvable user ID %d", s.UserID)
 			continue
 		}
 
 		result = append(result, gin.H{
-			"username":   user.Username,
+			"username":   name,
 			"score":      s.Score,
 			"mode":       s.Mode,
 			"metadata":   s.Metadata,
