@@ -86,14 +86,16 @@ func TestLoginHandlerSetsAuthCookie(t *testing.T) {
 		t.Errorf("auth_token cookie missing Max-Age=86400: %q", setCookie)
 	}
 
-	// The cookie value must be the same JWT the JSON body returns, so any
-	// consumer that reads either surface sees the identical token.
+	// The token must be delivered ONLY on the HttpOnly cookie, never echoed in
+	// the JS-readable JSON body (security-finding #3095): a body copy is a dead
+	// credential path the cookie-only client never reads, and echoing it would
+	// hand any XSS running at login time a 24h token.
 	respCookie := extractCookieValue(setCookie, "auth_token")
 	if respCookie == "" {
 		t.Fatalf("failed to extract auth_token cookie value from %q", setCookie)
 	}
-	if !strings.Contains(w.Body.String(), respCookie) {
-		t.Errorf("cookie token %q not found in JSON body %s", respCookie, w.Body.String())
+	if strings.Contains(w.Body.String(), respCookie) {
+		t.Errorf("login response body leaked the token %q; it must live only in the HttpOnly cookie: %s", respCookie, w.Body.String())
 	}
 }
 
