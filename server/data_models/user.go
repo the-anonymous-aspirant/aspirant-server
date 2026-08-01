@@ -87,6 +87,29 @@ func (u *User) CheckPassword(password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password))
 }
 
+// AfterCreate opens the user's initial display-name row (display_name =
+// username) so every creation path gets a public display identity without
+// per-caller edits (security-finding #3094). It never fails the user create:
+// display-name bookkeeping is best-effort, and the AutoMigrate backfill
+// (BackfillDisplayNames) reconciles any user that slips through. The HasTable
+// guard keeps unit tests that create users without migrating the display-name
+// table (or a boot before the table exists) working unchanged.
+func (u *User) AfterCreate(tx *gorm.DB) error {
+	if !tx.HasTable(&UserDisplayName{}) {
+		return nil
+	}
+	var count int
+	tx.Model(&UserDisplayName{}).Where("user_id = ?", u.ID).Count(&count)
+	if count == 0 {
+		tx.Create(&UserDisplayName{
+			UserID:      u.ID,
+			DisplayName: u.Username,
+			ValidFrom:   time.Now(),
+		})
+	}
+	return nil
+}
+
 // CreateUser creates a new user
 func (u *User) CreateUser(db *gorm.DB) error {
 	return db.Create(u).Error

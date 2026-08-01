@@ -97,6 +97,16 @@ func AutoMigrate(db *gorm.DB) {
 		db.AutoMigrate(&data_models.User{})
 	}
 
+	// Step 2b: Temporal display-name table (security-finding #3094). The login
+	// username must not double as a public display identity, so a separate
+	// history-carrying table holds display names; the login users.username
+	// column is left untouched. Backfill one open row per existing user so
+	// names are visually unchanged on deploy (idempotent — re-running is safe).
+	db.AutoMigrate(&data_models.UserDisplayName{})
+	if err := data_models.BackfillDisplayNames(db); err != nil {
+		log.Printf("Warning: display-name backfill failed: %v", err)
+	}
+
 	// Step 3: Migrate remaining tables
 	db.AutoMigrate(&data_models.Message{})
 	db.AutoMigrate(&data_models.LuddeFeedingTime{})
