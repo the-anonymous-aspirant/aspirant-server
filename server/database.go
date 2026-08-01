@@ -97,6 +97,12 @@ func AutoMigrate(db *gorm.DB) {
 		db.AutoMigrate(&data_models.User{})
 	}
 
+	// Backfill display_name from username for pre-existing rows so the public
+	// leaderboards keep showing the same names on deploy. display_name then
+	// decouples public identity from the login credential; new rows get it via
+	// the User.BeforeSave hook (security-finding #3094).
+	db.Exec("UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''")
+
 	// Step 3: Migrate remaining tables
 	db.AutoMigrate(&data_models.Message{})
 	db.AutoMigrate(&data_models.LuddeFeedingTime{})
