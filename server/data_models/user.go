@@ -31,11 +31,13 @@ type UserResponse struct {
 // PublicUserResponse is the DTO surfaced to non-Admin callers of the
 // user-list / user-by-id routes. It strips email and comment so a
 // lowest-priv authenticated caller cannot harvest PII across the
-// user table (CWE-639 mitigation — security-finding #1380).
+// user table (CWE-639 mitigation — security-finding #1380), and it
+// omits access_role so a non-Admin cannot enumerate which account is
+// the Admin (security-finding #3093 — CWE-639/A01). The only non-Admin
+// consumer is the message board, which reads just ID + username.
 type PublicUserResponse struct {
-	ID         uint   `json:"ID"`
-	Username   string `json:"username"`
-	AccessRole string `json:"access_role"`
+	ID       uint   `json:"ID"`
+	Username string `json:"username"`
 }
 
 // ToResponse converts a User (with preloaded Role) to the API response DTO.
@@ -55,9 +57,8 @@ func (u *User) ToResponse() UserResponse {
 // PII-stripped DTO used for non-Admin callers.
 func (u *User) ToPublicResponse() PublicUserResponse {
 	return PublicUserResponse{
-		ID:         u.ID,
-		Username:   u.Username,
-		AccessRole: u.Role.RoleName,
+		ID:       u.ID,
+		Username: u.Username,
 	}
 }
 
