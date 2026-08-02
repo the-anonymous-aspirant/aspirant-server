@@ -132,7 +132,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// Valuation Statement (proxied to commander service)
 		trustedRoutes.POST("/commander/valuation-statement/extract", handlers.PostCommanderValuationExtractHandler)
 		trustedRoutes.POST("/commander/valuation-statement/generate", handlers.PostCommanderValuationGenerateHandler)
-		trustedRoutes.PUT("/commander/valuation-statement/operator-defaults", handlers.PutCommanderValuationOperatorDefaultsHandler)
+		// operator-defaults (appraiser identity + default likviditet) is shared
+		// operator config, not per-user data, so it is Admin-only — registered in
+		// adminRoutes below, not here (system_3 #3182, follow-up to #3096).
 
 		// Valuation Statement — processed-valuations store ('Tidigare värderingar' tab).
 		// export.csv is registered BEFORE the :id route so the literal path segment wins
@@ -225,6 +227,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.DELETE("/commander/tasks/:id", handlers.DeleteCommanderTaskHandler)
 		adminRoutes.POST("/commander/process", handlers.TriggerCommanderProcessHandler)
 		adminRoutes.GET("/commander/vocabulary", handlers.GetCommanderVocabularyHandler)
+
+		// Valuation Statement — shared operator defaults (appraiser identity +
+		// default likviditet). Admin-only: these are global config writable by
+		// any Trusted user before #3182. Moved here from trustedRoutes as the
+		// #3096 follow-up (integrity finding on shared config; OWASP A01:2021).
+		adminRoutes.PUT("/commander/valuation-statement/operator-defaults", handlers.PutCommanderValuationOperatorDefaultsHandler)
 
 		// Commander notes (proxied to commander service)
 		adminRoutes.GET("/commander/notes", handlers.ListCommanderNotesHandler)
