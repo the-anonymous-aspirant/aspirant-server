@@ -4,7 +4,6 @@ import (
 	"log"
 	"net/http"
 
-	"aspirant-online/server/data_functions"
 	"aspirant-online/server/middleware"
 	"aspirant-online/server/storage"
 
@@ -13,7 +12,10 @@ import (
 )
 
 // HealthCheckHandler handles the health check route.
-// Response follows the convention schema: { status, service, version, checks }
+// Response follows the convention schema: { status, service, checks }.
+// The version field (git commit) was dropped from this unauthenticated
+// surface (CWE-200, system_3 #3865) — no client reads it: HomeView.vue
+// and SystemHealth.vue read fields this handler never served.
 func HealthCheckHandler(c *gin.Context) {
 	checks := gin.H{}
 	allHealthy := true
@@ -22,7 +24,11 @@ func HealthCheckHandler(c *gin.Context) {
 	if db, exists := c.Get("db"); exists && db != nil {
 		if gormDB, ok := db.(*gorm.DB); ok {
 			if err := gormDB.DB().Ping(); err != nil {
-				checks["database"] = "error: " + err.Error()
+				// Log the raw driver error server-side only — reflecting
+				// err.Error() to the unauthenticated /health caller leaks
+				// DSN details (host, user, database) on failure (CWE-209).
+				log.Printf("Health check: database ping failed: %v", err)
+				checks["database"] = "error"
 				allHealthy = false
 			} else {
 				checks["database"] = "connected"
@@ -41,7 +47,6 @@ func HealthCheckHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  status,
 		"service": "server",
-		"version": data_functions.GetGitCommit(),
 		"checks":  checks,
 	})
 }
