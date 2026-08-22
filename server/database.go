@@ -128,6 +128,9 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.PushupMilestone{})
 	data_models.SeedPushupMilestones(db)
 
+	// Step 6: Per-user scratchpad (one text buffer per user)
+	db.AutoMigrate(&data_models.Scratchpad{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
