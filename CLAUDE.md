@@ -86,6 +86,7 @@ The server listens on **port 8080**.
 | `ludde_feeding_times` | Pet feeding time tracker |
 | `pushup_entries` | Daily counts for the 60-day Pappas armhävningar challenge (date PK, count nullable). Trusted-gated via `/pushups/entries`. |
 | `pushup_milestones` | Seeded Swedish messages keyed by cumulative pushup count (e.g. 100, 500, 1000). Served via `/pushups/milestones`. |
+| `scratchpads` | One free-form plaintext buffer per user (`user_id` PK). Any logged-in user's own scratchpad, scoped to the session user id. Served via `GET`/`PUT /users/me/scratchpad`. |
 
 ## Conventions
 
