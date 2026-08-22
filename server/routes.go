@@ -98,6 +98,18 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// scoped to the session user id (never a URL/body parameter).
 		authRoutes.GET("/users/me/scratchpad", handlers.GetScratchpadHandler)
 		authRoutes.PUT("/users/me/scratchpad", handlers.PutScratchpadHandler)
+
+		// Own profile surface (#4170). Scoped to the session user_id — a
+		// caller can only read/edit their own profile. Registered under
+		// /profile rather than /data_models/users/me because a static `me`
+		// segment would conflict with the /data_models/users/:id wildcard in
+		// Gin's router. The per-user avatar-serve route takes an :id because
+		// any authenticated caller may render any user's avatar (message board).
+		authRoutes.GET("/profile", handlers.GetMeHandler)
+		authRoutes.PATCH("/profile", handlers.PatchMeHandler)
+		authRoutes.PUT("/profile/avatar", handlers.PutMeAvatarHandler)
+		authRoutes.DELETE("/profile/avatar", handlers.DeleteMeAvatarHandler)
+		authRoutes.GET("/data_models/users/:id/avatar", handlers.GetUserAvatarHandler)
 	}
 
 	// Trusted-specific routes (requires Trusted or Admin role)
