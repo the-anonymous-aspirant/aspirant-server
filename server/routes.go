@@ -93,6 +93,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		authRoutes.GET("/data_models/users/:id", handlers.GetUserHandler)
 		authRoutes.GET("/data_models/users", handlers.GetAllUsersHandler)
 		authRoutes.POST("/games/scores", handlers.SaveGameScoreHandler)
+
+		// Per-user scratchpad — any logged-in user gets their own text buffer,
+		// scoped to the session user id (never a URL/body parameter).
+		authRoutes.GET("/users/me/scratchpad", handlers.GetScratchpadHandler)
+		authRoutes.PUT("/users/me/scratchpad", handlers.PutScratchpadHandler)
 	}
 
 	// Trusted-specific routes (requires Trusted or Admin role)
