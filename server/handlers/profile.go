@@ -218,7 +218,10 @@ func PutMeAvatarHandler(c *gin.Context) {
 		return
 	}
 
-	if err := db.Model(&data_models.User{}).Where("id = ?", userID).Update("avatar_etag", etag).Error; err != nil {
+	// Reference the struct FIELD name ("AvatarETag"), not a raw column string:
+	// GORM resolves it to the actual column (its initialism-aware DBName), so
+	// this stays correct regardless of how the column is spelled on disk.
+	if err := db.Model(&data_models.User{}).Where("id = ?", userID).Update("AvatarETag", etag).Error; err != nil {
 		log.Printf("Profile: record avatar etag for user %d failed: %v", userID, err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to save avatar")
 		return
@@ -239,7 +242,7 @@ func DeleteMeAvatarHandler(c *gin.Context) {
 		return
 	}
 
-	if err := db.Model(&data_models.User{}).Where("id = ?", userID).Update("avatar_etag", "").Error; err != nil {
+	if err := db.Model(&data_models.User{}).Where("id = ?", userID).Update("AvatarETag", "").Error; err != nil {
 		log.Printf("Profile: clear avatar for user %d failed: %v", userID, err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to clear avatar")
 		return
@@ -278,15 +281,21 @@ func GetUserAvatarHandler(c *gin.Context) {
 	}
 	assets := store.(*storage.LocalStorage)
 
-	data, info, err := assets.GetByETag(user.AvatarETag)
+	data, _, err := assets.GetByETag(user.AvatarETag)
 	if err != nil || data == nil {
 		log.Printf("Profile: avatar bytes for user %s (etag %s) missing: %v", id, user.AvatarETag, err)
 		RespondWithError(c, http.StatusNotFound, "Avatar not found")
 		return
 	}
 
+	// Sniff the content type from the bytes rather than the storage key's
+	// extension: avatars are stored content-addressed (key = avatars/<md5>,
+	// no extension), so the store's extension-based type would be
+	// application/octet-stream. The upload path already validated this is an
+	// image, so the sniff resolves to the right image/* type.
+	contentType := http.DetectContentType(data)
 	// The URL carries the content ETag as ?v=, so a given URL always maps to
 	// the same bytes — safe to cache privately for a day.
 	c.Header("Cache-Control", "private, max-age=86400")
-	c.Data(http.StatusOK, info.ContentType, data)
+	c.Data(http.StatusOK, contentType, data)
 }
