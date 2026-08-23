@@ -1,6 +1,7 @@
 package data_models
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jinzhu/gorm"
@@ -15,6 +16,25 @@ type User struct {
 	RoleID   uint   `json:"-"`
 	Role     Role   `json:"-" gorm:"foreignkey:RoleID;save_associations:false"`
 	Comment  string `json:"comment"`
+	// AvatarETag is the MD5 (content ETag) of the user's current profile
+	// picture in asset storage, or "" when no avatar is set. It is never
+	// serialised directly — the browser-facing avatar URL is derived from it
+	// via AvatarURLFor and carried on the response DTOs. Added for #4170.
+	AvatarETag string `json:"-"`
+}
+
+// AvatarURLFor builds the browser-facing URL the SPA binds to an <img> for a
+// user's avatar, or "" when the user has no avatar. The URL points at the
+// authenticated per-user avatar-serve route (any logged-in caller may fetch it,
+// unlike the public /fetch-object gate which only Trusted/Admin bypass), and
+// carries the content ETag as a ?v= cache-buster so a replaced avatar is
+// re-fetched rather than served stale from the browser cache. The /api prefix
+// is the nginx-proxied client path (the server itself is mounted without it).
+func AvatarURLFor(id uint, etag string) string {
+	if etag == "" {
+		return ""
+	}
+	return fmt.Sprintf("/api/data_models/users/%d/avatar?v=%s", id, etag)
 }
 
 // UserResponse is the DTO used for API responses, exposing role as a string.
@@ -34,10 +54,13 @@ type UserResponse struct {
 // user table (CWE-639 mitigation — security-finding #1380), and it
 // omits access_role so a non-Admin cannot enumerate which account is
 // the Admin (security-finding #3093 — CWE-639/A01). The only non-Admin
-// consumer is the message board, which reads just ID + username.
+// consumer is the message board, which reads ID + username + avatar_url
+// (the avatar is public identity, not PII — it is what the message-board
+// author strip renders in place of the shared placeholder, #4170).
 type PublicUserResponse struct {
-	ID       uint   `json:"ID"`
-	Username string `json:"username"`
+	ID        uint   `json:"ID"`
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatar_url"`
 }
 
 // ToResponse converts a User (with preloaded Role) to the API response DTO.
@@ -57,8 +80,9 @@ func (u *User) ToResponse() UserResponse {
 // PII-stripped DTO used for non-Admin callers.
 func (u *User) ToPublicResponse() PublicUserResponse {
 	return PublicUserResponse{
-		ID:       u.ID,
-		Username: u.Username,
+		ID:        u.ID,
+		Username:  u.Username,
+		AvatarURL: AvatarURLFor(u.ID, u.AvatarETag),
 	}
 }
 
