@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"aspirant-online/server/data_models"
+
 	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
 )
 
 // PaginatedResponse wraps a list of items with pagination metadata
@@ -147,5 +150,54 @@ func ValidateRole(allowedRoles ...string) gin.HandlerFunc {
 
 		log.Printf("Role validation successful for user with role: %s", roleStr)
 		c.Next()
+	}
+}
+
+// ValidateUserOrAdmin gates a route to a single named account plus any Admin.
+// Used for single-user Member apps (e.g. the Jobs feed, owned by vinoly per
+// #4196/#4194): Admin passes by role; every other authenticated user must BE
+// the named account. The auth context carries user_id + role but not the
+// username, so this resolves user_id to a row and compares Username. A
+// non-matching authenticated user gets 403 — the app is not theirs. Layer it
+// after AuthMiddleware (needs user_id/role in context) and the db middleware.
+func ValidateUserOrAdmin(username string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if role, ok := c.Get("role"); ok {
+			if roleStr, ok := role.(string); ok && roleStr == "Admin" {
+				c.Next()
+				return
+			}
+		}
+
+		uidVal, exists := c.Get("user_id")
+		if !exists {
+			RespondWithError(c, http.StatusForbidden, "User information not available")
+			c.Abort()
+			return
+		}
+		uid, ok := uidVal.(uint)
+		if !ok {
+			log.Printf("ERROR: user_id is not a uint, got type: %T", uidVal)
+			RespondWithError(c, http.StatusInternalServerError, "Invalid user id format")
+			c.Abort()
+			return
+		}
+
+		db := c.MustGet("db").(*gorm.DB)
+		var user data_models.User
+		if err := db.Where("id = ?", uid).First(&user).Error; err != nil {
+			log.Printf("ValidateUserOrAdmin: user_id %d not found: %v", uid, err)
+			RespondWithError(c, http.StatusForbidden, "Insufficient permissions")
+			c.Abort()
+			return
+		}
+		if user.Username == username {
+			c.Next()
+			return
+		}
+
+		log.Printf("ValidateUserOrAdmin: user '%s' is not the owner '%s'", user.Username, username)
+		RespondWithError(c, http.StatusForbidden, "Insufficient permissions")
+		c.Abort()
 	}
 }
