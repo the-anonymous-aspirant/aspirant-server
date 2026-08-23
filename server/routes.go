@@ -12,6 +12,12 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
+// jobsOwnerUsername is the account that owns the Jobs Member app (#4196/#4194).
+// Jobs is a single-user app (vinoly's Berlin job search), so its proxy routes
+// are gated to this account plus Admin rather than all-Trusted. Operator ruled
+// option B (single-tenant gate, not a per-user interaction model).
+const jobsOwnerUsername = "vinoly"
+
 // -------------------------------------
 // CORE SETUP AND INITIALIZATION
 // -------------------------------------
@@ -205,10 +211,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.PATCH("/pushups/entries/:date", handlers.PatchPushupEntryHandler)
 		trustedRoutes.GET("/pushups/milestones", handlers.GetPushupMilestonesHandler)
 
-		// Jobs overview (proxied to aspirant-browser /api/jobs* — Trusted-role
-		// access to the deduplicated Berlin part-time English-job feed)
-		trustedRoutes.Any("/jobs", handlers.JobsProxyHandler)
-		trustedRoutes.Any("/jobs/*path", handlers.JobsProxyHandler)
+		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
+		// deduplicated Berlin part-time English-job feed). Owned by vinoly
+		// (#4196/#4194): a single-user Member app, so it is gated to the vinoly
+		// account plus Admin, not all-Trusted. The shared feed + global
+		// hide/save state stay as-is (operator ruled option B — single-tenant
+		// gate, no per-user interaction model).
+		trustedRoutes.Any("/jobs", handlers.ValidateUserOrAdmin(jobsOwnerUsername), handlers.JobsProxyHandler)
+		trustedRoutes.Any("/jobs/*path", handlers.ValidateUserOrAdmin(jobsOwnerUsername), handlers.JobsProxyHandler)
 	}
 
 	// Admin-specific routes
