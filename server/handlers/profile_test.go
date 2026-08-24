@@ -222,6 +222,13 @@ func TestAvatar_UploadServeAndClearRoundTrip(t *testing.T) {
 	if pub := bob.ToPublicResponse(); pub.AvatarURL == "" {
 		t.Errorf("PublicUserResponse.avatar_url should be set after upload (message-board propagation)")
 	}
+	// #4223 item 2: the ADMIN DTO must carry it too — GetAllUsersHandler returns
+	// UserResponse (not the public one) to an admin, so an admin viewing the
+	// message board would otherwise see the placeholder for every author,
+	// including their own drawn icon.
+	if adminDTO := bob.ToResponse(); adminDTO.AvatarURL == "" {
+		t.Errorf("UserResponse.avatar_url should be set after upload (admin message-board propagation, #4223)")
+	}
 
 	// Serve the avatar to any authenticated caller.
 	sw := httptest.NewRecorder()
