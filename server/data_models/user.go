@@ -46,6 +46,14 @@ type UserResponse struct {
 	Email      string    `json:"email"`
 	AccessRole string    `json:"access_role"`
 	Comment    string    `json:"comment"`
+	// AvatarURL mirrors PublicUserResponse's field so the message-board author
+	// strip renders avatars for an ADMIN caller too. GetAllUsersHandler returns
+	// this DTO (not the public one) to admins, so without this the admin — the
+	// only caller who ever gets UserResponse from the user list — sees the
+	// shared placeholder for every author, including their own drawn icon
+	// (#4223 item 2, operator ask #1544). The avatar is public identity, not
+	// PII (#4170), so adding it to the richer admin DTO widens nothing.
+	AvatarURL string `json:"avatar_url"`
 }
 
 // PublicUserResponse is the DTO surfaced to non-Admin callers of the
@@ -73,6 +81,7 @@ func (u *User) ToResponse() UserResponse {
 		Email:      u.Email,
 		AccessRole: u.Role.RoleName,
 		Comment:    u.Comment,
+		AvatarURL:  AvatarURLFor(u.ID, u.AvatarETag),
 	}
 }
 
