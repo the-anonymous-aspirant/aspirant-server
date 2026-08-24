@@ -54,6 +54,12 @@ type UserResponse struct {
 	// (#4223 item 2, operator ask #1544). The avatar is public identity, not
 	// PII (#4170), so adding it to the richer admin DTO widens nothing.
 	AvatarURL string `json:"avatar_url"`
+	// DisplayName is the user's current public display name (#4223 item 4). The
+	// message-board author strip prefers it over the raw username. It is not set
+	// by ToResponse (which has no DB access) — the handler resolves it via
+	// CurrentDisplayName(s) and stamps it on the DTO; it falls back to Username
+	// when unresolved. Public identity, not PII.
+	DisplayName string `json:"display_name"`
 }
 
 // PublicUserResponse is the DTO surfaced to non-Admin callers of the
@@ -62,13 +68,17 @@ type UserResponse struct {
 // user table (CWE-639 mitigation — security-finding #1380), and it
 // omits access_role so a non-Admin cannot enumerate which account is
 // the Admin (security-finding #3093 — CWE-639/A01). The only non-Admin
-// consumer is the message board, which reads ID + username + avatar_url
-// (the avatar is public identity, not PII — it is what the message-board
-// author strip renders in place of the shared placeholder, #4170).
+// consumer is the message board, which reads ID + username + avatar_url +
+// display_name (all public identity, not PII — what the message-board author
+// strip renders in place of the shared placeholder, #4170/#4223).
 type PublicUserResponse struct {
-	ID        uint   `json:"ID"`
-	Username  string `json:"username"`
-	AvatarURL string `json:"avatar_url"`
+	ID       uint   `json:"ID"`
+	Username string `json:"username"`
+	// DisplayName is stamped by the handler via CurrentDisplayName(s) (ToPublic-
+	// Response has no DB access); falls back to Username when unresolved (#4223
+	// item 4). Preferred over Username by the board's author strip.
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
 }
 
 // ToResponse converts a User (with preloaded Role) to the API response DTO.

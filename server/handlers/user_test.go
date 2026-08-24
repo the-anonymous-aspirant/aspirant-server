@@ -197,6 +197,44 @@ func TestGetAllUsersHandler_AdminSeesAccessRole(t *testing.T) {
 	}
 }
 
+// TestGetAllUsersHandler_CarriesDisplayName locks #4223 item 4: the user
+// listing carries a display_name the message-board author strip prefers over
+// the raw username, for BOTH the non-Admin (public) and Admin DTOs. A user
+// with a set display name shows it; one without falls back to the username.
+func TestGetAllUsersHandler_CarriesDisplayName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, aliceID, bobID := setupUserTestDB(t)
+	defer db.Close()
+	db.AutoMigrate(&data_models.UserDisplayName{})
+	if err := data_models.SetDisplayName(db, bobID, "Bobby"); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
+
+	// Non-Admin listing — the board's primary consumer.
+	r := routerAs(db, "User", bobID, http.MethodGet, "/data_models/users", GetAllUsersHandler)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/data_models/users", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, "\"display_name\"") {
+		t.Errorf("#4223: public listing must carry display_name, got %s", body)
+	}
+	if !strings.Contains(body, "Bobby") {
+		t.Errorf("#4223: bob's set display name should appear, got %s", body)
+	}
+	if !strings.Contains(body, "alice") {
+		t.Errorf("#4223: alice (no set row) should fall back to her username, got %s", body)
+	}
+
+	// Admin listing carries it too.
+	ra := routerAs(db, "Admin", aliceID, http.MethodGet, "/data_models/users", GetAllUsersHandler)
+	wa := httptest.NewRecorder()
+	ra.ServeHTTP(wa, httptest.NewRequest(http.MethodGet, "/data_models/users", nil))
+	ab := wa.Body.String()
+	if !strings.Contains(ab, "\"display_name\"") || !strings.Contains(ab, "Bobby") {
+		t.Errorf("#4223: admin listing must carry display_name, got %s", ab)
+	}
+}
+
 // itoa is a tiny uint→string helper kept local to the test file so the
 // handler tests need not import strconv at call sites.
 func itoa(u uint) string {
