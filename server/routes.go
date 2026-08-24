@@ -24,6 +24,14 @@ const jobsOwnerUsername = "vinoly"
 // the log is single-user, mirroring the Jobs decision (#4196).
 const pushupsOwnerUsername = "robert"
 
+// luddeOwnerUsername owns the Ludde meal-tracker feeding log (#4195/#4194).
+// The operator ruled it tied only to jenny ("Only Jenny needs this one"), so
+// its routes are gated to this account plus Admin — a route gate (not a
+// per-user schema rework), mirroring the Jobs (#4196) and pushups (#4203)
+// single-tenant decisions. The single global feeding_times table stays as-is;
+// the gate makes the existing log private to jenny rather than all-Trusted.
+const luddeOwnerUsername = "jenny"
+
 // -------------------------------------
 // CORE SETUP AND INITIALIZATION
 // -------------------------------------
@@ -178,12 +186,19 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// Wikipedia (proxied to kiwix-serve)
 		trustedRoutes.Any("/wikipedia/*path", handlers.WikipediaProxyHandler)
 
-		// Ludde feeding times
+		// Shared image upload (used by several apps + admin assets) — stays
+		// all-Trusted, not tied to any single app owner.
 		trustedRoutes.POST("/upload", handlers.UploadImageHandler)
-		trustedRoutes.GET("/data_models/ludde_feeding_times", handlers.GetAllFeedingTimesHandler)
-		trustedRoutes.GET("/data_models/ludde_feeding_times/:id", handlers.GetFeedingTimeHandler)
-		trustedRoutes.POST("/data_models/ludde_feeding_times", handlers.AddFeedingTimeHandler)
-		trustedRoutes.DELETE("/data_models/ludde_feeding_times/:id", handlers.DeleteFeedingTimeHandler)
+
+		// Ludde meal tracker — feeding times. Owned by jenny (#4195/#4194): the
+		// operator ruled it a single-user app ("Only Jenny needs this one"), so
+		// the routes are gated to the jenny account plus Admin, not all-Trusted.
+		// The single global feeding_times table stays as-is (option B —
+		// single-tenant gate, no per-user schema rework), mirroring Jobs/#4196.
+		trustedRoutes.GET("/data_models/ludde_feeding_times", handlers.ValidateUserOrAdmin(luddeOwnerUsername), handlers.GetAllFeedingTimesHandler)
+		trustedRoutes.GET("/data_models/ludde_feeding_times/:id", handlers.ValidateUserOrAdmin(luddeOwnerUsername), handlers.GetFeedingTimeHandler)
+		trustedRoutes.POST("/data_models/ludde_feeding_times", handlers.ValidateUserOrAdmin(luddeOwnerUsername), handlers.AddFeedingTimeHandler)
+		trustedRoutes.DELETE("/data_models/ludde_feeding_times/:id", handlers.ValidateUserOrAdmin(luddeOwnerUsername), handlers.DeleteFeedingTimeHandler)
 
 		// Goal Mapper — Trees
 		trustedRoutes.POST("/goals/trees", handlers.CreateTreeHandler)
