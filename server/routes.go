@@ -18,6 +18,12 @@ import (
 // option B (single-tenant gate, not a per-user interaction model).
 const jobsOwnerUsername = "vinoly"
 
+// pushupsOwnerUsername owns the Pappas pushup-challenge log (#4203/#4194).
+// The operator ruled it robert's own private log, so its routes are gated to
+// this account plus Admin — a route gate (not a per-user schema rework) because
+// the log is single-user, mirroring the Jobs decision (#4196).
+const pushupsOwnerUsername = "robert"
+
 // -------------------------------------
 // CORE SETUP AND INITIALIZATION
 // -------------------------------------
@@ -206,10 +212,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.PATCH("/goals/comments/:id", handlers.UpdateCommentHandler)
 		trustedRoutes.DELETE("/goals/comments/:id", handlers.DeleteCommentHandler)
 
-		// Pappas armhävningar — 60-day pushup challenge
-		trustedRoutes.GET("/pushups/entries", handlers.GetPushupEntriesHandler)
-		trustedRoutes.PATCH("/pushups/entries/:date", handlers.PatchPushupEntryHandler)
-		trustedRoutes.GET("/pushups/milestones", handlers.GetPushupMilestonesHandler)
+		// Pappas armhävningar — 60-day pushup challenge. Robert's own private
+		// log (#4203/#4194): the operator ruled it single-user, so the routes
+		// are gated to the robert account plus Admin (same gate as Jobs/#4196).
+		// The single Date-keyed challenge log stays as-is — no schema change; the
+		// gate makes the existing log private to robert rather than all-Trusted.
+		trustedRoutes.GET("/pushups/entries", handlers.ValidateUserOrAdmin(pushupsOwnerUsername), handlers.GetPushupEntriesHandler)
+		trustedRoutes.PATCH("/pushups/entries/:date", handlers.ValidateUserOrAdmin(pushupsOwnerUsername), handlers.PatchPushupEntryHandler)
+		trustedRoutes.GET("/pushups/milestones", handlers.ValidateUserOrAdmin(pushupsOwnerUsername), handlers.GetPushupMilestonesHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
 		// deduplicated Berlin part-time English-job feed). Owned by vinoly
