@@ -57,10 +57,20 @@ func GetUserHandler(c *gin.Context) {
 		return
 	}
 
+	// #4223 item 4: stamp the current display name (DTO methods have no DB
+	// access); fall back to the username when the temporal row is absent.
+	display := data_models.CurrentDisplayName(db, user.ID)
+	if display == "" {
+		display = user.Username
+	}
 	if callerIsAdmin(c) {
-		RespondWithSuccess(c, user.ToResponse(), "User retrieved successfully")
+		dto := user.ToResponse()
+		dto.DisplayName = display
+		RespondWithSuccess(c, dto, "User retrieved successfully")
 	} else {
-		RespondWithSuccess(c, user.ToPublicResponse(), "User retrieved successfully")
+		dto := user.ToPublicResponse()
+		dto.DisplayName = display
+		RespondWithSuccess(c, dto, "User retrieved successfully")
 	}
 }
 
@@ -90,10 +100,26 @@ func GetAllUsersHandler(c *gin.Context) {
 		return
 	}
 
+	// #4223 item 4: stamp the current display name onto each DTO (the DTO
+	// methods have no DB access). Batch-resolve once to avoid an N+1, and fall
+	// back to the username for any user the temporal table has yet to backfill.
+	ids := make([]uint, len(users))
+	for i := range users {
+		ids[i] = users[i].ID
+	}
+	displayNames := data_models.CurrentDisplayNames(db, ids)
+	nameFor := func(u data_models.User) string {
+		if n, ok := displayNames[u.ID]; ok && n != "" {
+			return n
+		}
+		return u.Username
+	}
+
 	if callerIsAdmin(c) {
 		responses := make([]data_models.UserResponse, len(users))
 		for i := range users {
 			responses[i] = users[i].ToResponse()
+			responses[i].DisplayName = nameFor(users[i])
 		}
 		c.JSON(http.StatusOK, PaginatedResponse{
 			Items:    responses,
@@ -107,6 +133,7 @@ func GetAllUsersHandler(c *gin.Context) {
 	public := make([]data_models.PublicUserResponse, len(users))
 	for i := range users {
 		public[i] = users[i].ToPublicResponse()
+		public[i].DisplayName = nameFor(users[i])
 	}
 	c.JSON(http.StatusOK, PaginatedResponse{
 		Items:    public,
