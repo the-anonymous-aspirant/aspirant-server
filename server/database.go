@@ -137,6 +137,10 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.RelationshipType{})
 	data_models.SeedRelationshipTypes(db)
 
+	// Step 8: Constellations companion app — per-user game identity default
+	// (epic #4587, subtask #4595-A3). No seed; a profile is created on first set.
+	db.AutoMigrate(&data_models.ConstellationProfile{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }

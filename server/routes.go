@@ -135,6 +135,10 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// vocabulary is non-sensitive reference data any logged-in player needs
 		// to render the board; colours come from the row, not the frontend.
 		authRoutes.GET("/constellations/relationship-types", handlers.GetConstellationRelationshipTypesHandler)
+		// Per-user game identity (subtask #4595-A3), scoped to the session user;
+		// the icon reuses the existing avatar.
+		authRoutes.GET("/constellations/profile", handlers.GetConstellationProfileHandler)
+		authRoutes.PUT("/constellations/profile", handlers.PutConstellationProfileHandler)
 	}
 
 	// Trusted-specific routes (requires Trusted or Admin role)
