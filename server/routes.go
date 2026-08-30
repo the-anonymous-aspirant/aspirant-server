@@ -147,6 +147,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	{
 		trustedRoutes.Use(handlers.ValidateRole("Trusted", "Admin"))
 
+		// Constellations companion app (epic #4587) — room lifecycle. The
+		// member app is Trusted/Admin gated (#4587-A1); create/join/leave a
+		// game and read its live state.
+		trustedRoutes.POST("/constellations/rooms", handlers.CreateRoomHandler)
+		trustedRoutes.GET("/constellations/rooms/:code", handlers.GetRoomHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/join", handlers.JoinRoomHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/leave", handlers.LeaveRoomHandler)
+
 		// Easter Egg Hunt
 		trustedRoutes.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
 		trustedRoutes.GET("/games/easter-hunt/scores", handlers.GetEasterHuntScoresHandler)

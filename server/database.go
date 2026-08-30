@@ -141,6 +141,11 @@ func AutoMigrate(db *gorm.DB) {
 	// (epic #4587, subtask #4595-A3). No seed; a profile is created on first set.
 	db.AutoMigrate(&data_models.ConstellationProfile{})
 
+	// Step 9: Constellations companion app — rooms & membership schema
+	// (epic #4587, subtask #4593-A1). No seed; rooms are created at runtime.
+	db.AutoMigrate(&data_models.Room{})
+	db.AutoMigrate(&data_models.RoomMember{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
