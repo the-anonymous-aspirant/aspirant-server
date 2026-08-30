@@ -131,6 +131,12 @@ func AutoMigrate(db *gorm.DB) {
 	// Step 6: Per-user scratchpad (one text buffer per user)
 	db.AutoMigrate(&data_models.Scratchpad{})
 
+	// Step 7: Constellations companion app — relationship-type vocabulary
+	// (epic #4587, subtask #4594-A2). Colours live on the row, not in the
+	// frontend; seed is idempotent.
+	db.AutoMigrate(&data_models.RelationshipType{})
+	data_models.SeedRelationshipTypes(db)
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
