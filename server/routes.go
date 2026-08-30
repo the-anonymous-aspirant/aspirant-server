@@ -130,6 +130,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		authRoutes.PUT("/profile/avatar", handlers.PutMeAvatarHandler)
 		authRoutes.DELETE("/profile/avatar", handlers.DeleteMeAvatarHandler)
 		authRoutes.GET("/data_models/users/:id/avatar", handlers.GetUserAvatarHandler)
+
+		// Constellations companion app (epic #4587). The relationship-type
+		// vocabulary is non-sensitive reference data any logged-in player needs
+		// to render the board; colours come from the row, not the frontend.
+		authRoutes.GET("/constellations/relationship-types", handlers.GetConstellationRelationshipTypesHandler)
 	}
 
 	// Trusted-specific routes (requires Trusted or Admin role)
