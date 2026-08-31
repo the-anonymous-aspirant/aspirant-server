@@ -8,6 +8,16 @@ on:
   push:
     branches: [main]
 
+# Serialize builds per ref so two merges landing seconds apart can't push
+# :latest out of commit order (#4761: 1651e02's build finished 14s after
+# cc3f520's own, so :latest resolved to the older commit and left a
+# supposedly-removed proxy live). cancel-in-progress: false queues the
+# second run behind the first instead of racing it, so :latest always
+# lands from whichever push was queued (== merged) last.
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
