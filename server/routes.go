@@ -162,6 +162,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/constellations/rooms/:code/relationships/set", handlers.SetRelationshipHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/relationships/clear", handlers.ClearRelationshipHandler)
 
+		// Constellations relationship edit history (#4587-C1). Per-player
+		// undo/redo over the shared graph, capped per player; the app enforces
+		// no game rules (operator ruling c25775).
+		trustedRoutes.GET("/constellations/rooms/:code/relationships/history", handlers.GetRelationshipHistoryHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/relationships/undo", handlers.UndoRelationshipHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/relationships/redo", handlers.RedoRelationshipHandler)
+
 		// Constellations server-authoritative dice (#4587-B2). Everyone in the
 		// room sees the same resolved roll; only a member may roll or read it.
 		trustedRoutes.GET("/constellations/rooms/:code/dice", handlers.GetDiceHandler)
