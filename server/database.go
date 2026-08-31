@@ -154,6 +154,11 @@ func AutoMigrate(db *gorm.DB) {
 	// (epic #4587, subtask #4597-B2). No seed; a roll is created per roll.
 	db.AutoMigrate(&data_models.DiceRoll{})
 
+	// Step 12: Constellations companion app — per-player relationship edit
+	// history (epic #4587, subtask #4599-C1). No seed; an action is appended
+	// per relationship edit for undo/redo.
+	db.AutoMigrate(&data_models.RelationshipAction{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
