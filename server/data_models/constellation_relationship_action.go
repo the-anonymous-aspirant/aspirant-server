@@ -214,3 +214,20 @@ func PlayerHistory(db *gorm.DB, roomID, actorUserID uint) ([]RelationshipAction,
 		Order("id ASC").Find(&actions).Error
 	return actions, err
 }
+
+// RoomHistoryCursor returns a monotonic marker for the room's edit history — the
+// max RelationshipAction id in the room, or 0 when none. The D1 state snapshot
+// carries it so a poller can tell a new edit was recorded (and refetch the
+// history panel) without diffing the log every tick. It advances on a new
+// edit; undo/redo change graph state, which the snapshot's relationships list
+// already reflects, so the cursor need not move for them.
+func RoomHistoryCursor(db *gorm.DB, roomID uint) uint {
+	var row struct{ MaxID *uint }
+	db.Model(&RelationshipAction{}).
+		Where("room_id = ?", roomID).
+		Select("MAX(id) AS max_id").Scan(&row)
+	if row.MaxID == nil {
+		return 0
+	}
+	return *row.MaxID
+}

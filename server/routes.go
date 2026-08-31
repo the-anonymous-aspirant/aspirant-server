@@ -155,6 +155,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/constellations/rooms/:code/join", handlers.JoinRoomHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/leave", handlers.LeaveRoomHandler)
 
+		// Constellations room live-state snapshot (#4587-D1). One aggregate
+		// board read for a short-poll client; member-gated like the reads it
+		// composes.
+		trustedRoutes.GET("/constellations/rooms/:code/state", handlers.GetRoomStateHandler)
+
 		// Constellations relationship-graph edit API (#4587-B1). The shared
 		// graph a room's members agree on; only a member of the room may edit
 		// or read it (enforced in the handler on top of the Trusted gate).
