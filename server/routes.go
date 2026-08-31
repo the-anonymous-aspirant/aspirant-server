@@ -162,6 +162,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/constellations/rooms/:code/relationships/set", handlers.SetRelationshipHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/relationships/clear", handlers.ClearRelationshipHandler)
 
+		// Constellations server-authoritative dice (#4587-B2). Everyone in the
+		// room sees the same resolved roll; only a member may roll or read it.
+		trustedRoutes.GET("/constellations/rooms/:code/dice", handlers.GetDiceHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/dice/roll", handlers.RollDiceHandler)
+
 		// Easter Egg Hunt
 		trustedRoutes.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
 		trustedRoutes.GET("/games/easter-hunt/scores", handlers.GetEasterHuntScoresHandler)
