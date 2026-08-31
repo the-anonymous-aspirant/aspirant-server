@@ -155,6 +155,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/constellations/rooms/:code/join", handlers.JoinRoomHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/leave", handlers.LeaveRoomHandler)
 
+		// Constellations relationship-graph edit API (#4587-B1). The shared
+		// graph a room's members agree on; only a member of the room may edit
+		// or read it (enforced in the handler on top of the Trusted gate).
+		trustedRoutes.GET("/constellations/rooms/:code/relationships", handlers.GetRelationshipsHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/relationships/set", handlers.SetRelationshipHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/relationships/clear", handlers.ClearRelationshipHandler)
+
 		// Easter Egg Hunt
 		trustedRoutes.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
 		trustedRoutes.GET("/games/easter-hunt/scores", handlers.GetEasterHuntScoresHandler)
