@@ -146,6 +146,10 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.Room{})
 	db.AutoMigrate(&data_models.RoomMember{})
 
+	// Step 10: Constellations companion app — relationship-graph edges
+	// (epic #4587, subtask #4596-B1). No seed; edges are created at runtime.
+	db.AutoMigrate(&data_models.Relationship{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
