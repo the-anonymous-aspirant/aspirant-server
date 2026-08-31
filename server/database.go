@@ -150,6 +150,10 @@ func AutoMigrate(db *gorm.DB) {
 	// (epic #4587, subtask #4596-B1). No seed; edges are created at runtime.
 	db.AutoMigrate(&data_models.Relationship{})
 
+	// Step 11: Constellations companion app — server-authoritative dice rolls
+	// (epic #4587, subtask #4597-B2). No seed; a roll is created per roll.
+	db.AutoMigrate(&data_models.DiceRoll{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
