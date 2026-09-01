@@ -170,6 +170,31 @@ func TestLeaveRoomHandler_OK(t *testing.T) {
 	}
 }
 
+// #4785 (HTTP journey): a second player can join the shared code after the solo
+// creator has left. Before the fix, the creator's Leave slated a never-played
+// room and the join 404'd — the operator's exact report (create -> leave -> join).
+func TestJoinRoomHandler_SucceedsAfterSoloCreatorLeft(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	room, _, err := data_models.CreateRoom(db, 7, 4) // creator, slot 1
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	leave := roomRouterAs(db, 7, http.MethodPost, "/constellations/rooms/:code/leave", LeaveRoomHandler)
+	if w := doJSON(leave, http.MethodPost, "/constellations/rooms/"+room.Code+"/leave", ``); w.Code != http.StatusOK {
+		t.Fatalf("solo creator leave: want 200, got %d — body=%s", w.Code, w.Body.String())
+	}
+
+	join := roomRouterAs(db, 8, http.MethodPost, "/constellations/rooms/:code/join", JoinRoomHandler)
+	w := doJSON(join, http.MethodPost, "/constellations/rooms/"+room.Code+"/join", ``)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second user join after solo creator left: want 200, got %d — body=%s", w.Code, w.Body.String())
+	}
+}
+
 // logoutRouter wires the db the way the app's router-level middleware does, so
 // the public LogoutHandler can reach it via c.MustGet("db"). No auth middleware:
 // /logout is public and recovers identity from the token itself.
@@ -207,8 +232,11 @@ func TestLogoutHandler_LeavesActiveRoom(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("logout status = %d, want 200 — body=%s", w.Code, w.Body.String())
 	}
-	if _, ok := data_models.GetActiveRoomByCode(db, room.Code); ok {
-		t.Errorf("room %q still active after the sole member logged out", room.Code)
+	// #4785: a never-played solo room must NOT be slated by the creator's logout
+	// — the shared code stays joinable. What logout MUST do is release the
+	// one-game lock, proven below by a successful create after logout.
+	if _, ok := data_models.GetActiveRoomByCode(db, room.Code); !ok {
+		t.Errorf("room %q was slated by the sole creator's logout (regresses #4785)", room.Code)
 	}
 	if _, _, err := data_models.CreateRoom(db, 7, 4); err != nil {
 		t.Errorf("user could not create a game after logout: %v (lock not released)", err)
