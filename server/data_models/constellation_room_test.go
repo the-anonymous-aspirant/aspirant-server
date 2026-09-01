@@ -166,13 +166,26 @@ func TestJoinIsIdempotent(t *testing.T) {
 
 // When the last member leaves, the room is slated: completed + soft-deleted,
 // and no longer joinable.
-func TestLastLeaveSlatesRoom(t *testing.T) {
+// A PLAYED room — one that held >=2 members at the same time — slates when its
+// last member leaves: status=completed, soft-deleted, code reusable. The
+// "played" precondition is the #4785 gate; a never-played solo room is the
+// opposite case, covered by TestSoloCreatorLeaveKeepsRoomJoinable.
+func TestLastLeaveOfPlayedRoomSlates(t *testing.T) {
 	db := newRoomTestDB(t)
 	defer db.Close()
 
 	room, _, _ := CreateRoom(db, 1, 4)
-	if _, err := LeaveRoom(db, 1, room.Code); err != nil {
-		t.Fatalf("LeaveRoom: %v", err)
+	if _, _, err := JoinRoom(db, 2, room.Code); err != nil { // now played: 2 in-room
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	if _, err := LeaveRoom(db, 2, room.Code); err != nil { // occupancy 1, not yet empty
+		t.Fatalf("LeaveRoom(2): %v", err)
+	}
+	if _, ok := GetActiveRoomByCode(db, room.Code); !ok {
+		t.Fatalf("room slated while a member still remained")
+	}
+	if _, err := LeaveRoom(db, 1, room.Code); err != nil { // last member of a played room
+		t.Fatalf("LeaveRoom(1): %v", err)
 	}
 
 	if _, ok := GetActiveRoomByCode(db, room.Code); ok {
@@ -188,8 +201,59 @@ func TestLastLeaveSlatesRoom(t *testing.T) {
 	if slated.DeletedAt == nil {
 		t.Errorf("slated room has nil deleted_at; expected soft-delete")
 	}
-	if _, _, err := JoinRoom(db, 2, room.Code); err != ErrRoomNotFound {
+	if _, _, err := JoinRoom(db, 3, room.Code); err != ErrRoomNotFound {
 		t.Errorf("join slated room err = %v, want ErrRoomNotFound", err)
+	}
+}
+
+// #4785 core: a solo creator who leaves a room nobody else ever joined must NOT
+// slate it — the shared code stays joinable so a second player can still get in.
+// This is the exact operator scenario: create -> leave -> second user joins.
+func TestSoloCreatorLeaveKeepsRoomJoinable(t *testing.T) {
+	db := newRoomTestDB(t)
+	defer db.Close()
+
+	room, _, err := CreateRoom(db, 1, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := LeaveRoom(db, 1, room.Code); err != nil {
+		t.Fatalf("LeaveRoom: %v", err)
+	}
+
+	// The room is never-played (peaked at one member), so leaving must not slate it.
+	got, ok := GetActiveRoomByCode(db, room.Code)
+	if !ok {
+		t.Fatalf("solo creator's leave slated a never-played room (the #4785 bug)")
+	}
+	if occ := RoomOccupancy(db, got.ID); occ != 0 {
+		t.Errorf("occupancy = %d, want 0 (creator left, room kept)", occ)
+	}
+	// A fresh second user can still join the shared code.
+	if _, _, err := JoinRoom(db, 2, room.Code); err != nil {
+		t.Errorf("second user join after solo-creator leave err = %v, want nil", err)
+	}
+}
+
+// #4785, logout variant: LeaveAllActiveRooms (the #4778 logout path) must also
+// leave a never-played solo room joinable — otherwise logout re-creates the very
+// slate-on-empty foot-gun this fix removes.
+func TestSoloCreatorLogoutKeepsRoomJoinable(t *testing.T) {
+	db := newRoomTestDB(t)
+	defer db.Close()
+
+	room, _, err := CreateRoom(db, 7, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if err := LeaveAllActiveRooms(db, 7); err != nil {
+		t.Fatalf("LeaveAllActiveRooms: %v", err)
+	}
+	if _, ok := GetActiveRoomByCode(db, room.Code); !ok {
+		t.Fatalf("logout slated a never-played solo room (the #4785 bug on the logout path)")
+	}
+	if _, _, err := JoinRoom(db, 8, room.Code); err != nil {
+		t.Errorf("second user join after solo-creator logout err = %v, want nil", err)
 	}
 }
 
@@ -233,11 +297,19 @@ func TestCodeIsFree(t *testing.T) {
 		t.Fatalf("active code %q: free=%v err=%v, want not free", active.Code, free, err)
 	}
 
-	// Slated room's code -> free, and the stale row + members are wiped.
+	// Slated room's code -> free, and the stale row + members are wiped. The
+	// room must have been PLAYED (>=2 members at once) to slate on empty now
+	// (#4785), so a second user joins before both leave.
 	slated, _, _ := CreateRoom(db, 2, 4)
 	slatedCode, slatedID := slated.Code, slated.ID
-	if _, err := LeaveRoom(db, 2, slatedCode); err != nil {
-		t.Fatalf("LeaveRoom: %v", err)
+	if _, _, err := JoinRoom(db, 3, slatedCode); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	if _, err := LeaveRoom(db, 3, slatedCode); err != nil {
+		t.Fatalf("LeaveRoom(3): %v", err)
+	}
+	if _, err := LeaveRoom(db, 2, slatedCode); err != nil { // last member slates
+		t.Fatalf("LeaveRoom(2): %v", err)
 	}
 	free, err := codeIsFree(db, slatedCode)
 	if err != nil || !free {
@@ -285,14 +357,14 @@ func containsRune(s string, r rune) bool {
 }
 
 // LeaveAllActiveRooms releases the one-game-at-a-time lock (#4778): after it, a
-// user who logged out mid-game (never clicking Leave) can create or join again,
-// and the room they abandoned slates once it empties.
+// user who logged out mid-game (never clicking Leave) can create or join again.
+// The abandoned room's fate is the #4785 concern and is asserted separately
+// (TestSoloCreatorLogoutKeepsRoomJoinable); here the invariant is the lock.
 func TestLeaveAllActiveRoomsReleasesLock(t *testing.T) {
 	db := newRoomTestDB(t)
 	defer db.Close()
 
-	room, _, err := CreateRoom(db, 7, 4)
-	if err != nil {
+	if _, _, err := CreateRoom(db, 7, 4); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
 	// The lock is held: a second create is refused (the logged-out state before
@@ -306,10 +378,11 @@ func TestLeaveAllActiveRoomsReleasesLock(t *testing.T) {
 		t.Fatalf("LeaveAllActiveRooms: %v", err)
 	}
 
-	// The abandoned solo room emptied, so it is slated (soft-deleted, no longer
-	// an active room).
-	if _, ok := GetActiveRoomByCode(db, room.Code); ok {
-		t.Errorf("room %q still active after last member left on logout", room.Code)
+	// The membership row is released, so the one-game lock is lifted regardless
+	// of whether the room itself slated (a never-played room now stays active,
+	// per #4785).
+	if _, inGame := activeMembership(db, 7); inGame {
+		t.Errorf("user 7 still holds an active membership after logout leave-all")
 	}
 	// The lock is released: the same user can create again.
 	if _, _, err := CreateRoom(db, 7, 4); err != nil {

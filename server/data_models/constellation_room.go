@@ -61,6 +61,14 @@ type Room struct {
 	Code        string `json:"code" gorm:"type:varchar(5);unique;not null;index"`
 	PlayerCount int    `json:"player_count" gorm:"not null"`
 	Status      string `json:"status" gorm:"type:varchar(16);not null;default:'active'"`
+	// EverHadTwoMembers latches once the room has held >=2 members at the same
+	// time — i.e. was actually played. The slate-on-empty rule only fires once
+	// this is set, so a solo creator who leaves (or logs out, #4778) before
+	// anyone joins does NOT slate the room: the shared code stays joinable for
+	// the second player instead of 404ing (#4785). A room that never reached two
+	// members lingers on empty until a real session forms; reaping those is a
+	// separate TTL concern, out of scope here.
+	EverHadTwoMembers bool `json:"ever_had_two_members" gorm:"not null;default:false"`
 }
 
 // TableName pins the physical table name.
@@ -247,12 +255,37 @@ func JoinRoom(db *gorm.DB, userID uint, code string) (Room, RoomMember, error) {
 	if err := db.Create(&member).Error; err != nil {
 		return Room{}, RoomMember{}, err
 	}
+	// The room counts as played once two members are in it at the same time;
+	// from that point the slate-on-empty rule applies (#4785). Latch it so a
+	// later solo state (one of the two leaves) still slates when the last goes.
+	if !room.EverHadTwoMembers && RoomOccupancy(db, room.ID) >= 2 {
+		if err := db.Model(&room).Update("ever_had_two_members", true).Error; err != nil {
+			return Room{}, RoomMember{}, err
+		}
+		room.EverHadTwoMembers = true
+	}
 	return room, member, nil
 }
 
-// LeaveRoom marks the user's membership left. When the last in-room member
-// leaves, the room is slated for deletion: status=completed and the row is
-// soft-deleted, freeing its code for reuse.
+// maybeSlate slates a room — status=completed + soft-delete, freeing its code —
+// when it has emptied (occupancy 0) AND was ever actually played (>=2 members
+// at once, per EverHadTwoMembers). A room that never reached two members is
+// left active on empty so its shared code stays joinable (the #4785
+// solo-creator fix). The caller passes a room already loaded with its current
+// column values (EverHadTwoMembers in particular).
+func maybeSlate(db *gorm.DB, room Room) error {
+	if !room.EverHadTwoMembers || RoomOccupancy(db, room.ID) != 0 {
+		return nil
+	}
+	if err := db.Model(&room).Update("status", roomStatusCompleted).Error; err != nil {
+		return err
+	}
+	return db.Delete(&room).Error // soft-delete = slate
+}
+
+// LeaveRoom marks the user's membership left. When the last in-room member of a
+// played room leaves, the room is slated for deletion (see maybeSlate); a
+// never-played room is left active so its code stays joinable (#4785).
 func LeaveRoom(db *gorm.DB, userID uint, code string) (Room, error) {
 	room, ok := GetActiveRoomByCode(db, code)
 	if !ok {
@@ -270,13 +303,8 @@ func LeaveRoom(db *gorm.DB, userID uint, code string) (Room, error) {
 	if err := db.Model(&member).Update("left_at", now).Error; err != nil {
 		return Room{}, err
 	}
-	if RoomOccupancy(db, room.ID) == 0 {
-		if err := db.Model(&room).Update("status", roomStatusCompleted).Error; err != nil {
-			return Room{}, err
-		}
-		if err := db.Delete(&room).Error; err != nil { // soft-delete = slate
-			return Room{}, err
-		}
+	if err := maybeSlate(db, room); err != nil {
+		return Room{}, err
 	}
 	return room, nil
 }
@@ -311,18 +339,13 @@ func LeaveAllActiveRooms(db *gorm.DB, userID uint) error {
 		if err := db.Model(&m).Update("left_at", now).Error; err != nil {
 			return err
 		}
-		if RoomOccupancy(db, m.RoomID) == 0 {
-			var room Room
-			if err := db.First(&room, m.RoomID).Error; err != nil {
-				// Room already gone; releasing the membership is enough.
-				continue
-			}
-			if err := db.Model(&room).Update("status", roomStatusCompleted).Error; err != nil {
-				return err
-			}
-			if err := db.Delete(&room).Error; err != nil { // soft-delete = slate
-				return err
-			}
+		var room Room
+		if err := db.First(&room, m.RoomID).Error; err != nil {
+			// Room already gone; releasing the membership is enough.
+			continue
+		}
+		if err := maybeSlate(db, room); err != nil {
+			return err
 		}
 	}
 	return nil
