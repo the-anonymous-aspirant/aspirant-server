@@ -130,6 +130,20 @@ func LoginHandler(c *gin.Context) {
 // unaffected. Revocation needs a denylist or short-lived tokens plus
 // refresh; see system_3 #2589.
 func LogoutHandler(c *gin.Context) {
+	// Ending the session also ends Constellations room presence: leave any
+	// active game so the one-game-at-a-time lock does not strand the user out
+	// of create/join on their next login (#4778). Read the identity from the
+	// still-valid cookie BEFORE clearing it; ParseTokenIfPresent never aborts,
+	// so an anonymous or already-expired caller is simply skipped and the
+	// public logout contract is unchanged. Best-effort: a failure here is
+	// logged, never surfaced — clearing the cookie must always succeed.
+	if userID, _, ok := middleware.ParseTokenIfPresent(c); ok {
+		db := c.MustGet("db").(*gorm.DB)
+		if err := data_models.LeaveAllActiveRooms(db, userID); err != nil {
+			log.Printf("Constellations: leave-all on logout for user %d: %v", userID, err)
+		}
+	}
+
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie("auth_token", "", -1, "/", "", true, true)
 
