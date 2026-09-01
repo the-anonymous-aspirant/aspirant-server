@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Constellations: a solo creator's room no longer dies when they step out.**
+  The slate-on-empty rule fired whenever the last in-room member left; for a
+  room whose only member was its creator, one Leave — or, since #4778, one
+  logout — emptied and slated it, so anyone opening the shared code got a 404.
+  Rooms now slate on empty only once they have been *played*: a new
+  `Room.EverHadTwoMembers` latch is set in `JoinRoom` the moment occupancy first
+  reaches two, and both `LeaveRoom` and `LeaveAllActiveRooms` slate through a
+  shared `maybeSlate` helper that requires it. A never-played room stays active
+  on empty so its code remains joinable (reaping truly abandoned rooms is a
+  separate TTL concern). Operator finding, system_3 #4785.
+
 - **Constellations: logging out now leaves your active game.** Membership was
   tracked by a `constellation_room_members` row with `left_at` NULL, and
   create/join refuse a user who holds one (`ErrAlreadyInGame`, the
