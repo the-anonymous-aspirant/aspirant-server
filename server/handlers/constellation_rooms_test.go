@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"aspirant-online/server/data_models"
+	"aspirant-online/server/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -166,5 +167,74 @@ func TestLeaveRoomHandler_OK(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"occupancy":0`) {
 		t.Errorf("occupancy not 0 after last leave: %s", w.Body.String())
+	}
+}
+
+// logoutRouter wires the db the way the app's router-level middleware does, so
+// the public LogoutHandler can reach it via c.MustGet("db"). No auth middleware:
+// /logout is public and recovers identity from the token itself.
+func logoutRouter(db *gorm.DB) *gin.Engine {
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("db", db); c.Next() })
+	r.POST("/logout", LogoutHandler)
+	return r
+}
+
+// Logging out while seated in a room releases the one-game-at-a-time lock
+// (#4778): the handler reads the user from the still-valid token and leaves the
+// room, so a fresh login can create/join again. This is the wiring the model
+// test (TestLeaveAllActiveRoomsReleasesLock) cannot cover — cookie/token →
+// userID → leave-all.
+func TestLogoutHandler_LeavesActiveRoom(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	room, _, err := data_models.CreateRoom(db, 7, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	token, err := middleware.GenerateToken(7, "Trusted")
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	logoutRouter(db).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, want 200 — body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := data_models.GetActiveRoomByCode(db, room.Code); ok {
+		t.Errorf("room %q still active after the sole member logged out", room.Code)
+	}
+	if _, _, err := data_models.CreateRoom(db, 7, 4); err != nil {
+		t.Errorf("user could not create a game after logout: %v (lock not released)", err)
+	}
+}
+
+// An anonymous logout (no token) still succeeds and touches no room state — the
+// public logout contract is unchanged for callers who are not identifiable.
+func TestLogoutHandler_AnonymousLeavesRoomsUntouched(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	room, _, err := data_models.CreateRoom(db, 7, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil) // no token
+	w := httptest.NewRecorder()
+	logoutRouter(db).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("anonymous logout status = %d, want 200", w.Code)
+	}
+	if _, ok := data_models.GetActiveRoomByCode(db, room.Code); !ok {
+		t.Errorf("room %q was slated by an anonymous logout that could not identify a member", room.Code)
 	}
 }
