@@ -283,3 +283,87 @@ func containsRune(s string, r rune) bool {
 	}
 	return false
 }
+
+// LeaveAllActiveRooms releases the one-game-at-a-time lock (#4778): after it, a
+// user who logged out mid-game (never clicking Leave) can create or join again,
+// and the room they abandoned slates once it empties.
+func TestLeaveAllActiveRoomsReleasesLock(t *testing.T) {
+	db := newRoomTestDB(t)
+	defer db.Close()
+
+	room, _, err := CreateRoom(db, 7, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	// The lock is held: a second create is refused (the logged-out state before
+	// the fix — membership outlives the session).
+	if _, _, err := CreateRoom(db, 7, 4); err != ErrAlreadyInGame {
+		t.Fatalf("pre-leave second CreateRoom err = %v, want ErrAlreadyInGame", err)
+	}
+
+	// Logout leaves every active room.
+	if err := LeaveAllActiveRooms(db, 7); err != nil {
+		t.Fatalf("LeaveAllActiveRooms: %v", err)
+	}
+
+	// The abandoned solo room emptied, so it is slated (soft-deleted, no longer
+	// an active room).
+	if _, ok := GetActiveRoomByCode(db, room.Code); ok {
+		t.Errorf("room %q still active after last member left on logout", room.Code)
+	}
+	// The lock is released: the same user can create again.
+	if _, _, err := CreateRoom(db, 7, 4); err != nil {
+		t.Errorf("post-leave CreateRoom err = %v, want nil (lock should be released)", err)
+	}
+}
+
+// LeaveAllActiveRooms on a user in no game is a no-op — logout must be safe
+// whether or not a game is open.
+func TestLeaveAllActiveRoomsNoActiveGameIsNoop(t *testing.T) {
+	db := newRoomTestDB(t)
+	defer db.Close()
+
+	if err := LeaveAllActiveRooms(db, 42); err != nil {
+		t.Fatalf("LeaveAllActiveRooms with no game: %v", err)
+	}
+	// The user is still free to create.
+	if _, _, err := CreateRoom(db, 42, 3); err != nil {
+		t.Errorf("CreateRoom after no-op leave-all err = %v, want nil", err)
+	}
+}
+
+// A leaver on logout must not slate a room others are still in — only the
+// leaving member's seat frees.
+func TestLeaveAllActiveRoomsKeepsRoomForRemainingPlayers(t *testing.T) {
+	db := newRoomTestDB(t)
+	defer db.Close()
+
+	room, _, err := CreateRoom(db, 1, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, _, err := JoinRoom(db, 2, room.Code); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+
+	// User 1 logs out.
+	if err := LeaveAllActiveRooms(db, 1); err != nil {
+		t.Fatalf("LeaveAllActiveRooms: %v", err)
+	}
+
+	// Room stays active for user 2, occupancy drops to 1.
+	got, ok := GetActiveRoomByCode(db, room.Code)
+	if !ok {
+		t.Fatalf("room slated while a player remained")
+	}
+	if occ := RoomOccupancy(db, got.ID); occ != 1 {
+		t.Errorf("occupancy = %d, want 1", occ)
+	}
+	// User 1 is unlocked; user 2 is still held.
+	if _, _, err := CreateRoom(db, 1, 3); err != nil {
+		t.Errorf("logged-out user 1 CreateRoom err = %v, want nil", err)
+	}
+	if _, _, err := CreateRoom(db, 2, 3); err != ErrAlreadyInGame {
+		t.Errorf("remaining user 2 CreateRoom err = %v, want ErrAlreadyInGame", err)
+	}
+}

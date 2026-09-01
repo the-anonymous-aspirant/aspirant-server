@@ -280,3 +280,50 @@ func LeaveRoom(db *gorm.DB, userID uint, code string) (Room, error) {
 	}
 	return room, nil
 }
+
+// LeaveAllActiveRooms marks every active membership held by the user left,
+// slating any room that empties as a result — the same lifecycle LeaveRoom
+// applies per room, but keyed on the user rather than a room code.
+//
+// It exists because ending the auth session (logout) must also end room
+// presence (#4778). Membership is tracked by a RoomMember row with left_at
+// NULL, and the create/join predicate refuses a user who holds one
+// (ErrAlreadyInGame). Logout used to clear only the cookie, so the row lingered
+// and the one-game-at-a-time lock stranded the user out of create AND join on
+// every future login until the room slated from another player's side. Calling
+// this on logout releases the lock the moment the user leaves.
+//
+// The one-game-at-a-time invariant means a user holds at most one active
+// membership; the loop tolerates more than one defensively so a data drift
+// cannot leave a residual lock. Idempotent — a user in no active room is a
+// no-op — so it is safe on every logout, including a logout with no game open.
+func LeaveAllActiveRooms(db *gorm.DB, userID uint) error {
+	var members []RoomMember
+	if err := db.
+		Joins("JOIN constellation_rooms r ON r.id = constellation_room_members.room_id AND r.deleted_at IS NULL").
+		Where("constellation_room_members.user_id = ? AND constellation_room_members.left_at IS NULL", userID).
+		Find(&members).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	for i := range members {
+		m := members[i]
+		if err := db.Model(&m).Update("left_at", now).Error; err != nil {
+			return err
+		}
+		if RoomOccupancy(db, m.RoomID) == 0 {
+			var room Room
+			if err := db.First(&room, m.RoomID).Error; err != nil {
+				// Room already gone; releasing the membership is enough.
+				continue
+			}
+			if err := db.Model(&room).Update("status", roomStatusCompleted).Error; err != nil {
+				return err
+			}
+			if err := db.Delete(&room).Error; err != nil { // soft-delete = slate
+				return err
+			}
+		}
+	}
+	return nil
+}

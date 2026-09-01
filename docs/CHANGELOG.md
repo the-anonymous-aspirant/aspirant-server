@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Constellations: logging out now leaves your active game.** Membership was
+  tracked by a `constellation_room_members` row with `left_at` NULL, and
+  create/join refuse a user who holds one (`ErrAlreadyInGame`, the
+  one-game-at-a-time lock). Logout cleared only the auth cookie, so the row
+  lingered and stranded the user out of *both* create and join on every future
+  login until the room slated from another player's side. `LogoutHandler` now
+  recovers the user from the still-valid token and calls the new
+  `data_models.LeaveAllActiveRooms`, which leaves every active membership and
+  slates any room that empties — the same lifecycle `LeaveRoom` applies, keyed
+  on the user. Best-effort and idempotent: an anonymous or game-less logout is
+  a no-op and never blocks the cookie clear. Operator finding, system_3 #4778.
+
 ### Security
 
 - **User routes no longer disclose `access_role` to non-Admins.** `PublicUserResponse` (the DTO served to non-Admin callers of the user list/by-id routes) dropped its `access_role` field, so an authenticated non-Admin can no longer enumerate which account is the Admin (CWE-639 / OWASP A01 — security-finding #3093). The `email`/`comment` Admin gate from #1380 is unchanged. The item route (`GET /data_models/users/:id`) now returns the same `PublicUserResponse` for a non-Admin cross-id lookup instead of a `403`, so it and the collection route tell the same story — the former `403` protected nothing the collection route did not already list.
