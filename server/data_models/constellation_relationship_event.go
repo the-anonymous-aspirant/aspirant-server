@@ -30,7 +30,7 @@ type RelationshipEvent struct {
 	PairHigh    uint                   `json:"pair_high" gorm:"not null;index"`
 	Kind        RelationshipActionKind `json:"kind" gorm:"not null"` // "set" | "clear"
 	TypeID      uint                   `json:"type_id"`              // the type set (0 for a clear)
-	FromUserID  uint                   `json:"from_user_id"`         // direction the edge was set in (0 for a clear)
+	FromUserID  uint                   `json:"from_user_id"`         // always real user ids; on undo/redo rows they are pair-normalized, not direction-preserving (#4847 c27518 R2)
 	ToUserID    uint                   `json:"to_user_id"`
 }
 

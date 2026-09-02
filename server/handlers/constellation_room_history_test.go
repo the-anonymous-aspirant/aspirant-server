@@ -18,13 +18,12 @@ import (
 
 type roomHistoryResponse struct {
 	Events []struct {
-		ID          uint   `json:"id"`
-		Kind        string `json:"kind"`
-		TypeID      uint   `json:"type_id"`
-		PairLow     uint   `json:"pair_low"`
-		PairHigh    uint   `json:"pair_high"`
-		ActorUserID uint   `json:"actor_user_id"`
-		CreatedAt   string `json:"created_at"`
+		ID        uint   `json:"id"`
+		Kind      string `json:"kind"`
+		TypeID    uint   `json:"type_id"`
+		PairLow   uint   `json:"pair_low"`
+		PairHigh  uint   `json:"pair_high"`
+		CreatedAt string `json:"created_at"`
 	} `json:"events"`
 	NextAfterID uint `json:"next_after_id"`
 	HasMore     bool `json:"has_more"`
@@ -83,6 +82,12 @@ func TestGetRoomHistoryHandler_OrderedTimeline(t *testing.T) {
 	}
 	if resp.Events[0].CreatedAt == "" {
 		t.Errorf("events must carry created_at for rendering: %s", body)
+	}
+	// R3 (#4847 c27504/c27518): the actor must not reach the wire — an
+	// endpoint-scoped history that ships the author still tells a viewer that
+	// a third player drew a line between them and someone else.
+	if strings.Contains(body, "actor_user_id") {
+		t.Errorf("actor_user_id must not be serialized (arbiter R3): %s", body)
 	}
 	if resp.HasMore {
 		t.Errorf("3 events under the default limit must not report has_more: %s", body)

@@ -25,22 +25,30 @@ const (
 )
 
 // relationshipEventDTO is one entry of the room's shared timeline.
+//
+// ActorUserID is deliberately NOT serialized (arbiter ruling #4847 c27504 R3 /
+// c27518): the live graph exposes no author, and an endpoint-scoped history
+// that ships the actor would still tell a viewer that a THIRD player set or
+// cleared an edge between them and someone else. Stated default, not a
+// permanent posture — the open operator question for #4833's next pass is
+// "should history say who drew the line, or only that it was drawn?".
 type relationshipEventDTO struct {
-	ID          uint      `json:"id"`
-	Kind        string    `json:"kind"`
-	TypeID      uint      `json:"type_id"`
-	PairLow     uint      `json:"pair_low"`
-	PairHigh    uint      `json:"pair_high"`
-	FromUserID  uint      `json:"from_user_id"`
-	ToUserID    uint      `json:"to_user_id"`
-	ActorUserID uint      `json:"actor_user_id"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         uint      `json:"id"`
+	Kind       string    `json:"kind"`
+	TypeID     uint      `json:"type_id"`
+	PairLow    uint      `json:"pair_low"`
+	PairHigh   uint      `json:"pair_high"`
+	FromUserID uint      `json:"from_user_id"`
+	ToUserID   uint      `json:"to_user_id"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
-// viewerSeesEvent mirrors data_models.ViewerSeesRelationship for log entries
-// (#4809, operator c27159 "for now, private"): an event is visible only to the
-// endpoints of its edge. It keys on the normalized pair rather than
-// from/to because a clear event carries zeroes there.
+// viewerSeesEvent applies the same endpoint predicate as
+// data_models.ViewerSeesRelationship to a log entry (#4809, arbiter ruling
+// #4847 c27504 R1/R2): an event is visible only to the endpoints of its edge.
+// It keys on the normalized pair because that is the row's invariant — on
+// undo/redo rows FromUserID/ToUserID are pair-normalized rather than
+// direction-preserving, so the pair columns are the only pair-of-record.
 func viewerSeesEvent(e data_models.RelationshipEvent, viewerUserID uint) bool {
 	return e.PairLow == viewerUserID || e.PairHigh == viewerUserID
 }
@@ -92,7 +100,7 @@ func GetRoomHistoryHandler(c *gin.Context) {
 			ID: e.ID, Kind: string(e.Kind), TypeID: e.TypeID,
 			PairLow: e.PairLow, PairHigh: e.PairHigh,
 			FromUserID: e.FromUserID, ToUserID: e.ToUserID,
-			ActorUserID: e.ActorUserID, CreatedAt: e.CreatedAt,
+			CreatedAt: e.CreatedAt,
 		})
 	}
 	var nextAfterID uint
