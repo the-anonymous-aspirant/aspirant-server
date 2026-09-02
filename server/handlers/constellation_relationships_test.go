@@ -191,3 +191,75 @@ func TestGetRelationshipsHandler_ScopesToCaller(t *testing.T) {
 		}
 	}
 }
+
+// #4849 — undo/redo return the resulting graph, and (like /state and the graph
+// read) must scope it to the caller's own edges. These assert the empty-stack
+// (applied=false) path specifically: a member who has drawn nothing can POST
+// undo/redo once and must NOT thereby read edges between two other players.
+// The cross-pair edge is set with the base SetRelationship (no history), so
+// every player's undo/redo stack is empty and both calls take that path.
+
+func seedThirdPartyEdge(t *testing.T, db *gorm.DB, code string, typeID uint) {
+	t.Helper()
+	data_models.JoinRoom(db, 3, code) // a third member, party to no edge
+	room, ok := data_models.GetActiveRoomByCode(db, code)
+	if !ok {
+		t.Fatalf("room %s not found", code)
+	}
+	// Edge between 1 and 2 — player 3 is not an endpoint of it.
+	if _, err := data_models.SetRelationship(db, room, 1, 2, typeID); err != nil {
+		t.Fatalf("seed 1-2 edge: %v", err)
+	}
+}
+
+func TestUndoRelationshipHandler_ScopesGraphToCaller(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	seedThirdPartyEdge(t, db, code, typeID)
+
+	// Player 3 (not party to the 1-2 edge, empty undo stack) must not see it.
+	r3 := relRouterAs(db, 3, http.MethodPost, "/constellations/rooms/:code/relationships/undo", UndoRelationshipHandler)
+	w3 := relDo(r3, http.MethodPost, "/constellations/rooms/"+code+"/relationships/undo", "")
+	if w3.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", w3.Code, w3.Body.String())
+	}
+	if !strings.Contains(w3.Body.String(), `"applied":false`) {
+		t.Errorf("expected empty-stack applied=false path: %s", w3.Body.String())
+	}
+	if strings.Contains(w3.Body.String(), `"from_user_id":1`) || strings.Contains(w3.Body.String(), `"to_user_id":2`) {
+		t.Errorf("undo leaked a third party's edge to a non-endpoint viewer: %s", w3.Body.String())
+	}
+
+	// Positive control: player 1 IS an endpoint, so their undo response carries it.
+	r1 := relRouterAs(db, 1, http.MethodPost, "/constellations/rooms/:code/relationships/undo", UndoRelationshipHandler)
+	w1 := relDo(r1, http.MethodPost, "/constellations/rooms/"+code+"/relationships/undo", "")
+	if !strings.Contains(w1.Body.String(), `"from_user_id":1`) {
+		t.Errorf("undo hid an edge from its own endpoint: %s", w1.Body.String())
+	}
+}
+
+func TestRedoRelationshipHandler_ScopesGraphToCaller(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	seedThirdPartyEdge(t, db, code, typeID)
+
+	r3 := relRouterAs(db, 3, http.MethodPost, "/constellations/rooms/:code/relationships/redo", RedoRelationshipHandler)
+	w3 := relDo(r3, http.MethodPost, "/constellations/rooms/"+code+"/relationships/redo", "")
+	if w3.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", w3.Code, w3.Body.String())
+	}
+	if !strings.Contains(w3.Body.String(), `"applied":false`) {
+		t.Errorf("expected empty-stack applied=false path: %s", w3.Body.String())
+	}
+	if strings.Contains(w3.Body.String(), `"from_user_id":1`) || strings.Contains(w3.Body.String(), `"to_user_id":2`) {
+		t.Errorf("redo leaked a third party's edge to a non-endpoint viewer: %s", w3.Body.String())
+	}
+
+	r1 := relRouterAs(db, 1, http.MethodPost, "/constellations/rooms/:code/relationships/redo", RedoRelationshipHandler)
+	w1 := relDo(r1, http.MethodPost, "/constellations/rooms/"+code+"/relationships/redo", "")
+	if !strings.Contains(w1.Body.String(), `"from_user_id":1`) {
+		t.Errorf("redo hid an edge from its own endpoint: %s", w1.Body.String())
+	}
+}
