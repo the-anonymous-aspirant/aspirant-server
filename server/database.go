@@ -159,6 +159,17 @@ func AutoMigrate(db *gorm.DB) {
 	// per relationship edit for undo/redo.
 	db.AutoMigrate(&data_models.RelationshipAction{})
 
+	// Step 13: Constellations companion app — goal-card victory-condition deck
+	// (epic #4807, subtask #4807-A1). 16 cards over the six connection types;
+	// seed is idempotent.
+	db.AutoMigrate(&data_models.GoalCard{})
+	data_models.SeedGoalCards(db)
+
+	// Step 14: Constellations companion app — per-player selected goal
+	// (epic #4807, subtask #4807-A1). No seed; a goal is chosen at runtime and
+	// is private to the selecting player.
+	db.AutoMigrate(&data_models.PlayerGoal{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
