@@ -170,6 +170,12 @@ func AutoMigrate(db *gorm.DB) {
 	// is private to the selecting player.
 	db.AutoMigrate(&data_models.PlayerGoal{})
 
+	// Step 15: Constellations companion app — general append-only
+	// relationship-event log (epic #4807, subtask #4829-A3). Uncapped, ordered;
+	// distinct from the #4599 per-player capped undo stack. No seed; an event is
+	// appended per edge state change (set / clear / undo / redo).
+	db.AutoMigrate(&data_models.RelationshipEvent{})
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }

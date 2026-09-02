@@ -219,11 +219,13 @@ func TestPredPolycurious(t *testing.T) {
 	}
 }
 
-// The two history-dependent cards must not be answered from a snapshot here.
-func TestHistoryPredicatesReturnFalseInSnapshotEngine(t *testing.T) {
+// The two history-dependent cards are wired into the engine by #4829-A3. They
+// share the snapshot predicate signature but read g.events; their dedicated
+// behaviour is covered in constellation_relationship_event_test.go.
+func TestHistoryPredicatesRegisteredByA3(t *testing.T) {
 	for _, key := range []string{"unicorn_hunter_partner_then_date", "escalator_two_with_escalation"} {
-		if _, present := goalPredicates[key]; present {
-			t.Errorf("history predicate %q must NOT be in the snapshot engine (it belongs to #4829-A3)", key)
+		if _, present := goalPredicates[key]; !present {
+			t.Errorf("history predicate %q must be registered in the engine (#4829-A3)", key)
 		}
 	}
 }

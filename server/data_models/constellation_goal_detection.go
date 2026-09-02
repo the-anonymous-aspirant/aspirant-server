@@ -24,6 +24,19 @@ type roomGraph struct {
 	edges       map[[2]uint]string // canonical unordered pair -> type code
 	players     []uint
 	playerCount int // configured game size (room.PlayerCount)
+
+	// events is the room's full append-only edge-change timeline (A3), oldest
+	// first, each resolved to its type code. Snapshot predicates ignore it; the
+	// two history-dependent predicates (unicorn hunter, THE ESCALATOR) read it.
+	// A `set` event carries the code it set; a `clear` event carries "".
+	events []edgeEvent
+}
+
+// edgeEvent is one entry of the append-only relationship-event log resolved for
+// predicate evaluation: which unordered pair changed and to what type code.
+type edgeEvent struct {
+	pair [2]uint // canonical (low, high)
+	code string  // type code set; "" for a clear
 }
 
 func pairKey(a, b uint) [2]uint {
@@ -85,6 +98,11 @@ func buildRoomGraph(db *gorm.DB, room Room) (*roomGraph, error) {
 		return nil, err
 	}
 
+	events, err := RoomRelationshipEvents(db, room.ID)
+	if err != nil {
+		return nil, err
+	}
+
 	g := &roomGraph{edges: make(map[[2]uint]string), playerCount: room.PlayerCount}
 	for _, m := range members {
 		g.players = append(g.players, m.UserID)
@@ -93,6 +111,13 @@ func buildRoomGraph(db *gorm.DB, room Room) (*roomGraph, error) {
 		if code, ok := codeByID[r.TypeID]; ok {
 			g.edges[pairKey(r.FromUserID, r.ToUserID)] = code
 		}
+	}
+	for _, e := range events {
+		code := ""
+		if e.Kind == ActionSet {
+			code = codeByID[e.TypeID] // "" if the type is unknown; a clear also yields ""
+		}
+		g.events = append(g.events, edgeEvent{pair: pairKey(e.PairLow, e.PairHigh), code: code})
 	}
 	return g, nil
 }
@@ -135,6 +160,10 @@ var goalPredicates = map[string]func(g *roomGraph, me uint) bool{
 	"open_relationship_three_no_rejection":    predOpenRelationship,
 	"unicorn_two_shared_dates":                predUnicorn,
 	"unethical_polycurious_two_one_affair":    predPolycurious,
+
+	// History-dependent (A3): read g.events rather than only the snapshot.
+	"unicorn_hunter_partner_then_date": predUnicornHunter,
+	"escalator_two_with_escalation":    predEscalator,
 }
 
 // romantic is the set of "dating" edge types the cards repeatedly refer to as
@@ -339,4 +368,116 @@ func predOpenRelationship(g *roomGraph, me uint) bool {
 // count, per operator override of the literal card text).
 func predPolycurious(g *roomGraph, me uint) bool {
 	return g.count(me, romantic...) >= 2 && g.count(me, "A") >= 1
+}
+
+// --- History-dependent predicates (#4829-A3), evaluated over g.events ---
+
+// allEdgeTypes is every connection type an active edge can carry — used by THE
+// ESCALATOR's "two relationships of any kind" count.
+var allEdgeTypes = []string{"P", "D", "F+", "F", "A", "R"}
+
+// firstSetIndex is the index in g.events of the first event that set the pair
+// {me, other} to code, or -1 if it never did. Because the log is ordered
+// oldest-first, a smaller index means "obtained earlier".
+func (g *roomGraph) firstSetIndex(me, other uint, code string) int {
+	want := pairKey(me, other)
+	for i, e := range g.events {
+		if e.pair == want && e.code == code {
+			return i
+		}
+	}
+	return -1
+}
+
+// ladderRank orders the escalation chain F < F+ < D < P; non-ladder codes
+// (Affair, Rejection, a clear) return 0 so they neither start nor advance an
+// escalation.
+func ladderRank(code string) int {
+	switch code {
+	case "F":
+		return 1
+	case "F+":
+		return 2
+	case "D":
+		return 3
+	case "P":
+		return 4
+	default:
+		return 0
+	}
+}
+
+// pairEscalated reports whether the pair {me, other}'s recorded history contains
+// a strict up-step along the ladder — some later `set` event with a higher
+// ladder rank than an earlier one on the same pair. Clears and non-ladder
+// events are skipped, so an intervening clear does not reset the "escalated at
+// some point" reading; the log is append-only, so an undo of an escalation
+// leaves the earlier up-step in place.
+func (g *roomGraph) pairEscalated(me, other uint) bool {
+	want := pairKey(me, other)
+	minPrior := 1 << 30
+	for _, e := range g.events {
+		if e.pair != want {
+			continue
+		}
+		r := ladderRank(e.code)
+		if r == 0 {
+			continue
+		}
+		if r > minPrior {
+			return true
+		}
+		if r < minPrior {
+			minPrior = r
+		}
+	}
+	return false
+}
+
+// UNICORN HUNTER: obtain a partner FIRST, then a date, where the partner and the
+// date are themselves dating (their edge is in {P,D,F+}). Snapshot-current
+// partner X and date Y, ordered by the log so the P was set before the D.
+func predUnicornHunter(g *roomGraph, me uint) bool {
+	partners := g.neighbours(me, "P")
+	dates := g.neighbours(me, "D")
+	for _, x := range partners {
+		fp := g.firstSetIndex(me, x, "P")
+		if fp < 0 {
+			continue
+		}
+		for _, y := range dates {
+			if y == x {
+				continue
+			}
+			fd := g.firstSetIndex(me, y, "D")
+			if fd < 0 || fp >= fd {
+				continue
+			}
+			if inSet(g.edgeType(x, y), romantic...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// THE ESCALATOR: two relationships of any kind, one of which climbed the ladder
+// F -> F+ -> D -> P at some point. Requires at least two active edges now, and
+// at least one currently-active pair whose history shows an up-step.
+func predEscalator(g *roomGraph, me uint) bool {
+	if g.count(me, allEdgeTypes...) < 2 {
+		return false
+	}
+	for _, p := range g.players {
+		if p == me {
+			continue
+		}
+		if g.edgeType(me, p) == "" {
+			continue
+		}
+		if g.pairEscalated(me, p) {
+			return true
+		}
+	}
+	return false
 }
