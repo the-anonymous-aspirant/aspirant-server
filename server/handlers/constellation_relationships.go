@@ -157,15 +157,24 @@ func GetRelationshipsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"relationships": out})
 }
 
-// roomGraphDTO reads the room's active edges as DTOs (shared by the graph read
-// and by undo/redo, which return the resulting graph so the client re-renders).
-func roomGraphDTO(db *gorm.DB, roomID uint) ([]relationshipDTO, error) {
+// roomGraphDTO reads the room's active edges as DTOs, scoped to the edges the
+// viewer is an endpoint of — the same serializer property as /state and
+// GetRelationshipsHandler (#4806 ask 2, #4809). undo/redo return the resulting
+// graph so the client re-renders, and are the third door onto this data: like
+// the other two they must scope on the way out, or a member could read every
+// edge in the room through an endpoint whose name says it is a write (#4849).
+// RoomRelationships itself stays the whole-graph read, so the #4835 creator-only
+// reveal toggle remains a one-line serializer change.
+func roomGraphDTO(db *gorm.DB, roomID, viewerID uint) ([]relationshipDTO, error) {
 	rels, err := data_models.RoomRelationships(db, roomID)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]relationshipDTO, 0, len(rels))
 	for _, r := range rels {
+		if !data_models.ViewerSeesRelationship(r, viewerID) {
+			continue
+		}
 		out = append(out, relationshipToDTO(r))
 	}
 	return out, nil
@@ -187,7 +196,7 @@ type relationshipActionDTO struct {
 // empty-stack condition (ErrNothingToUndo / ErrNothingToRedo) is not an error:
 // it responds 200 with the unchanged graph and applied=false, so a UI "back" at
 // the start of history is a no-op, not a failure.
-func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, err error, empty error) {
+func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, viewerID uint, err error, empty error) {
 	applied := true
 	if err == empty {
 		applied = false
@@ -196,7 +205,7 @@ func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, err error
 		RespondWithError(c, http.StatusInternalServerError, "Error applying history")
 		return
 	}
-	out, gerr := roomGraphDTO(db, room.ID)
+	out, gerr := roomGraphDTO(db, room.ID, viewerID)
 	if gerr != nil {
 		log.Printf("Constellations: read graph after history in room %d: %v", room.ID, gerr)
 		RespondWithError(c, http.StatusInternalServerError, "Error reading relationships")
@@ -213,7 +222,7 @@ func UndoRelationshipHandler(c *gin.Context) {
 		return
 	}
 	err := data_models.UndoRelationship(db, room, actor)
-	applyUndoRedo(c, db, room, err, data_models.ErrNothingToUndo)
+	applyUndoRedo(c, db, room, actor, err, data_models.ErrNothingToUndo)
 }
 
 // RedoRelationshipHandler re-applies the caller's most recently undone edit.
@@ -224,7 +233,7 @@ func RedoRelationshipHandler(c *gin.Context) {
 		return
 	}
 	err := data_models.RedoRelationship(db, room, actor)
-	applyUndoRedo(c, db, room, err, data_models.ErrNothingToRedo)
+	applyUndoRedo(c, db, room, actor, err, data_models.ErrNothingToRedo)
 }
 
 // GetRelationshipHistoryHandler returns the caller's own retained edit history.
