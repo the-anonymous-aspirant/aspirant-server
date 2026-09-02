@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -135,5 +136,58 @@ func TestClearAndListRelationshipHandlers(t *testing.T) {
 	w = relDo(rl, http.MethodGet, "/constellations/rooms/"+code+"/relationships", "")
 	if !strings.Contains(w.Body.String(), `"relationships":[]`) {
 		t.Errorf("graph not empty after clear: %s", w.Body.String())
+	}
+}
+
+// #4806 ask 2, second door. The board reads edges through the /state aggregate,
+// but GET .../relationships returns the same graph to any member with a
+// session. Scoping only /state would leave this open and the leak would look
+// fixed — so this is asserted independently of the state handler's test.
+func TestGetRelationshipsHandler_ScopesToCaller(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+
+	room, _ := data_models.GetActiveRoomByCode(db, code)
+	if _, _, err := data_models.JoinRoom(db, 3, code); err != nil {
+		t.Fatalf("join 3: %v", err)
+	}
+	data_models.SetRelationshipWithHistory(db, room, 1, 1, 2, typeID)
+	data_models.SetRelationshipWithHistory(db, room, 2, 2, 3, typeID)
+
+	for _, tc := range []struct {
+		caller uint
+		want   int
+		absent string // a substring that must NOT appear in this caller's body
+	}{
+		{caller: 1, want: 1, absent: `"to_user_id":3`},
+		{caller: 3, want: 1, absent: `"from_user_id":1`},
+		{caller: 2, want: 2}, // an endpoint of both
+	} {
+		r := relRouterAs(db, tc.caller, http.MethodGet, "/constellations/rooms/:code/relationships", GetRelationshipsHandler)
+		w := relDo(r, http.MethodGet, "/constellations/rooms/"+code+"/relationships", "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("caller %d want 200, got %d — %s", tc.caller, w.Code, w.Body.String())
+		}
+		var parsed struct {
+			Relationships []struct {
+				FromUserID uint `json:"from_user_id"`
+				ToUserID   uint `json:"to_user_id"`
+			} `json:"relationships"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+			t.Fatalf("caller %d decode: %v — %s", tc.caller, err, w.Body.String())
+		}
+		if len(parsed.Relationships) != tc.want {
+			t.Errorf("caller %d sees %d edges, want %d — %s", tc.caller, len(parsed.Relationships), tc.want, w.Body.String())
+		}
+		for _, r := range parsed.Relationships {
+			if r.FromUserID != tc.caller && r.ToUserID != tc.caller {
+				t.Errorf("caller %d was served an edge they are not part of: %+v", tc.caller, r)
+			}
+		}
+		if tc.absent != "" && strings.Contains(w.Body.String(), tc.absent) {
+			t.Errorf("caller %d body leaks %q: %s", tc.caller, tc.absent, w.Body.String())
+		}
 	}
 }

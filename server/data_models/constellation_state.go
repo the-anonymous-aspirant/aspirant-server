@@ -39,7 +39,9 @@ type RoomStateDice struct {
 	RolledAt string `json:"rolled_at,omitempty"`
 }
 
-// RoomState is the full board snapshot returned by GET .../rooms/:code/state.
+// RoomState is the board snapshot returned by GET .../rooms/:code/state, as
+// seen BY ONE VIEWER. Everything in it is room-wide except Relationships, which
+// is scoped to the viewer (see BuildRoomState).
 type RoomState struct {
 	Code          string                  `json:"code"`
 	PlayerCount   int                     `json:"player_count"`
@@ -68,8 +70,31 @@ func avatarETags(db *gorm.DB, ids []uint) map[uint]string {
 	return out
 }
 
-// BuildRoomState composes the full board snapshot for an active room.
-func BuildRoomState(db *gorm.DB, room Room) (RoomState, error) {
+// ViewerSeesRelationship reports whether viewerUserID may see edge r — true
+// exactly when they are one of its two endpoints (#4806 ask 2: "I'd prefer it
+// if the lines that appear between people is not visible to other players").
+//
+// Endpoint scoping, not author scoping. The connection graph stays SHARED and
+// single — one active edge per unordered pair — because the goal cards the
+// operator supplied (#4807) are victory conditions evaluated over that one
+// graph ("to obtain two partners; these partners must not have date/partner/F+
+// relationships with anyone but you"). Per-author edges would let two players
+// hold contradictory connections for the same pair and leave no ground truth
+// for a condition to be true of. What ask 2 hides is who ELSE is connected to
+// whom — the hidden information that makes those goals a game.
+//
+// This is a SERIALIZER property, deliberately. RoomRelationships keeps
+// returning the whole graph, so server-side goal detection reads ground truth
+// while each client sees less than all of it (#4807 c27156 §3), and the
+// operator's "for now" on privacy stays a one-line change to reverse.
+func ViewerSeesRelationship(r Relationship, viewerUserID uint) bool {
+	return r.FromUserID == viewerUserID || r.ToUserID == viewerUserID
+}
+
+// BuildRoomState composes the board snapshot for an active room as seen by
+// viewerUserID. Every field is room-wide except Relationships, which carries
+// only the edges that viewer is an endpoint of.
+func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error) {
 	members, err := RoomMembers(db, room.ID)
 	if err != nil {
 		return RoomState{}, err
@@ -110,6 +135,11 @@ func BuildRoomState(db *gorm.DB, room Room) (RoomState, error) {
 	}
 	stateRels := make([]RoomStateRelationship, 0, len(rels))
 	for _, r := range rels {
+		// The filter is here, on the way out — not in the query above, which
+		// stays the whole-graph read (see ViewerSeesRelationship).
+		if !ViewerSeesRelationship(r, viewerUserID) {
+			continue
+		}
 		t := typeByID[r.TypeID]
 		stateRels = append(stateRels, RoomStateRelationship{
 			FromUserID: r.FromUserID,

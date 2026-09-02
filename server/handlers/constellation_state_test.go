@@ -78,3 +78,44 @@ func TestGetRoomStateHandler_NonMemberForbidden(t *testing.T) {
 		t.Fatalf("non-member state want 403, got %d — %s", w.Code, w.Body.String())
 	}
 }
+
+// #4806 ask 2 — "I'd prefer it if the lines that appear between people is not
+// visible to other players." Asserted on the WIRE, not on the composed struct:
+// the leak this prevents is a devtools leak, so what matters is that the other
+// pair's ids are not in the response body a client could open.
+func TestGetRoomStateHandler_HidesOtherPlayersEdges(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code := newStateHandlerDB(t)
+	defer db.Close()
+
+	room, _ := data_models.GetActiveRoomByCode(db, code)
+	if _, _, err := data_models.JoinRoom(db, 3, code); err != nil {
+		t.Fatalf("join 3: %v", err)
+	}
+	types, _ := data_models.GetRelationshipTypes(db)
+	// 1–2 is not user 3's business; 2–3 is.
+	data_models.SetRelationshipWithHistory(db, room, 1, 1, 2, types[0].ID)
+	data_models.SetRelationshipWithHistory(db, room, 2, 2, 3, types[1].ID)
+
+	r := relRouterAs(db, 3, http.MethodGet, "/constellations/rooms/:code/state", GetRoomStateHandler)
+	w := relDo(r, http.MethodGet, "/constellations/rooms/"+code+"/state", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("state want 200, got %d — %s", w.Code, w.Body.String())
+	}
+	var st data_models.RoomState
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatalf("decode: %v — %s", err, w.Body.String())
+	}
+	if len(st.Relationships) != 1 {
+		t.Fatalf("viewer 3 should see exactly their own edge, got %d: %+v", len(st.Relationships), st.Relationships)
+	}
+	got := st.Relationships[0]
+	if !(got.FromUserID == 3 || got.ToUserID == 3) {
+		t.Errorf("viewer 3 was served an edge they are not part of: %+v", got)
+	}
+	// Everything else in the payload stays room-wide: all three members are
+	// still listed, so the board renders everyone, only the lines are private.
+	if len(st.Members) != 3 {
+		t.Errorf("members should not be narrowed, got %d", len(st.Members))
+	}
+}
