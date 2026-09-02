@@ -335,3 +335,207 @@ func TestLogoutHandler_AnonymousLeavesRoomsUntouched(t *testing.T) {
 		t.Errorf("room %q was slated by an anonymous logout that could not identify a member", room.Code)
 	}
 }
+
+// ---- #4806 ask 1: discriminated join refusals -----------------------------
+//
+// The scanned-link auto-join needs to explain WHICH condition blocked, and
+// error.code cannot carry that: it is derived from the HTTP status, so a full
+// room and a caller seated elsewhere are both "conflict". These tests pin the
+// additive `reason` discriminator the client branches on, and the two enriched
+// refusals (already_in_game names the room, room_full states the size).
+
+// roomErrorBody is the refusal envelope as a client reads it.
+type roomErrorBody struct {
+	Error struct {
+		Code            string `json:"code"`
+		Message         string `json:"message"`
+		Reason          string `json:"reason"`
+		ActiveRoomCode  string `json:"active_room_code"`
+		RoomPlayerCount int    `json:"room_player_count"`
+	} `json:"error"`
+}
+
+func parseRoomError(t *testing.T, body string) roomErrorBody {
+	t.Helper()
+	var parsed roomErrorBody
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal refusal body: %v — body=%s", err, body)
+	}
+	return parsed
+}
+
+// joinAs posts a join for userID against code on a fresh single-route engine.
+func joinAs(db *gorm.DB, userID uint, code string) *httptest.ResponseRecorder {
+	r := roomRouterAs(db, userID, http.MethodPost, "/constellations/rooms/:code/join", JoinRoomHandler)
+	return doJSON(r, http.MethodPost, "/constellations/rooms/"+code+"/join", ``)
+}
+
+// slateRoom plays a room to completion (two members join, both leave) so its
+// code names an ENDED game rather than an unknown one.
+func slateRoom(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	room, _, err := data_models.CreateRoom(db, 90, 2)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, _, err := data_models.JoinRoom(db, 91, room.Code); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	for _, uid := range []uint{90, 91} {
+		if _, err := data_models.LeaveRoom(db, uid, room.Code); err != nil {
+			t.Fatalf("LeaveRoom(%d): %v", uid, err)
+		}
+	}
+	if _, ok := data_models.GetActiveRoomByCode(db, room.Code); ok {
+		t.Fatalf("room %s did not slate", room.Code)
+	}
+	return room.Code
+}
+
+func TestJoinRoomHandler_RefusalReasons(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, db *gorm.DB) (userID uint, code string)
+		wantStatus int
+		wantReason string
+	}{
+		{
+			name: "unknown code",
+			setup: func(t *testing.T, db *gorm.DB) (uint, string) {
+				return 2, "ZZZZZ"
+			},
+			wantStatus: http.StatusNotFound,
+			wantReason: "room_not_found",
+		},
+		{
+			name: "ended game",
+			setup: func(t *testing.T, db *gorm.DB) (uint, string) {
+				return 2, slateRoom(t, db)
+			},
+			wantStatus: http.StatusNotFound,
+			wantReason: "room_ended",
+		},
+		{
+			name: "full room",
+			setup: func(t *testing.T, db *gorm.DB) (uint, string) {
+				room, _, _ := data_models.CreateRoom(db, 1, 2)
+				data_models.JoinRoom(db, 2, room.Code)
+				return 3, room.Code
+			},
+			wantStatus: http.StatusConflict,
+			wantReason: "room_full",
+		},
+		{
+			name: "already in another game",
+			setup: func(t *testing.T, db *gorm.DB) (uint, string) {
+				data_models.CreateRoom(db, 1, 4) // caller's own active room
+				other, _, _ := data_models.CreateRoom(db, 2, 4)
+				return 1, other.Code
+			},
+			wantStatus: http.StatusConflict,
+			wantReason: "already_in_game",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newRoomHandlerDB(t)
+			defer db.Close()
+			userID, code := tc.setup(t, db)
+
+			w := joinAs(db, userID, code)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d — body=%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			got := parseRoomError(t, w.Body.String())
+			if got.Error.Reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q — body=%s", got.Error.Reason, tc.wantReason, w.Body.String())
+			}
+			if got.Error.Message == "" {
+				t.Errorf("refusal has no human message — body=%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// room_full states the size that is full, so the client can say "this game
+// seats 4 and all 4 seats are taken" rather than a bare refusal.
+func TestJoinRoomHandler_FullRefusalStatesTheSize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	room, _, _ := data_models.CreateRoom(db, 1, 2)
+	data_models.JoinRoom(db, 2, room.Code)
+
+	w := joinAs(db, 3, room.Code)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d — body=%s", w.Code, w.Body.String())
+	}
+	got := parseRoomError(t, w.Body.String())
+	if got.Error.RoomPlayerCount != 2 {
+		t.Errorf("room_player_count = %d, want 2 — body=%s", got.Error.RoomPlayerCount, w.Body.String())
+	}
+	if !strings.Contains(got.Error.Message, room.Code) {
+		t.Errorf("full-room message %q does not name the room", got.Error.Message)
+	}
+}
+
+// The ended-game refusal must not read as "no such code": those are different
+// answers to the player who followed the link.
+func TestJoinRoomHandler_EndedIsNotNotFoundProse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	code := slateRoom(t, db)
+	w := joinAs(db, 2, code)
+	got := parseRoomError(t, w.Body.String())
+	if got.Error.Message == "Room not found" {
+		t.Errorf("ended game refused with the unknown-code message — body=%s", w.Body.String())
+	}
+}
+
+// The scanned-link auto-join fires on every room open, member or not, so a
+// member re-opening their own room must get their seat back with a 200 — never
+// an already_in_game 409 against the room they are already in.
+func TestJoinRoomHandler_ExistingMemberRejoinIs200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	room, _, _ := data_models.CreateRoom(db, 1, 4)
+	if _, _, err := data_models.JoinRoom(db, 2, room.Code); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+
+	w := joinAs(db, 2, room.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-join want 200, got %d — body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"slot":2`) {
+		t.Errorf("re-join did not return the existing slot: %s", w.Body.String())
+	}
+	if data_models.RoomOccupancy(db, room.ID) != 2 {
+		t.Errorf("re-join changed occupancy to %d, want 2", data_models.RoomOccupancy(db, room.ID))
+	}
+}
+
+// The creator's own scanned link is the operator's exact scenario: create on
+// one device, open the room link — that must land on the board, not refuse.
+func TestJoinRoomHandler_CreatorRejoinsOwnRoom(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	room, _, _ := data_models.CreateRoom(db, 1, 4)
+	w := joinAs(db, 1, room.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("creator re-join want 200, got %d — body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"slot":1`) {
+		t.Errorf("creator re-join lost slot 1: %s", w.Body.String())
+	}
+}

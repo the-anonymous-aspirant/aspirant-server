@@ -46,7 +46,13 @@ const (
 // Sentinel errors so the handler layer can map to HTTP status codes without
 // string-matching.
 var (
-	ErrRoomNotFound       = errors.New("room not found")
+	ErrRoomNotFound = errors.New("room not found")
+	// ErrRoomEnded is a code that DID name a room, whose game has since ended
+	// (slated: status=completed + soft-deleted). Both it and ErrRoomNotFound
+	// mean "no live room here", but they are different explanations to a player
+	// who followed a join link — "that game is over" vs "no such code" — so the
+	// join path tells them apart (#4806 ask 1).
+	ErrRoomEnded          = errors.New("room has ended")
 	ErrRoomFull           = errors.New("room is full")
 	ErrAlreadyInGame      = errors.New("user is already in an active game")
 	ErrInvalidPlayerCount = errors.New("player count must be between 2 and 8")
@@ -195,6 +201,24 @@ func RoomMembers(db *gorm.DB, roomID uint) ([]RoomMember, error) {
 	return members, err
 }
 
+// EndedRoomExists reports whether code names a room whose game has ENDED —
+// slated (status=completed, soft-deleted) — rather than a code that never named
+// a room at all. GetActiveRoomByCode cannot tell the two apart: it filters on
+// status=active and gorm's soft-delete scope hides the slated row, so both miss.
+//
+// The distinction is only readable while the ended game is still the most
+// recent holder of the code: codeIsFree wipes a completed row when the code is
+// drawn for a new room, after which the code reads as never-used again. That is
+// the honest answer at that point — the old game is gone AND the code is free.
+func EndedRoomExists(db *gorm.DB, code string) bool {
+	var room Room
+	// Unscoped so the soft-deleted (slated) row is visible.
+	if err := db.Unscoped().Where("code = ?", code).First(&room).Error; err != nil {
+		return false
+	}
+	return room.DeletedAt != nil || room.Status == roomStatusCompleted
+}
+
 // GetActiveRoomByCode finds a live (active, non-deleted) room by code.
 func GetActiveRoomByCode(db *gorm.DB, code string) (Room, bool) {
 	var room Room
@@ -249,12 +273,18 @@ func CreateRoom(db *gorm.DB, userID uint, playerCount int) (Room, RoomMember, er
 }
 
 // JoinRoom seats a user in the room named by code. Re-joining the same room is
-// idempotent (the existing membership is returned). A user already in a
-// different active game is refused; a full room is refused. The joiner is
-// assigned the next free slot.
+// idempotent (the existing membership is returned) — the scanned-link auto-join
+// (#4806 ask 1) leans on that: a member re-opening their own room link must land
+// on the board, not be refused. A user already in a DIFFERENT active game is
+// refused; a full room is refused; an unknown code and an ended game are refused
+// distinguishably (ErrRoomNotFound vs ErrRoomEnded). The joiner is assigned the
+// next free slot.
 func JoinRoom(db *gorm.DB, userID uint, code string) (Room, RoomMember, error) {
 	room, ok := GetActiveRoomByCode(db, code)
 	if !ok {
+		if EndedRoomExists(db, code) {
+			return Room{}, RoomMember{}, ErrRoomEnded
+		}
 		return Room{}, RoomMember{}, ErrRoomNotFound
 	}
 	// Already in some active game?
