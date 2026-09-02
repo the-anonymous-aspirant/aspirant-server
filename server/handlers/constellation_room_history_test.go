@@ -185,6 +185,103 @@ func TestGetRoomHistoryHandler_Pagination(t *testing.T) {
 	}
 }
 
+func TestGetRoomHistoryHandler_EnvelopeNamesOnlyVisibleIDs(t *testing.T) {
+	// Arbiter c27575 finding B: next_after_id/has_more derived from the
+	// scanned (unscoped) page let a viewer enumerate every hidden event's id,
+	// ordinal and time bracket with a ?limit=1 walk. The envelope must speak
+	// only of events the viewer may see.
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	if _, _, err := data_models.JoinRoom(db, 3, code); err != nil {
+		t.Fatalf("join member 3: %v", err)
+	}
+
+	// Log: 1-2, 1-2(clear), 1-3, 1-2, 1-2(clear) — viewer 3 party to one of 5.
+	historySet(t, db, 1, 1, 2, typeID, code)
+	historyClear(t, db, 1, 1, 2, code)
+	historySet(t, db, 1, 1, 3, typeID, code)
+	historySet(t, db, 1, 1, 2, typeID, code)
+	historyClear(t, db, 1, 1, 2, code)
+
+	// One default request: the envelope must point at the visible event, not
+	// at the newest hidden one, and must not claim more.
+	resp, status, body := historyGet(db, 3, code, "")
+	if status != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", status, body)
+	}
+	if len(resp.Events) != 1 {
+		t.Fatalf("viewer 3 must see exactly 1 of 5 events, got %s", body)
+	}
+	visibleID := resp.Events[0].ID
+	if resp.NextAfterID != visibleID {
+		t.Errorf("next_after_id must be the visible event's id %d, got %d (a hidden id leaked)", visibleID, resp.NextAfterID)
+	}
+	if resp.HasMore {
+		t.Errorf("no further visible event exists; has_more=true would invite a hidden-id walk: %s", body)
+	}
+
+	// A ?limit=1 walk must terminate in ONE page — a page per hidden event is
+	// exactly the enumeration the finding measured.
+	pages := 0
+	after := uint(0)
+	for {
+		r, s, b := historyGet(db, 3, code, fmt.Sprintf("?after_id=%d&limit=1", after))
+		if s != http.StatusOK {
+			t.Fatalf("walk page after %d: want 200, got %d — %s", after, s, b)
+		}
+		pages++
+		if !r.HasMore {
+			break
+		}
+		after = r.NextAfterID
+		if pages > 6 {
+			t.Fatalf("walk did not terminate")
+		}
+	}
+	if pages != 1 {
+		t.Errorf("limit=1 walk for a 1-visible viewer must be 1 page, got %d (hidden events enumerated)", pages)
+	}
+}
+
+func TestGetRoomHistoryHandler_VisiblePageFillsAcrossHiddenRuns(t *testing.T) {
+	// The visible-page loop must keep scanning past hidden events until the
+	// page is full, and has_more must be true only when a further VISIBLE
+	// event was actually found.
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	if _, _, err := data_models.JoinRoom(db, 3, code); err != nil {
+		t.Fatalf("join member 3: %v", err)
+	}
+
+	// Alternate hidden/visible: 1-2, 1-3, 1-2(clear), 1-3(clear), 1-2, 1-3.
+	historySet(t, db, 1, 1, 2, typeID, code)
+	historySet(t, db, 1, 1, 3, typeID, code)
+	historyClear(t, db, 1, 1, 2, code)
+	historyClear(t, db, 1, 1, 3, code)
+	historySet(t, db, 1, 1, 2, typeID, code)
+	historySet(t, db, 1, 1, 3, typeID, code)
+
+	// Viewer 3 has 3 visible events; a limit=2 page must return 2 of them
+	// (skipping interleaved hidden ones) and point its cursor at the 2nd.
+	resp, status, body := historyGet(db, 3, code, "?limit=2")
+	if status != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", status, body)
+	}
+	if len(resp.Events) != 2 || !resp.HasMore {
+		t.Fatalf("want a full visible page of 2 with has_more=true, got %s", body)
+	}
+	if resp.NextAfterID != resp.Events[1].ID {
+		t.Errorf("cursor must be the last visible id %d, got %d", resp.Events[1].ID, resp.NextAfterID)
+	}
+	// Second page: the remaining visible event, walk ends.
+	resp2, _, body2 := historyGet(db, 3, code, fmt.Sprintf("?after_id=%d&limit=2", resp.NextAfterID))
+	if len(resp2.Events) != 1 || resp2.HasMore {
+		t.Fatalf("want the final visible event with has_more=false, got %s", body2)
+	}
+}
+
 func TestGetRoomHistoryHandler_BadCursorRejected(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, code, _ := newRelHandlerDB(t)
