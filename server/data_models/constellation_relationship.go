@@ -32,6 +32,13 @@ var (
 	ErrRelInvalidType     = errors.New("unknown relationship type")
 	ErrRelNoActiveEdge    = errors.New("no active relationship for that pair")
 	ErrRelCallerNotMember = errors.New("only a member of the room may edit its graph")
+	// ErrRelNotEndpoint is the write-authorization boundary (#4834): a caller may
+	// only create, change, clear, undo or redo an edge they are an endpoint of —
+	// "a user should not be able to modify the relationships of two other people"
+	// (operator ruling 2026-09-02). Write authorization matches read scoping
+	// (#4809 / ViewerSeesRelationship); being able to SEE another pair's edge
+	// (a future #4835 transparency mode) is not permission to MODIFY it.
+	ErrRelNotEndpoint = errors.New("only an endpoint of a relationship may modify it")
 )
 
 // Relationship is one edge in a room's shared graph.
