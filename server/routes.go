@@ -164,6 +164,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// composes.
 		trustedRoutes.GET("/constellations/rooms/:code/state", handlers.GetRoomStateHandler)
 
+		// Constellations room relationship-event history (#4833-A1 / #4847).
+		// Oldest-first cursor pages over the #4829-A3 append-only event log,
+		// scoped to the viewer's own edges like /state and /relationships
+		// (#4809); member-gated. Distinct from .../relationships/history,
+		// which is the caller's capped undo stack (#4599).
+		trustedRoutes.GET("/constellations/rooms/:code/history", handlers.GetRoomHistoryHandler)
+
 		// Constellations relationship-graph edit API (#4587-B1). The shared
 		// graph a room's members agree on; only a member of the room may edit
 		// or read it (enforced in the handler on top of the Trusted gate).

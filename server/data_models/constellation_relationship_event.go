@@ -57,3 +57,17 @@ func RoomRelationshipEvents(db *gorm.DB, roomID uint) ([]RelationshipEvent, erro
 	err := db.Where("room_id = ?", roomID).Order("id ASC").Find(&events).Error
 	return events, err
 }
+
+// RoomRelationshipEventsPage returns one oldest-first page of the room's event
+// log: up to limit rows with ID > afterID (afterID 0 starts at the beginning).
+// The log is append-only, so an id cursor is stable — rows are only ever added
+// after the last one a prior page saw. Deliberately UNSCOPED: the #4847 room
+// history endpoint filters for its viewer on the way out (in the handler), so
+// this read stays usable by features that need the whole timeline, exactly as
+// RoomRelationshipEvents is for the goal predicates.
+func RoomRelationshipEventsPage(db *gorm.DB, roomID, afterID uint, limit int) ([]RelationshipEvent, error) {
+	var events []RelationshipEvent
+	err := db.Where("room_id = ? AND id > ?", roomID, afterID).
+		Order("id ASC").Limit(limit).Find(&events).Error
+	return events, err
+}
