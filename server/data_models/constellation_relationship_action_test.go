@@ -179,3 +179,67 @@ func TestHistory_PerPlayerStacksIndependent(t *testing.T) {
 		t.Fatalf("p1 should still have its action: %v", err)
 	}
 }
+
+// #4834 — write authorization matches read scoping: only an endpoint of an edge
+// may set/clear/undo/redo it. A member must not modify a relationship between
+// two other players (operator ruling 2026-09-02).
+
+func TestWriteAuthz_SetAndClearRefuseNonEndpoint(t *testing.T) {
+	db, room, t1, _ := newHistoryDB(t)
+	defer db.Close()
+
+	// Player 3 tries to set the 1-2 edge — refused.
+	if _, err := SetRelationshipWithHistory(db, room, 3, 1, 2, t1); err != ErrRelNotEndpoint {
+		t.Fatalf("set by non-endpoint want ErrRelNotEndpoint, got %v", err)
+	}
+	// And nothing was written — no action, no edge.
+	if got := activeType(db, room.ID, 1, 2); got != 0 {
+		t.Fatalf("refused set must not create the edge, got type %d", got)
+	}
+
+	// An endpoint (1) sets it fine.
+	if _, err := SetRelationshipWithHistory(db, room, 1, 1, 2, t1); err != nil {
+		t.Fatalf("set by endpoint should succeed, got %v", err)
+	}
+	// Player 3 tries to clear the 1-2 edge — refused; the edge survives.
+	if err := ClearRelationshipWithHistory(db, room, 3, 1, 2); err != ErrRelNotEndpoint {
+		t.Fatalf("clear by non-endpoint want ErrRelNotEndpoint, got %v", err)
+	}
+	if got := activeType(db, room.ID, 1, 2); got == 0 {
+		t.Fatal("refused clear must not remove the edge")
+	}
+	// An endpoint (2) clears it fine.
+	if err := ClearRelationshipWithHistory(db, room, 2, 1, 2); err != nil {
+		t.Fatalf("clear by endpoint should succeed, got %v", err)
+	}
+}
+
+func TestWriteAuthz_UndoRedoRefuseNonEndpointGrandfathered(t *testing.T) {
+	db, room, t1, _ := newHistoryDB(t)
+	defer db.Close()
+
+	// A grandfathered cross-party action: recorded by player 3 for the 1-2 pair,
+	// which the new rule would no longer allow to be created. It must not be
+	// replayable by player 3, who is not an endpoint.
+	low, high := normPair(1, 2)
+	if err := db.Create(&RelationshipAction{
+		RoomID: room.ID, ActorUserID: 3, PairLow: low, PairHigh: high,
+		Kind: ActionSet, TypeID: t1, FromUserID: 1, ToUserID: 2, Undone: false,
+	}).Error; err != nil {
+		t.Fatalf("seed grandfathered action: %v", err)
+	}
+	if err := UndoRelationship(db, room, 3); err != ErrRelNotEndpoint {
+		t.Fatalf("undo of a cross-party action by non-endpoint want ErrRelNotEndpoint, got %v", err)
+	}
+
+	// Same for redo (an undone cross-party action).
+	if err := db.Create(&RelationshipAction{
+		RoomID: room.ID, ActorUserID: 3, PairLow: low, PairHigh: high,
+		Kind: ActionSet, TypeID: t1, FromUserID: 1, ToUserID: 2, Undone: true,
+	}).Error; err != nil {
+		t.Fatalf("seed undone grandfathered action: %v", err)
+	}
+	if err := RedoRelationship(db, room, 3); err != ErrRelNotEndpoint {
+		t.Fatalf("redo of a cross-party action by non-endpoint want ErrRelNotEndpoint, got %v", err)
+	}
+}
