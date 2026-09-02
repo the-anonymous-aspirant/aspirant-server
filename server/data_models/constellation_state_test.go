@@ -232,3 +232,48 @@ func TestViewerSeesRelationship(t *testing.T) {
 		}
 	}
 }
+
+// A player's selected goal is PRIVATE: it appears in that player's own /state
+// snapshot and never in another player's (#4807-A1). The scoping is server-side
+// so a client cannot leak it via devtools — same discipline as the edge filter.
+func TestBuildRoomState_GoalIsPrivate(t *testing.T) {
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	db.AutoMigrate(&User{}, &Room{}, &RoomMember{}, &RelationshipType{},
+		&Relationship{}, &RelationshipAction{}, &DiceRoll{}, &ConstellationProfile{},
+		&GoalCard{}, &PlayerGoal{})
+	SeedRelationshipTypes(db)
+	SeedGoalCards(db)
+	room, _, _ := CreateRoom(db, 1, 4)
+	JoinRoom(db, 2, room.Code)
+
+	cards, _ := GetGoalCards(db)
+	chosen := cards[0]
+	if _, err := SetPlayerGoal(db, room, 1, chosen.ID); err != nil {
+		t.Fatalf("SetPlayerGoal: %v", err)
+	}
+
+	// Player 1 sees their own goal.
+	own, err := BuildRoomState(db, room, 1)
+	if err != nil {
+		t.Fatalf("BuildRoomState(1): %v", err)
+	}
+	if own.Goal == nil || own.Goal.CardID != chosen.ID {
+		t.Fatalf("player 1's own goal missing from their state: %+v", own.Goal)
+	}
+	if own.Goal.VictoryCondition == "" || own.Goal.Achieved {
+		t.Errorf("goal payload wrong: condition=%q achieved=%v (achieved is A2's job)", own.Goal.VictoryCondition, own.Goal.Achieved)
+	}
+
+	// Player 2 must NOT see player 1's goal.
+	other, err := BuildRoomState(db, room, 2)
+	if err != nil {
+		t.Fatalf("BuildRoomState(2): %v", err)
+	}
+	if other.Goal != nil {
+		t.Fatalf("player 1's goal leaked into player 2's state: %+v", other.Goal)
+	}
+}

@@ -135,6 +135,10 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// vocabulary is non-sensitive reference data any logged-in player needs
 		// to render the board; colours come from the row, not the frontend.
 		authRoutes.GET("/constellations/relationship-types", handlers.GetConstellationRelationshipTypesHandler)
+		// Goal-card victory-condition deck (#4807-A1) — non-sensitive reference
+		// data any player needs to render the dictionary; text and predicate
+		// key come from the row.
+		authRoutes.GET("/constellations/goal-cards", handlers.GetConstellationGoalCardsHandler)
 		// Per-user game identity (subtask #4595-A3), scoped to the session user;
 		// the icon reuses the existing avatar.
 		authRoutes.GET("/constellations/profile", handlers.GetConstellationProfileHandler)
@@ -173,6 +177,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/constellations/rooms/:code/relationships/history", handlers.GetRelationshipHistoryHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/relationships/undo", handlers.UndoRelationshipHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/relationships/redo", handlers.RedoRelationshipHandler)
+
+		// Constellations goal selection (#4807-A1). A player selects their own
+		// private goal card for the room; the choice appears only in that
+		// player's /state (serializer-scoped), never another's. No read route —
+		// a goal is read through /state, by its owner alone.
+		trustedRoutes.POST("/constellations/rooms/:code/goal/set", handlers.SetGoalHandler)
+		trustedRoutes.POST("/constellations/rooms/:code/goal/clear", handlers.ClearGoalHandler)
 
 		// Constellations server-authoritative dice (#4587-B2). Everyone in the
 		// room sees the same resolved roll; only a member may roll or read it.
