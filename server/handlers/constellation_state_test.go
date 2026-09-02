@@ -20,7 +20,7 @@ func newStateHandlerDB(t *testing.T) (*gorm.DB, string) {
 	}
 	db.AutoMigrate(&data_models.User{}, &data_models.Room{}, &data_models.RoomMember{},
 		&data_models.RelationshipType{}, &data_models.Relationship{},
-		&data_models.RelationshipAction{}, &data_models.DiceRoll{}, &data_models.ConstellationProfile{})
+		&data_models.RelationshipAction{}, &data_models.RelationshipEvent{}, &data_models.DiceRoll{}, &data_models.ConstellationProfile{})
 	data_models.SeedRelationshipTypes(db)
 	room, _, _ := data_models.CreateRoom(db, 1, 4)
 	data_models.JoinRoom(db, 2, room.Code)

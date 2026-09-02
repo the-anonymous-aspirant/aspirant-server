@@ -14,7 +14,7 @@ func newStateDB(t *testing.T) (*gorm.DB, Room) {
 		t.Fatalf("open db: %v", err)
 	}
 	db.AutoMigrate(&User{}, &Room{}, &RoomMember{}, &RelationshipType{},
-		&Relationship{}, &RelationshipAction{}, &DiceRoll{}, &ConstellationProfile{})
+		&Relationship{}, &RelationshipAction{}, &RelationshipEvent{}, &DiceRoll{}, &ConstellationProfile{})
 	SeedRelationshipTypes(db)
 	room, _, _ := CreateRoom(db, 1, 4)
 	JoinRoom(db, 2, room.Code)
@@ -243,7 +243,7 @@ func TestBuildRoomState_GoalIsPrivate(t *testing.T) {
 	}
 	defer db.Close()
 	db.AutoMigrate(&User{}, &Room{}, &RoomMember{}, &RelationshipType{},
-		&Relationship{}, &RelationshipAction{}, &DiceRoll{}, &ConstellationProfile{},
+		&Relationship{}, &RelationshipAction{}, &RelationshipEvent{}, &DiceRoll{}, &ConstellationProfile{},
 		&GoalCard{}, &PlayerGoal{})
 	SeedRelationshipTypes(db)
 	SeedGoalCards(db)

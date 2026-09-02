@@ -15,7 +15,7 @@ func newHistoryDB(t *testing.T) (*gorm.DB, Room, uint, uint) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	db.AutoMigrate(&Room{}, &RoomMember{}, &RelationshipType{}, &Relationship{}, &RelationshipAction{})
+	db.AutoMigrate(&Room{}, &RoomMember{}, &RelationshipType{}, &Relationship{}, &RelationshipAction{}, &RelationshipEvent{})
 	SeedRelationshipTypes(db)
 	room, _, _ := CreateRoom(db, 1, 4)
 	JoinRoom(db, 2, room.Code)

@@ -21,7 +21,7 @@ func newHistHandlerDB(t *testing.T) (*gorm.DB, string, uint) {
 		t.Fatalf("open db: %v", err)
 	}
 	db.AutoMigrate(&data_models.Room{}, &data_models.RoomMember{},
-		&data_models.RelationshipType{}, &data_models.Relationship{}, &data_models.RelationshipAction{})
+		&data_models.RelationshipType{}, &data_models.Relationship{}, &data_models.RelationshipAction{}, &data_models.RelationshipEvent{})
 	data_models.SeedRelationshipTypes(db)
 	room, _, _ := data_models.CreateRoom(db, 1, 4)
 	data_models.JoinRoom(db, 2, room.Code)
