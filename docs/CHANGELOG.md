@@ -4,6 +4,25 @@
 
 ### Changed
 
+- **Constellations: a player now sees only the connections they are part of.**
+  `GET .../rooms/:code/state` shipped the room's whole relationship graph to
+  every member, so anyone could read who else was connected to whom — from the
+  board, or straight out of devtools. The `relationships` array is now scoped to
+  the caller: an edge is serialized only to the two players it joins. The same
+  filter is applied to `GET .../rooms/:code/relationships`, which returned the
+  whole graph to any member as well and would otherwise have stayed open behind
+  a front door that looked fixed. Nothing else narrows — members, occupancy,
+  dice and history stay room-wide, so the board still shows every player and
+  only the lines between them are private.
+
+  Endpoint-scoped, not author-scoped: the connection graph stays shared and
+  single (one active edge per unordered pair), and `RoomRelationships` still
+  reads it whole, because goal-achievement detection has to evaluate victory
+  conditions over edges between other players while each client sees less than
+  all of them. Privacy is a property of the serializer, so revealing the graph
+  later — at game end, say — is a one-line change rather than a rework.
+  Operator finding, system_3 #4806 ask 2.
+
 - **Constellations: a join refusal now says which condition blocked it.** Every
   refusal from `POST /api/constellations/rooms/:code/join` (and from room
   create) carries an additive `reason` on the error detail —
