@@ -137,12 +137,30 @@ func TestJoinFullRoom(t *testing.T) {
 	}
 }
 
-// Joining an unknown or completed code is a not-found.
+// Joining a code that never named a room is a plain not-found — distinct from
+// the ended-game refusal covered by TestLastLeaveOfPlayedRoomSlates (#4806 ask 1).
 func TestJoinUnknownCode(t *testing.T) {
 	db := newRoomTestDB(t)
 	defer db.Close()
 	if _, _, err := JoinRoom(db, 1, "ZZZZZ"); err != ErrRoomNotFound {
 		t.Errorf("join unknown code err = %v, want ErrRoomNotFound", err)
+	}
+	if EndedRoomExists(db, "ZZZZZ") {
+		t.Errorf("EndedRoomExists(\"ZZZZZ\") = true, want false for a never-used code")
+	}
+}
+
+// A room that is still live never reads as ended, so a joinable code cannot be
+// mis-explained as a finished game.
+func TestEndedRoomExistsFalseForLiveRoom(t *testing.T) {
+	db := newRoomTestDB(t)
+	defer db.Close()
+	room, _, err := CreateRoom(db, 1, 2)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if EndedRoomExists(db, room.Code) {
+		t.Errorf("EndedRoomExists(%q) = true for a live room", room.Code)
 	}
 }
 
@@ -201,8 +219,14 @@ func TestLastLeaveOfPlayedRoomSlates(t *testing.T) {
 	if slated.DeletedAt == nil {
 		t.Errorf("slated room has nil deleted_at; expected soft-delete")
 	}
-	if _, _, err := JoinRoom(db, 3, room.Code); err != ErrRoomNotFound {
-		t.Errorf("join slated room err = %v, want ErrRoomNotFound", err)
+	// #4806 ask 1: a slated room and a never-used code are both "no live room",
+	// but the player following a join link needs to be told which — "that game
+	// has ended" is a different answer from "no such code".
+	if _, _, err := JoinRoom(db, 3, room.Code); err != ErrRoomEnded {
+		t.Errorf("join slated room err = %v, want ErrRoomEnded", err)
+	}
+	if !EndedRoomExists(db, room.Code) {
+		t.Errorf("EndedRoomExists(%q) = false, want true for a slated room", room.Code)
 	}
 }
 
