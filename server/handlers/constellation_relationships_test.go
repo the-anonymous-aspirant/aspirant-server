@@ -263,3 +263,67 @@ func TestRedoRelationshipHandler_ScopesGraphToCaller(t *testing.T) {
 		t.Errorf("redo hid an edge from its own endpoint: %s", w1.Body.String())
 	}
 }
+
+// #4834 — the write-authorization boundary surfaces as 403 across all four
+// write doors: a member may not modify an edge between two other players.
+
+func TestWriteAuthz_SetHandler_NonEndpointForbidden(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	data_models.JoinRoom(db, 3, code) // player 3, endpoint of nothing
+
+	// Player 3 tries to set the 1-2 edge.
+	r := relRouterAs(db, 3, http.MethodPost, "/constellations/rooms/:code/relationships/set", SetRelationshipHandler)
+	body := fmt.Sprintf(`{"from_user_id":1,"to_user_id":2,"type_id":%d}`, typeID)
+	w := relDo(r, http.MethodPost, "/constellations/rooms/"+code+"/relationships/set", body)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("set between two others want 403, got %d — %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWriteAuthz_ClearHandler_NonEndpointForbidden(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	data_models.JoinRoom(db, 3, code)
+	room, _ := data_models.GetActiveRoomByCode(db, code)
+	data_models.SetRelationship(db, room, 1, 2, typeID) // seed a live 1-2 edge
+
+	r := relRouterAs(db, 3, http.MethodPost, "/constellations/rooms/:code/relationships/clear", ClearRelationshipHandler)
+	w := relDo(r, http.MethodPost, "/constellations/rooms/"+code+"/relationships/clear", `{"from_user_id":1,"to_user_id":2}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("clear between two others want 403, got %d — %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWriteAuthz_UndoRedoHandlers_NonEndpointForbidden(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newRelHandlerDB(t)
+	defer db.Close()
+	data_models.JoinRoom(db, 3, code)
+	room, _ := data_models.GetActiveRoomByCode(db, code)
+
+	// Grandfathered cross-party actions recorded by player 3 for the 1-2 pair.
+	if err := db.Create(&data_models.RelationshipAction{
+		RoomID: room.ID, ActorUserID: 3, PairLow: 1, PairHigh: 2,
+		Kind: data_models.ActionSet, TypeID: typeID, FromUserID: 1, ToUserID: 2, Undone: false,
+	}).Error; err != nil {
+		t.Fatalf("seed undo action: %v", err)
+	}
+	ru := relRouterAs(db, 3, http.MethodPost, "/constellations/rooms/:code/relationships/undo", UndoRelationshipHandler)
+	if w := relDo(ru, http.MethodPost, "/constellations/rooms/"+code+"/relationships/undo", ""); w.Code != http.StatusForbidden {
+		t.Fatalf("undo of a cross-party action want 403, got %d — %s", w.Code, w.Body.String())
+	}
+
+	if err := db.Create(&data_models.RelationshipAction{
+		RoomID: room.ID, ActorUserID: 3, PairLow: 1, PairHigh: 2,
+		Kind: data_models.ActionSet, TypeID: typeID, FromUserID: 1, ToUserID: 2, Undone: true,
+	}).Error; err != nil {
+		t.Fatalf("seed redo action: %v", err)
+	}
+	rr := relRouterAs(db, 3, http.MethodPost, "/constellations/rooms/:code/relationships/redo", RedoRelationshipHandler)
+	if w := relDo(rr, http.MethodPost, "/constellations/rooms/"+code+"/relationships/redo", ""); w.Code != http.StatusForbidden {
+		t.Fatalf("redo of a cross-party action want 403, got %d — %s", w.Code, w.Body.String())
+	}
+}

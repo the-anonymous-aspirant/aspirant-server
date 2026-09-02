@@ -49,6 +49,8 @@ func mapRelationshipError(err error) (int, string, bool) {
 		return http.StatusBadRequest, "Unknown relationship type", true
 	case data_models.ErrRelNoActiveEdge:
 		return http.StatusNotFound, "No active relationship for that pair", true
+	case data_models.ErrRelNotEndpoint:
+		return http.StatusForbidden, "You may only modify relationships you are part of", true
 	default:
 		return 0, "", false
 	}
@@ -200,6 +202,12 @@ func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, viewerID 
 	applied := true
 	if err == empty {
 		applied = false
+	} else if status, msg, handled := mapRelationshipError(err); handled {
+		// e.g. ErrRelNotEndpoint (#4834) — a non-endpoint may not replay a
+		// grandfathered cross-party action; surface it as the discriminated
+		// authorization refusal, not a 500.
+		RespondWithError(c, status, msg)
+		return
 	} else if err != nil {
 		log.Printf("Constellations: undo/redo in room %d: %v", room.ID, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error applying history")

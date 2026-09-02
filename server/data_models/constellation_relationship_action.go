@@ -145,6 +145,9 @@ func deactivatePair(db *gorm.DB, roomID, a, b uint) error {
 // undo stack. Thin wrapper over B1's SetRelationship — the base function stays
 // history-free so its own callers and tests are unaffected.
 func SetRelationshipWithHistory(db *gorm.DB, room Room, actorUserID, fromUserID, toUserID, typeID uint) (Relationship, error) {
+	if actorUserID != fromUserID && actorUserID != toUserID {
+		return Relationship{}, ErrRelNotEndpoint
+	}
 	prev := capturePrev(db, room.ID, fromUserID, toUserID)
 	rel, err := SetRelationship(db, room, fromUserID, toUserID, typeID)
 	if err != nil {
@@ -162,6 +165,9 @@ func SetRelationshipWithHistory(db *gorm.DB, room Room, actorUserID, fromUserID,
 // ClearRelationshipWithHistory applies a clear edit and records it on the
 // actor's undo stack.
 func ClearRelationshipWithHistory(db *gorm.DB, room Room, actorUserID, fromUserID, toUserID uint) error {
+	if actorUserID != fromUserID && actorUserID != toUserID {
+		return ErrRelNotEndpoint
+	}
 	prev := capturePrev(db, room.ID, fromUserID, toUserID)
 	if err := ClearRelationship(db, room, fromUserID, toUserID); err != nil {
 		return err
@@ -181,6 +187,13 @@ func UndoRelationship(db *gorm.DB, room Room, actorUserID uint) error {
 		Order("id DESC").First(&a).Error
 	if err != nil {
 		return ErrNothingToUndo
+	}
+	// Write authorization (#4834): the actor may only re-write an edge they are
+	// an endpoint of. New actions can only be recorded party-edges (guarded in
+	// Set/ClearRelationshipWithHistory), but a grandfathered cross-party action
+	// recorded before the rule must not be replayable by a non-endpoint.
+	if actorUserID != a.PairLow && actorUserID != a.PairHigh {
+		return ErrRelNotEndpoint
 	}
 	if a.PrevExisted {
 		if _, err := SetRelationship(db, room, a.PrevFrom, a.PrevTo, a.PrevTypeID); err != nil {
@@ -209,6 +222,11 @@ func RedoRelationship(db *gorm.DB, room Room, actorUserID uint) error {
 		Order("id ASC").First(&a).Error
 	if err != nil {
 		return ErrNothingToRedo
+	}
+	// Write authorization (#4834): as in undo, a non-endpoint may not replay a
+	// grandfathered cross-party action.
+	if actorUserID != a.PairLow && actorUserID != a.PairHigh {
+		return ErrRelNotEndpoint
 	}
 	if a.Kind == ActionSet {
 		if _, err := SetRelationship(db, room, a.FromUserID, a.ToUserID, a.TypeID); err != nil {
