@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **Constellations: the already-in-a-game refusal now names the room.** Create
+  and join answered `ErrAlreadyInGame` with a bare `"You are already in an
+  active game"`, which told the user nothing they could act on — they could not
+  tell which room held their seat, so they could not navigate there to leave it
+  and free themselves. The 409 now looks the caller's active room up
+  (`data_models.ActiveRoomForUser`) and names it in both the message ("You are
+  already in game ZK4TQ — leave it before starting or joining another.") and an
+  additive `active_room_code` field on the error detail, which the client
+  renders as a link to that room. `code` and `message` keep their existing
+  shape, and the field is omitted (message falling back to the bare form) if
+  the lookup finds no room. Operator finding, system_3 #4798.
+
 - **Constellations: a solo creator's room no longer dies when they step out.**
   The slate-on-empty rule fired whenever the last in-room member left; for a
   room whose only member was its creator, one Leave — or, since #4778, one

@@ -50,6 +50,18 @@ func membersDTO(db *gorm.DB, roomID uint) []roomMemberDTO {
 	return out
 }
 
+// alreadyInGameDetail is the ErrAlreadyInGame refusal body. It keeps the
+// {code, message} envelope every other error response uses (ErrorDetail in
+// common.go) and adds the caller's active room code, so the client can name
+// the room and link to it instead of showing a bare "you are already in an
+// active game" the user cannot act on (#4798). The field is omitted when the
+// lookup finds no room, in which case Message stays the bare form.
+type alreadyInGameDetail struct {
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	ActiveRoomCode string `json:"active_room_code,omitempty"`
+}
+
 // mapRoomError maps a data_models lifecycle error to an HTTP status + message.
 // Returns (status, msg, true) when handled, or (_, _, false) for an unexpected
 // error the caller should treat as a 500.
@@ -70,6 +82,33 @@ func mapRoomError(err error) (int, string, bool) {
 	}
 }
 
+// respondRoomError writes the HTTP response for a data_models lifecycle error.
+// It reports whether the error was handled; an unhandled error is the caller's
+// 500. ErrAlreadyInGame is the one case that needs the caller's identity: the
+// refusal names the room they are already seated in.
+func respondRoomError(c *gin.Context, db *gorm.DB, userID uint, err error) bool {
+	status, msg, handled := mapRoomError(err)
+	if !handled {
+		return false
+	}
+	if err != data_models.ErrAlreadyInGame {
+		RespondWithError(c, status, msg)
+		return true
+	}
+	code := ""
+	if room, ok := data_models.ActiveRoomForUser(db, userID); ok {
+		code = room.Code
+		msg = "You are already in game " + code + " — leave it before starting or joining another."
+	}
+	log.Printf("Error response: %d - %s - %s", status, httpStatusToErrorCode(status), msg)
+	c.JSON(status, gin.H{"error": alreadyInGameDetail{
+		Code:           httpStatusToErrorCode(status),
+		Message:        msg,
+		ActiveRoomCode: code,
+	}})
+	return true
+}
+
 // CreateRoomHandler creates a room with the requested player count, generates a
 // unique code, and seats the caller in slot 1.
 func CreateRoomHandler(c *gin.Context) {
@@ -88,8 +127,7 @@ func CreateRoomHandler(c *gin.Context) {
 
 	room, member, err := data_models.CreateRoom(db, userID, req.PlayerCount)
 	if err != nil {
-		if status, msg, handled := mapRoomError(err); handled {
-			RespondWithError(c, status, msg)
+		if respondRoomError(c, db, userID, err) {
 			return
 		}
 		log.Printf("Constellations: create room for user %d: %v", userID, err)
@@ -120,8 +158,7 @@ func JoinRoomHandler(c *gin.Context) {
 
 	room, member, err := data_models.JoinRoom(db, userID, code)
 	if err != nil {
-		if status, msg, handled := mapRoomError(err); handled {
-			RespondWithError(c, status, msg)
+		if respondRoomError(c, db, userID, err) {
 			return
 		}
 		log.Printf("Constellations: join room %q for user %d: %v", code, userID, err)
@@ -152,8 +189,7 @@ func LeaveRoomHandler(c *gin.Context) {
 
 	room, err := data_models.LeaveRoom(db, userID, code)
 	if err != nil {
-		if status, msg, handled := mapRoomError(err); handled {
-			RespondWithError(c, status, msg)
+		if respondRoomError(c, db, userID, err) {
 			return
 		}
 		log.Printf("Constellations: leave room %q for user %d: %v", code, userID, err)

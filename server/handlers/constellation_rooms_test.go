@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -113,12 +114,80 @@ func TestJoinRoomHandler_AlreadyInGame(t *testing.T) {
 	// user 1 creates room A, user 1 is already in it; joining any room again 409s.
 	roomA, _, _ := data_models.CreateRoom(db, 1, 4)
 	roomB, _, _ := data_models.CreateRoom(db, 2, 4)
-	_ = roomA
 
 	r := roomRouterAs(db, 1, http.MethodPost, "/constellations/rooms/:code/join", JoinRoomHandler)
 	w := doJSON(r, http.MethodPost, "/constellations/rooms/"+roomB.Code+"/join", ``)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("want 409, got %d — body=%s", w.Code, w.Body.String())
+	}
+	// #4798: the refusal names the room the caller is stuck in, both as a
+	// machine-readable field and inside the message the client renders, so the
+	// user can navigate there to leave it. Guards against the bare-string form.
+	assertNamesActiveRoom(t, w.Body.String(), roomA.Code)
+	if strings.Contains(w.Body.String(), roomB.Code) {
+		t.Errorf("refusal names the room joined (%s) rather than the active one: %s", roomB.Code, w.Body.String())
+	}
+}
+
+// assertNamesActiveRoom checks an ErrAlreadyInGame 409 body carries the active
+// room code in both the additive active_room_code field and the human message.
+func assertNamesActiveRoom(t *testing.T, body, activeCode string) {
+	t.Helper()
+	var parsed struct {
+		Error struct {
+			Code           string `json:"code"`
+			Message        string `json:"message"`
+			ActiveRoomCode string `json:"active_room_code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal 409 body: %v — body=%s", err, body)
+	}
+	if parsed.Error.Code != "conflict" {
+		t.Errorf("error.code = %q, want conflict — body=%s", parsed.Error.Code, body)
+	}
+	if parsed.Error.ActiveRoomCode != activeCode {
+		t.Errorf("active_room_code = %q, want %q — body=%s", parsed.Error.ActiveRoomCode, activeCode, body)
+	}
+	if !strings.Contains(parsed.Error.Message, activeCode) {
+		t.Errorf("message %q does not name the active room %q", parsed.Error.Message, activeCode)
+	}
+}
+
+// Creating a second room while already seated is refused with the same
+// room-naming 409 the join arm returns (#4798).
+func TestCreateRoomHandler_AlreadyInGameNamesRoom(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	active, _, err := data_models.CreateRoom(db, 1, 4)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+
+	r := roomRouterAs(db, 1, http.MethodPost, "/constellations/rooms", CreateRoomHandler)
+	w := doJSON(r, http.MethodPost, "/constellations/rooms", `{"player_count":4}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d — body=%s", w.Code, w.Body.String())
+	}
+	assertNamesActiveRoom(t, w.Body.String(), active.Code)
+}
+
+// A room-lifecycle error that is NOT ErrAlreadyInGame keeps the plain
+// {code, message} envelope — active_room_code is scoped to the one refusal.
+func TestJoinRoomHandler_NotFoundCarriesNoRoomCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newRoomHandlerDB(t)
+	defer db.Close()
+
+	r := roomRouterAs(db, 2, http.MethodPost, "/constellations/rooms/:code/join", JoinRoomHandler)
+	w := doJSON(r, http.MethodPost, "/constellations/rooms/ZZZZZ/join", ``)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d — body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "active_room_code") {
+		t.Errorf("404 body carries active_room_code: %s", w.Body.String())
 	}
 }
 
