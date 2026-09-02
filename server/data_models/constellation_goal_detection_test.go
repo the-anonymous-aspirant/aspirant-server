@@ -224,8 +224,11 @@ func TestPredPolycurious(t *testing.T) {
 // behaviour is covered in constellation_relationship_event_test.go.
 func TestHistoryPredicatesRegisteredByA3(t *testing.T) {
 	for _, key := range []string{"unicorn_hunter_partner_then_date", "escalator_two_with_escalation"} {
-		if _, present := goalPredicates[key]; !present {
-			t.Errorf("history predicate %q must be registered in the engine (#4829-A3)", key)
+		if _, present := goalHistoryPredicates[key]; !present {
+			t.Errorf("history predicate %q must be registered in the history engine (#4829-A3)", key)
+		}
+		if _, present := goalPredicates[key]; present {
+			t.Errorf("history predicate %q must NOT be in the snapshot map (it reads the event log)", key)
 		}
 	}
 }

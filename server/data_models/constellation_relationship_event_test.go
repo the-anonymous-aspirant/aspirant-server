@@ -7,72 +7,64 @@ import (
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
-// evented attaches an ordered event timeline to a hand-laid graph so the two
-// history-dependent predicates can be tested without a DB. `edge` (a, b, code)
-// is reused as an event; a code of "" is a clear event.
-func evented(g *roomGraph, evs ...edge) *roomGraph {
+// events builds an ordered event timeline for the history predicates without a
+// DB. `edge` (a, b, code) is reused as an event; a code of "" is a clear event.
+func events(evs ...edge) []edgeEvent {
+	out := make([]edgeEvent, 0, len(evs))
 	for _, e := range evs {
-		g.events = append(g.events, edgeEvent{pair: pairKey(e.a, e.b), code: e.code})
+		out = append(out, edgeEvent{pair: pairKey(e.a, e.b), code: e.code})
 	}
-	return g
+	return out
 }
 
 func TestPredUnicornHunter(t *testing.T) {
 	// Partner (1-2) obtained FIRST, date (1-3) second, and the partner and date
 	// are dating (2-3 romantic) → satisfied.
-	g := evented(graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "D"}, edge{2, 3, "P"}),
-		edge{1, 2, "P"}, edge{1, 3, "D"})
-	if !predUnicornHunter(g, 1) {
+	g := graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "D"}, edge{2, 3, "P"})
+	if !predUnicornHunter(g, 1, events(edge{1, 2, "P"}, edge{1, 3, "D"})) {
 		t.Error("unicorn hunter: partner-then-date with a dating partner+date should satisfy")
 	}
 
 	// Date obtained first, partner second → order fails.
-	g = evented(graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "D"}, edge{2, 3, "P"}),
-		edge{1, 3, "D"}, edge{1, 2, "P"})
-	if predUnicornHunter(g, 1) {
+	if predUnicornHunter(g, 1, events(edge{1, 3, "D"}, edge{1, 2, "P"})) {
 		t.Error("unicorn hunter: date obtained before partner must NOT satisfy (partner must be first)")
 	}
 
 	// Right order, but the partner and date are not dating (2-3 is a friendship).
-	g = evented(graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "D"}, edge{2, 3, "F"}),
-		edge{1, 2, "P"}, edge{1, 3, "D"})
-	if predUnicornHunter(g, 1) {
+	gFriend := graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "D"}, edge{2, 3, "F"})
+	if predUnicornHunter(gFriend, 1, events(edge{1, 2, "P"}, edge{1, 3, "D"})) {
 		t.Error("unicorn hunter: the partner and date must themselves be dating (P/D/F+)")
 	}
 
 	// A partner but no current date → nothing to pair.
-	g = evented(graph(4, p6, edge{1, 2, "P"}), edge{1, 2, "P"})
-	if predUnicornHunter(g, 1) {
+	gNoDate := graph(4, p6, edge{1, 2, "P"})
+	if predUnicornHunter(gNoDate, 1, events(edge{1, 2, "P"})) {
 		t.Error("unicorn hunter: a partner with no date must NOT satisfy")
 	}
 }
 
 func TestPredEscalator(t *testing.T) {
 	// Two relationships; the 1-2 edge climbed F -> P → satisfied.
-	g := evented(graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "F"}),
-		edge{1, 2, "F"}, edge{1, 2, "P"}, edge{1, 3, "F"})
-	if !predEscalator(g, 1) {
+	g := graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "F"})
+	if !predEscalator(g, 1, events(edge{1, 2, "F"}, edge{1, 2, "P"}, edge{1, 3, "F"})) {
 		t.Error("escalator: two edges with one climbing F->P should satisfy")
 	}
 
 	// Two edges, but neither ever climbed the ladder.
-	g = evented(graph(4, p6, edge{1, 2, "F"}, edge{1, 3, "D"}),
-		edge{1, 2, "F"}, edge{1, 3, "D"})
-	if predEscalator(g, 1) {
+	gFlat := graph(4, p6, edge{1, 2, "F"}, edge{1, 3, "D"})
+	if predEscalator(gFlat, 1, events(edge{1, 2, "F"}, edge{1, 3, "D"})) {
 		t.Error("escalator: two flat edges with no up-step must NOT satisfy")
 	}
 
 	// Only one relationship, even if it escalated → needs two.
-	g = evented(graph(4, p6, edge{1, 2, "P"}), edge{1, 2, "F"}, edge{1, 2, "P"})
-	if predEscalator(g, 1) {
+	gOne := graph(4, p6, edge{1, 2, "P"})
+	if predEscalator(gOne, 1, events(edge{1, 2, "F"}, edge{1, 2, "P"})) {
 		t.Error("escalator: a single escalated edge must NOT satisfy (needs two relationships)")
 	}
 
 	// An intervening clear does not reset the escalation ("at some point"): the
 	// 1-2 pair went F, was cleared, then re-set to P — still an up-step.
-	g = evented(graph(4, p6, edge{1, 2, "P"}, edge{1, 3, "F"}),
-		edge{1, 2, "F"}, edge{1, 2, ""}, edge{1, 2, "P"}, edge{1, 3, "F"})
-	if !predEscalator(g, 1) {
+	if !predEscalator(g, 1, events(edge{1, 2, "F"}, edge{1, 2, ""}, edge{1, 2, "P"}, edge{1, 3, "F"})) {
 		t.Error("escalator: an intervening clear must NOT reset the escalation")
 	}
 }
