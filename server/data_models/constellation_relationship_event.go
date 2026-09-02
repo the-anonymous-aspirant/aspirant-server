@@ -30,7 +30,7 @@ type RelationshipEvent struct {
 	PairHigh    uint                   `json:"pair_high" gorm:"not null;index"`
 	Kind        RelationshipActionKind `json:"kind" gorm:"not null"` // "set" | "clear"
 	TypeID      uint                   `json:"type_id"`              // the type set (0 for a clear)
-	FromUserID  uint                   `json:"from_user_id"`         // direction the edge was set in (0 for a clear)
+	FromUserID  uint                   `json:"from_user_id"`         // always real user ids; on undo/redo rows they are pair-normalized, not direction-preserving (#4847 c27518 R2)
 	ToUserID    uint                   `json:"to_user_id"`
 }
 
@@ -55,5 +55,19 @@ func recordEvent(db *gorm.DB, roomID, actor uint, kind RelationshipActionKind, t
 func RoomRelationshipEvents(db *gorm.DB, roomID uint) ([]RelationshipEvent, error) {
 	var events []RelationshipEvent
 	err := db.Where("room_id = ?", roomID).Order("id ASC").Find(&events).Error
+	return events, err
+}
+
+// RoomRelationshipEventsPage returns one oldest-first page of the room's event
+// log: up to limit rows with ID > afterID (afterID 0 starts at the beginning).
+// The log is append-only, so an id cursor is stable — rows are only ever added
+// after the last one a prior page saw. Deliberately UNSCOPED: the #4847 room
+// history endpoint filters for its viewer on the way out (in the handler), so
+// this read stays usable by features that need the whole timeline, exactly as
+// RoomRelationshipEvents is for the goal predicates.
+func RoomRelationshipEventsPage(db *gorm.DB, roomID, afterID uint, limit int) ([]RelationshipEvent, error) {
+	var events []RelationshipEvent
+	err := db.Where("room_id = ? AND id > ?", roomID, afterID).
+		Order("id ASC").Limit(limit).Find(&events).Error
 	return events, err
 }
