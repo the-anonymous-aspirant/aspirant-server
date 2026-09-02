@@ -153,6 +153,9 @@ func SetRelationshipWithHistory(db *gorm.DB, room Room, actorUserID, fromUserID,
 	if err := recordAction(db, room.ID, actorUserID, ActionSet, typeID, fromUserID, toUserID, prev); err != nil {
 		return rel, err
 	}
+	if err := recordEvent(db, room.ID, actorUserID, ActionSet, typeID, fromUserID, toUserID); err != nil {
+		return rel, err
+	}
 	return rel, nil
 }
 
@@ -163,7 +166,10 @@ func ClearRelationshipWithHistory(db *gorm.DB, room Room, actorUserID, fromUserI
 	if err := ClearRelationship(db, room, fromUserID, toUserID); err != nil {
 		return err
 	}
-	return recordAction(db, room.ID, actorUserID, ActionClear, 0, fromUserID, toUserID, prev)
+	if err := recordAction(db, room.ID, actorUserID, ActionClear, 0, fromUserID, toUserID, prev); err != nil {
+		return err
+	}
+	return recordEvent(db, room.ID, actorUserID, ActionClear, 0, fromUserID, toUserID)
 }
 
 // UndoRelationship reverts the actor's most recent not-yet-undone action,
@@ -180,8 +186,16 @@ func UndoRelationship(db *gorm.DB, room Room, actorUserID uint) error {
 		if _, err := SetRelationship(db, room, a.PrevFrom, a.PrevTo, a.PrevTypeID); err != nil {
 			return err
 		}
-	} else if err := deactivatePair(db, room.ID, a.PairLow, a.PairHigh); err != nil {
-		return err
+		if err := recordEvent(db, room.ID, actorUserID, ActionSet, a.PrevTypeID, a.PrevFrom, a.PrevTo); err != nil {
+			return err
+		}
+	} else {
+		if err := deactivatePair(db, room.ID, a.PairLow, a.PairHigh); err != nil {
+			return err
+		}
+		if err := recordEvent(db, room.ID, actorUserID, ActionClear, 0, a.PairLow, a.PairHigh); err != nil {
+			return err
+		}
 	}
 	return db.Model(&a).Update("undone", true).Error
 }
@@ -200,8 +214,16 @@ func RedoRelationship(db *gorm.DB, room Room, actorUserID uint) error {
 		if _, err := SetRelationship(db, room, a.FromUserID, a.ToUserID, a.TypeID); err != nil {
 			return err
 		}
-	} else if err := deactivatePair(db, room.ID, a.PairLow, a.PairHigh); err != nil {
-		return err
+		if err := recordEvent(db, room.ID, actorUserID, ActionSet, a.TypeID, a.FromUserID, a.ToUserID); err != nil {
+			return err
+		}
+	} else {
+		if err := deactivatePair(db, room.ID, a.PairLow, a.PairHigh); err != nil {
+			return err
+		}
+		if err := recordEvent(db, room.ID, actorUserID, ActionClear, 0, a.PairLow, a.PairHigh); err != nil {
+			return err
+		}
 	}
 	return db.Model(&a).Update("undone", false).Error
 }
