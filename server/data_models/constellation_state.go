@@ -39,6 +39,19 @@ type RoomStateDice struct {
 	RolledAt string `json:"rolled_at,omitempty"`
 }
 
+// RoomStateGoal is the viewer's OWN selected goal card (#4807-A1). It is private
+// to the viewer: BuildRoomState populates it only from the viewer's own
+// PlayerGoal and never from another player's, so a goal never appears in anyone
+// else's snapshot. Achieved is filled by the detection engine (#4807-A2); until
+// that lands it stays false.
+type RoomStateGoal struct {
+	CardID           uint   `json:"card_id"`
+	Code             string `json:"code"`
+	Name             string `json:"name"`
+	VictoryCondition string `json:"victory_condition"`
+	Achieved         bool   `json:"achieved"`
+}
+
 // RoomState is the board snapshot returned by GET .../rooms/:code/state, as
 // seen BY ONE VIEWER. Everything in it is room-wide except Relationships, which
 // is scoped to the viewer (see BuildRoomState).
@@ -50,6 +63,7 @@ type RoomState struct {
 	Members       []RoomStateMember       `json:"members"`
 	Relationships []RoomStateRelationship `json:"relationships"`
 	Dice          *RoomStateDice          `json:"dice"`
+	Goal          *RoomStateGoal          `json:"goal"`
 	HistoryCursor uint                    `json:"history_cursor"`
 }
 
@@ -160,6 +174,20 @@ func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error
 		}
 	}
 
+	// The viewer's OWN goal only — private, like the edge filter above. Another
+	// player's goal is never read here, so it cannot leak into this snapshot
+	// (#4807-A1; privacy is a serializer property so "for now" is reversible).
+	var goal *RoomStateGoal
+	if card, ok := GetPlayerGoal(db, room.ID, viewerUserID); ok {
+		goal = &RoomStateGoal{
+			CardID:           card.ID,
+			Code:             card.Code,
+			Name:             card.Name,
+			VictoryCondition: card.VictoryCondition,
+			Achieved:         false, // filled by the detection engine (#4807-A2)
+		}
+	}
+
 	return RoomState{
 		Code:          room.Code,
 		PlayerCount:   room.PlayerCount,
@@ -168,6 +196,7 @@ func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error
 		Members:       stateMembers,
 		Relationships: stateRels,
 		Dice:          dice,
+		Goal:          goal,
 		HistoryCursor: RoomHistoryCursor(db, room.ID),
 	}, nil
 }
