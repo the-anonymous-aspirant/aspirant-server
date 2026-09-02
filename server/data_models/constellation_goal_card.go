@@ -65,7 +65,11 @@ var goalCardSeed = []GoalCard{
 	{Code: "unicorn", Name: "UNICORN", DisplayOrder: 14, PredicateKey: "unicorn_two_shared_dates",
 		VictoryCondition: "Obtain two dates who share a F+/date/partner relationship."},
 	{Code: "unethical_polycurious", Name: "UNETHICAL POLYCURIOUS", DisplayOrder: 15, PredicateKey: "unethical_polycurious_two_one_affair",
-		VictoryCondition: "Obtain two F+/dates and one affair."},
+		// House rule (#4807 c27322): the operator overrode the physical card's
+		// literal "F+/dates" — partners count here, unlike THE CHEATER's affair
+		// count. The displayed text is the enforced rule so a player is not
+		// misled by the printed card.
+		VictoryCondition: "Obtain two F+/dates/partners and one affair. (House rule: partners count, unlike the printed card.)"},
 	{Code: "the_escalator", Name: "THE ESCALATOR", DisplayOrder: 16, PredicateKey: "escalator_two_with_escalation",
 		VictoryCondition: "Obtain two relationships of any kind, but one of these must escalate at some point: F -> F+ -> D -> P."},
 }

@@ -184,7 +184,9 @@ func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error
 			Code:             card.Code,
 			Name:             card.Name,
 			VictoryCondition: card.VictoryCondition,
-			Achieved:         false, // filled by the detection engine (#4807-A2)
+			// Detection reads the FULL room graph (#4826-A2); the player sees
+			// only their own edges above, but the win is judged over everyone's.
+			Achieved: EvaluateGoalAchieved(db, room, viewerUserID),
 		}
 	}
 
