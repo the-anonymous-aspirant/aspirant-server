@@ -132,7 +132,7 @@ func ClearRelationshipHandler(c *gin.Context) {
 // GetRelationshipsHandler returns the room's shared graph (active edges).
 func GetRelationshipsHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	room, _, ok := roomForGraphEdit(c, db)
+	room, viewerID, ok := roomForGraphEdit(c, db)
 	if !ok {
 		return
 	}
@@ -142,8 +142,16 @@ func GetRelationshipsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error reading relationships")
 		return
 	}
+	// Scoped to the caller's own connections, exactly as the /state aggregate
+	// is (#4806 ask 2). This endpoint is the second door onto the same data:
+	// the board reads edges through /state, but any member with a session can
+	// call this one, so scoping only /state would leave the leak open behind a
+	// front door that looked fixed.
 	out := make([]relationshipDTO, 0, len(rels))
 	for _, r := range rels {
+		if !data_models.ViewerSeesRelationship(r, viewerID) {
+			continue
+		}
 		out = append(out, relationshipToDTO(r))
 	}
 	c.JSON(http.StatusOK, gin.H{"relationships": out})
