@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed
+
+- **Constellations: a join refusal now says which condition blocked it.** Every
+  refusal from `POST /api/constellations/rooms/:code/join` (and from room
+  create) carries an additive `reason` on the error detail —
+  `room_not_found`, `room_ended`, `room_full`, `already_in_game`,
+  `not_in_room`, `invalid_player_count`. `error.code` is derived from the HTTP
+  status, so a full room and a caller already seated elsewhere were both
+  `conflict`: a client could only tell them apart by string-matching the human
+  message. Two refusals now carry the detail needed to explain themselves:
+  `already_in_game` keeps the `active_room_code` from #4798, and `room_full`
+  gains `room_player_count` plus a message naming the room and its size. A code
+  whose game has *ended* is also no longer reported as an unknown code — it
+  stays a 404 but answers `room_ended` / "That game has ended", via a new
+  `data_models.ErrRoomEnded` and `EndedRoomExists`. `code`, `message` and
+  `active_room_code` are unchanged, so existing readers are unaffected. This is
+  the server half of the scanned-link auto-join; the client half is system_3
+  #4810. Operator finding, system_3 #4806 ask 1.
+
 ### Fixed
 
 - **Constellations: the already-in-a-game refusal now names the room.** Create
