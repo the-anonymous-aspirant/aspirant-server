@@ -164,6 +164,23 @@ func activeMembership(db *gorm.DB, userID uint) (RoomMember, bool) {
 	return m, true
 }
 
+// ActiveRoomForUser returns the room the user is currently seated in, and
+// whether one exists. It is the room half of activeMembership: the handler
+// layer needs it to name the room in the ErrAlreadyInGame refusal (#4798), so
+// a user told "you are already in a game" can be told WHICH game and navigate
+// there to leave it.
+func ActiveRoomForUser(db *gorm.DB, userID uint) (Room, bool) {
+	m, ok := activeMembership(db, userID)
+	if !ok {
+		return Room{}, false
+	}
+	var room Room
+	if err := db.Where("id = ?", m.RoomID).First(&room).Error; err != nil {
+		return Room{}, false
+	}
+	return room, true
+}
+
 // RoomOccupancy counts members currently in-room (left_at IS NULL).
 func RoomOccupancy(db *gorm.DB, roomID uint) int {
 	var n int
