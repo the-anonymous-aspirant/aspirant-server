@@ -58,6 +58,10 @@ var (
 	ErrInvalidPlayerCount = errors.New("player count must be between 2 and 8")
 	ErrCodeSpaceExhausted = errors.New("could not allocate a free room code")
 	ErrNotInRoom          = errors.New("user is not in this room")
+	// ErrNotRoomCreator is returned by SetRoomReveal when a non-creator tries to
+	// change the room's transparency settings (#4835). "Only the room creator can
+	// set" is a server-side authorization rule, not a hidden control.
+	ErrNotRoomCreator = errors.New("only the room creator may change room settings")
 )
 
 // Room is one live Constellations game. Code is unique among live rows; a
@@ -75,6 +79,25 @@ type Room struct {
 	// members lingers on empty until a real session forms; reaping those is a
 	// separate TTL concern, out of scope here.
 	EverHadTwoMembers bool `json:"ever_had_two_members" gorm:"not null;default:false"`
+	// CreatorUserID is the user who created the room, seated in slot 1 at
+	// creation. It is IMMUTABLE and durable — unlike slot 1, which nextFreeSlot
+	// reuses when a leaver frees it, so a room whose creator left while others
+	// remained could see a non-creator holding slot 1 (#4835). The creator-only
+	// room settings (RevealConnections / RevealCards) authorize against THIS,
+	// never against slot ordering. Default 0 so AutoMigrate's ALTER succeeds on
+	// pre-#4835 rows; 0 means "no creator recorded", and since no user has id 0
+	// the settings are frozen (uneditable by anyone) on such legacy rooms. When
+	// the creator leaves, the column does not transfer: the settings freeze at
+	// their current value because the authorization matches nobody (#4835).
+	CreatorUserID uint `json:"creator_user_id" gorm:"not null;default:0;index"`
+	// RevealConnections / RevealCards are the two creator-only transparency
+	// toggles (#4835). Default off, preserving the per-viewer privacy shipped by
+	// #4809 (edge scoping) and #4807 (goal-card privacy). They relax READ only,
+	// in the BuildRoomState serializer; the relationship WRITE path (#4834,
+	// endpoint-only) is untouched, so transparency never re-opens cross-party
+	// writes. Only the creator may set them (SetRoomReveal).
+	RevealConnections bool `json:"reveal_connections" gorm:"not null;default:false"`
+	RevealCards       bool `json:"reveal_cards" gorm:"not null;default:false"`
 }
 
 // TableName pins the physical table name.
@@ -261,7 +284,7 @@ func CreateRoom(db *gorm.DB, userID uint, playerCount int) (Room, RoomMember, er
 	if err != nil {
 		return Room{}, RoomMember{}, err
 	}
-	room := Room{Code: code, PlayerCount: playerCount, Status: roomStatusActive}
+	room := Room{Code: code, PlayerCount: playerCount, Status: roomStatusActive, CreatorUserID: userID}
 	if err := db.Create(&room).Error; err != nil {
 		return Room{}, RoomMember{}, err
 	}
@@ -354,6 +377,44 @@ func LeaveRoom(db *gorm.DB, userID uint, code string) (Room, error) {
 		return Room{}, err
 	}
 	return room, nil
+}
+
+// IsRoomCreator reports whether userID created the room. A userID of 0, or a
+// room whose CreatorUserID is 0 (a pre-#4835 room with no creator recorded),
+// is never the creator — so legacy rooms have their transparency settings
+// frozen rather than editable by an arbitrary slot-1 holder.
+func IsRoomCreator(room Room, userID uint) bool {
+	return userID != 0 && room.CreatorUserID != 0 && room.CreatorUserID == userID
+}
+
+// SetRoomReveal updates the room's two creator-only transparency toggles
+// (#4835). Only the creator may change them — this is the server-side
+// authorization, enforced here in the model so every caller path inherits it,
+// mirroring how SetPlayerGoal owns the member-only rule. A nil pointer leaves
+// that toggle untouched, so the two toggles are independent: the caller may set
+// one, the other, or both. Returns the reloaded room on success and
+// ErrNotRoomCreator otherwise.
+func SetRoomReveal(db *gorm.DB, room Room, userID uint, revealConnections, revealCards *bool) (Room, error) {
+	if !IsRoomCreator(room, userID) {
+		return Room{}, ErrNotRoomCreator
+	}
+	updates := map[string]interface{}{}
+	if revealConnections != nil {
+		updates["reveal_connections"] = *revealConnections
+	}
+	if revealCards != nil {
+		updates["reveal_cards"] = *revealCards
+	}
+	if len(updates) > 0 {
+		if err := db.Model(&room).Updates(updates).Error; err != nil {
+			return Room{}, err
+		}
+	}
+	var reloaded Room
+	if err := db.Where("id = ?", room.ID).First(&reloaded).Error; err != nil {
+		return Room{}, err
+	}
+	return reloaded, nil
 }
 
 // LeaveAllActiveRooms marks every active membership held by the user left,
