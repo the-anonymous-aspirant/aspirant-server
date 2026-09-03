@@ -19,6 +19,13 @@ type RoomStateMember struct {
 	Slot         int    `json:"slot"`
 	GameUsername string `json:"game_username"`
 	AvatarURL    string `json:"avatar_url"`
+	// Goal is this member's selected goal card, exposed ONLY when the room's
+	// RevealCards toggle is on (#4835). It is nil otherwise — including for the
+	// viewer's own row, whose goal continues to surface in the top-level
+	// RoomState.Goal regardless of the toggle. So with RevealCards off the shape
+	// is unchanged from #4807; with it on, every seated member carries their
+	// card here.
+	Goal *RoomStateGoal `json:"goal,omitempty"`
 }
 
 // RoomStateRelationship is a shared-graph edge carrying its type colour, so the
@@ -65,6 +72,15 @@ type RoomState struct {
 	Dice          *RoomStateDice          `json:"dice"`
 	Goal          *RoomStateGoal          `json:"goal"`
 	HistoryCursor uint                    `json:"history_cursor"`
+	// IsCreator tells the viewer whether they created this room, so the client
+	// can show the creator-only settings toggles enabled for them and not for
+	// others (#4835). It is a per-viewer field, like Relationships.
+	IsCreator bool `json:"is_creator"`
+	// RevealConnections / RevealCards echo the room's two transparency toggles
+	// so the client renders their current state; they also explain why a viewer
+	// may be seeing edges or cards they are not party to (#4835).
+	RevealConnections bool `json:"reveal_connections"`
+	RevealCards       bool `json:"reveal_cards"`
 }
 
 // avatarETags batch-reads the avatar content ETags for a set of user ids, so
@@ -125,12 +141,27 @@ func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error
 		if p, ok := GetConstellationProfile(db, m.UserID); ok {
 			username = p.GameUsername
 		}
-		stateMembers = append(stateMembers, RoomStateMember{
+		sm := RoomStateMember{
 			UserID:       m.UserID,
 			Slot:         m.Slot,
 			GameUsername: username,
 			AvatarURL:    AvatarURLFor(m.UserID, etags[m.UserID]),
-		})
+		}
+		// The creator's RevealCards toggle (#4835) exposes every member's goal
+		// card. Off (the #4807 default), a member's goal is nil here and stays
+		// private — only the viewer's own goal surfaces, in RoomState.Goal below.
+		if room.RevealCards {
+			if card, ok := GetPlayerGoal(db, room.ID, m.UserID); ok {
+				sm.Goal = &RoomStateGoal{
+					CardID:           card.ID,
+					Code:             card.Code,
+					Name:             card.Name,
+					VictoryCondition: card.VictoryCondition,
+					Achieved:         EvaluateGoalAchieved(db, room, m.UserID),
+				}
+			}
+		}
+		stateMembers = append(stateMembers, sm)
 	}
 
 	// Type colour map for enriching each edge (A2 vocabulary).
@@ -150,8 +181,13 @@ func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error
 	stateRels := make([]RoomStateRelationship, 0, len(rels))
 	for _, r := range rels {
 		// The filter is here, on the way out — not in the query above, which
-		// stays the whole-graph read (see ViewerSeesRelationship).
-		if !ViewerSeesRelationship(r, viewerUserID) {
+		// stays the whole-graph read (see ViewerSeesRelationship). The creator's
+		// RevealConnections toggle (#4835) relaxes exactly this filter: when it
+		// is on, every edge is included for every viewer. It is a READ
+		// relaxation only — the endpoint-only write rule (#4834) lives in the
+		// relationship write path, not here, so revealing lines never grants
+		// permission to edit them.
+		if !room.RevealConnections && !ViewerSeesRelationship(r, viewerUserID) {
 			continue
 		}
 		t := typeByID[r.TypeID]
@@ -191,14 +227,17 @@ func BuildRoomState(db *gorm.DB, room Room, viewerUserID uint) (RoomState, error
 	}
 
 	return RoomState{
-		Code:          room.Code,
-		PlayerCount:   room.PlayerCount,
-		Status:        room.Status,
-		Occupancy:     RoomOccupancy(db, room.ID),
-		Members:       stateMembers,
-		Relationships: stateRels,
-		Dice:          dice,
-		Goal:          goal,
-		HistoryCursor: RoomHistoryCursor(db, room.ID),
+		Code:              room.Code,
+		PlayerCount:       room.PlayerCount,
+		Status:            room.Status,
+		Occupancy:         RoomOccupancy(db, room.ID),
+		Members:           stateMembers,
+		Relationships:     stateRels,
+		Dice:              dice,
+		Goal:              goal,
+		HistoryCursor:     RoomHistoryCursor(db, room.ID),
+		IsCreator:         IsRoomCreator(room, viewerUserID),
+		RevealConnections: room.RevealConnections,
+		RevealCards:       room.RevealCards,
 	}, nil
 }

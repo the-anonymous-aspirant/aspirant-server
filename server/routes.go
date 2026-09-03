@@ -159,6 +159,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.POST("/constellations/rooms/:code/join", handlers.JoinRoomHandler)
 		trustedRoutes.POST("/constellations/rooms/:code/leave", handlers.LeaveRoomHandler)
 
+		// Constellations room settings (#4835): the two creator-only
+		// transparency toggles. Creator-only authorization is enforced
+		// server-side in data_models.SetRoomReveal, not by hiding the control.
+		trustedRoutes.POST("/constellations/rooms/:code/settings", handlers.SetRoomSettingsHandler)
+
 		// Constellations room live-state snapshot (#4587-D1). One aggregate
 		// board read for a short-poll client; member-gated like the reads it
 		// composes.
