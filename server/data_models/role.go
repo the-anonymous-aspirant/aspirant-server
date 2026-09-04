@@ -10,15 +10,19 @@ type Role struct {
 	RoleDescription string `json:"role_description"`
 }
 
-// SeedDimRoles seeds the database with default roles
+// SeedRoles seeds the four access tiers (system_3 epic #5113, subtask A2).
+// The vocabulary migrated from the legacy six-role set (Admin, User, Guest,
+// Gamer, Deleted, Trusted) to four tiers: public is the ABSENCE of a role
+// (unauthenticated), so the role table holds only the three authenticated
+// tiers plus Blocked. Admin keeps its name (admin sessions/gates unaffected);
+// Trusted→Member, {User,Guest,Gamer}→Viewer, Deleted→Blocked. The user-FK
+// remap and legacy-row cleanup run idempotently in server.AutoMigrate.
 func SeedRoles(db *gorm.DB) error {
 	roles := []Role{
-		{RoleName: "Admin", RoleDescription: "Administrator with full access"},
-		{RoleName: "User", RoleDescription: "Regular user with limited access"},
-		{RoleName: "Guest", RoleDescription: "Guest user with minimal access"},
-		{RoleName: "Gamer", RoleDescription: "User with access to gaming features"},
-		{RoleName: "Deleted", RoleDescription: "User with no access"},
-		{RoleName: "Trusted", RoleDescription: "User with trusted access"},
+		{RoleName: "Admin", RoleDescription: "Full access to everything"},
+		{RoleName: "Member", RoleDescription: "Viewer access plus the member area (file storage and such)"},
+		{RoleName: "Viewer", RoleDescription: "Public access plus the applications"},
+		{RoleName: "Blocked", RoleDescription: "Authenticated but with no access"},
 	}
 
 	for _, role := range roles {

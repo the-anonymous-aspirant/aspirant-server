@@ -100,6 +100,65 @@ func RespondWithSuccess(c *gin.Context, data interface{}, message string) {
 	})
 }
 
+// AccessTier ranks the four access tiers of system_3 epic #5113. "public" is
+// the ABSENCE of a role (unauthenticated) and has no constant here — a handler
+// in a tier-gated group has already passed AuthMiddleware. Higher = more access.
+type AccessTier int
+
+const (
+	TierBlocked AccessTier = iota // authenticated, no access (legacy: Deleted)
+	TierViewer                    // + applications (legacy: User/Guest/Gamer)
+	TierMember                    // + member area, e.g. file storage (legacy: Trusted)
+	TierAdmin                     // everything
+)
+
+// tierOf maps a role-claim string to its access tier. It accepts BOTH the tier
+// names and the legacy six-role names, so a JWT minted before the #5113-A2
+// migration (24h expiry) keeps resolving to the correct tier until it expires.
+func tierOf(role string) AccessTier {
+	switch role {
+	case "Admin":
+		return TierAdmin
+	case "Member", "Trusted":
+		return TierMember
+	case "Viewer", "User", "Guest", "Gamer":
+		return TierViewer
+	default: // "Blocked", "Deleted", unknown, empty
+		return TierBlocked
+	}
+}
+
+// RequireTier gates a route to a minimum access tier. Layer it after
+// AuthMiddleware (which sets the "role" claim in context). It replaces the
+// legacy ValidateRole("Trusted","Admin") / ValidateRole("Admin") allow-lists:
+// a tier floor is monotonic, so a higher tier always clears a lower gate
+// without every superior role being enumerated at the call site.
+func RequireTier(min AccessTier) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("role")
+		if !exists {
+			log.Println("ERROR: Role information not available in context")
+			RespondWithError(c, http.StatusForbidden, "Role information not available")
+			c.Abort()
+			return
+		}
+		roleStr, ok := role.(string)
+		if !ok {
+			log.Printf("ERROR: Role is not a string, got type: %T", role)
+			RespondWithError(c, http.StatusInternalServerError, "Invalid role format")
+			c.Abort()
+			return
+		}
+		if tierOf(roleStr) < min {
+			log.Printf("ERROR: role '%s' (tier %d) below required tier %d", roleStr, tierOf(roleStr), min)
+			RespondWithError(c, http.StatusForbidden, "Insufficient permissions")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // Helper middleware to validate user roles with enhanced logging
 func ValidateRole(allowedRoles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {

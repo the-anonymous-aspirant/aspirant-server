@@ -166,10 +166,11 @@ func CreateUserHandler(c *gin.Context) {
 		return
 	}
 
-	// Resolve role name to ID
+	// Resolve role name to ID. Default to the Viewer tier (#5113-A2/D4) — the
+	// legacy "User" role no longer exists after the tier migration.
 	roleName := input.AccessRole
 	if roleName == "" {
-		roleName = "User"
+		roleName = "Viewer"
 	}
 	role, err := data_models.GetRoleByName(db, roleName)
 	if err != nil {
