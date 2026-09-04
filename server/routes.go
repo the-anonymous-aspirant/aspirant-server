@@ -257,9 +257,6 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.PATCH("/commander/valuation-statement/processed/:id", handlers.UpdateCommanderValuationProcessedHandler)
 		trustedRoutes.DELETE("/commander/valuation-statement/processed/:id", handlers.DeleteCommanderValuationProcessedHandler)
 
-		// Wikipedia (proxied to kiwix-serve)
-		trustedRoutes.Any("/wikipedia/*path", handlers.WikipediaProxyHandler)
-
 		// Shared image upload (used by several apps + admin assets) — stays
 		// all-Trusted, not tied to any single app owner.
 		trustedRoutes.POST("/upload", handlers.UploadImageHandler)
