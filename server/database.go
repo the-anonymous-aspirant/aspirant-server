@@ -61,10 +61,29 @@ func SetupDBConnection() (*gorm.DB, error) {
 }
 
 func AutoMigrate(db *gorm.DB) {
-	// Step 1: Migrate roles table first, rename legacy Family role, seed defaults
+	// Step 1: Migrate roles table first, rename legacy Family role, seed the
+	// four access tiers, then remap every user off the legacy six-role
+	// vocabulary onto the tiers (system_3 epic #5113 subtask A2). Idempotent:
+	// after the first run no user references a legacy role and the legacy rows
+	// are gone, so every statement below matches nothing on re-run.
 	db.AutoMigrate(&data_models.Role{})
 	db.Exec("UPDATE roles SET role_name = 'Trusted', role_description = 'User with trusted access' WHERE role_name = 'Family'")
 	data_models.SeedRoles(db)
+
+	// Remap user FKs to the tier roles (access-preserving, per the #5113-A1
+	// inventory). Admin keeps its name; the joins below match only rows still
+	// pointing at a legacy role. Done before the legacy rows are deleted.
+	db.Exec(`UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Member')
+		FROM roles r WHERE users.role_id = r.id AND r.role_name = 'Trusted'`)
+	db.Exec(`UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Viewer')
+		FROM roles r WHERE users.role_id = r.id AND r.role_name IN ('User', 'Guest', 'Gamer')`)
+	db.Exec(`UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Blocked')
+		FROM roles r WHERE users.role_id = r.id AND r.role_name = 'Deleted'`)
+	// NB: the legacy role rows are NOT deleted here — the Step 2 legacy path
+	// (a DB that still carries the access_role string column) name-matches
+	// against them to backfill role_id. They are deleted after Step 2, once
+	// both the modern role_id remap above and the legacy backfill below have
+	// landed every user on a tier role.
 
 	// Step 2: Check if the legacy access_role column still exists on users
 	var colCount int
@@ -75,8 +94,14 @@ func AutoMigrate(db *gorm.DB) {
 		// Legacy column exists — backfill role_id then drop it
 		log.Println("Migrating users.access_role → users.role_id...")
 
-		// Rename any remaining Family values
-		db.Exec("UPDATE users SET access_role = 'Trusted' WHERE access_role = 'Family'")
+		// Remap the legacy access_role strings straight onto the tier names so
+		// the name-match backfill below lands on a tier role (the legacy role
+		// rows are deleted after Step 2). Family is the pre-Trusted legacy name.
+		db.Exec(`UPDATE users SET access_role = CASE
+				WHEN access_role IN ('Family', 'Trusted') THEN 'Member'
+				WHEN access_role IN ('User', 'Guest', 'Gamer') THEN 'Viewer'
+				WHEN access_role = 'Deleted' THEN 'Blocked'
+				ELSE access_role END`)
 
 		// AutoMigrate User so GORM adds the new role_id column
 		db.AutoMigrate(&data_models.User{})
@@ -85,8 +110,8 @@ func AutoMigrate(db *gorm.DB) {
 		db.Exec(`UPDATE users SET role_id = roles.id
 			FROM roles WHERE users.access_role = roles.role_name`)
 
-		// Default any unmatched rows to the "User" role
-		db.Exec(`UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'User')
+		// Default any unmatched rows to the "Viewer" tier (least privilege).
+		db.Exec(`UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Viewer')
 			WHERE role_id IS NULL OR role_id = 0`)
 
 		// Drop the legacy column
@@ -96,6 +121,11 @@ func AutoMigrate(db *gorm.DB) {
 		// Column already gone — normal migrate
 		db.AutoMigrate(&data_models.User{})
 	}
+
+	// Every user now points at a tier role (via the Step 1 role_id remap on a
+	// modern DB, or the Step 2 access_role backfill on a legacy one). Delete the
+	// legacy role rows. Idempotent: matches nothing once they are gone.
+	db.Exec("DELETE FROM roles WHERE role_name IN ('Trusted', 'User', 'Guest', 'Gamer', 'Deleted')")
 
 	// Step 2b: Temporal display-name table (security-finding #3094). The login
 	// username must not double as a public display identity, so a separate
