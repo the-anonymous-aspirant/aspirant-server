@@ -152,65 +152,78 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		authRoutes.PUT("/constellations/profile", handlers.PutConstellationProfileHandler)
 	}
 
-	// Member tier — the member area: files, message board, translator, goals,
-	// valuation, personal apps (#5113). Constellations rooms move to the viewer
-	// tier in subtask B1, not here. (Group var kept as trustedRoutes to hold the
-	// diff to the gate; it now means "member+".)
-	trustedRoutes := router.Group("/")
-	trustedRoutes.Use(authMiddleware)
+	// Viewer tier — Constellations room lifecycle (#5113-B1 / operator D2). The
+	// game moves to the applications (viewer) tier so a signed-up viewer can
+	// create/join/play. The per-room boundary — must be a member of THIS room,
+	// creator-only for settings — stays enforced in the handlers (e.g.
+	// constellation_state.go: "Only a member of the room may view its state"),
+	// NOT by the tier gate, so lowering the gate to viewer does not let anyone
+	// touch a room they are not in.
+	constellationRoomRoutes := router.Group("/")
+	constellationRoomRoutes.Use(authMiddleware)
 	{
-		trustedRoutes.Use(handlers.RequireTier(handlers.TierMember))
+		constellationRoomRoutes.Use(handlers.RequireTier(handlers.TierViewer))
 
 		// Constellations companion app (epic #4587) — room lifecycle. The
 		// member app is Trusted/Admin gated (#4587-A1); create/join/leave a
 		// game and read its live state.
-		trustedRoutes.POST("/constellations/rooms", handlers.CreateRoomHandler)
-		trustedRoutes.GET("/constellations/rooms/:code", handlers.GetRoomHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/join", handlers.JoinRoomHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/leave", handlers.LeaveRoomHandler)
+		constellationRoomRoutes.POST("/constellations/rooms", handlers.CreateRoomHandler)
+		constellationRoomRoutes.GET("/constellations/rooms/:code", handlers.GetRoomHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/join", handlers.JoinRoomHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/leave", handlers.LeaveRoomHandler)
 
 		// Constellations room settings (#4835): the two creator-only
 		// transparency toggles. Creator-only authorization is enforced
 		// server-side in data_models.SetRoomReveal, not by hiding the control.
-		trustedRoutes.POST("/constellations/rooms/:code/settings", handlers.SetRoomSettingsHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/settings", handlers.SetRoomSettingsHandler)
 
 		// Constellations room live-state snapshot (#4587-D1). One aggregate
 		// board read for a short-poll client; member-gated like the reads it
 		// composes.
-		trustedRoutes.GET("/constellations/rooms/:code/state", handlers.GetRoomStateHandler)
+		constellationRoomRoutes.GET("/constellations/rooms/:code/state", handlers.GetRoomStateHandler)
 
 		// Constellations room relationship-event history (#4833-A1 / #4847).
 		// Oldest-first cursor pages over the #4829-A3 append-only event log,
 		// scoped to the viewer's own edges like /state and /relationships
 		// (#4809); member-gated. Distinct from .../relationships/history,
 		// which is the caller's capped undo stack (#4599).
-		trustedRoutes.GET("/constellations/rooms/:code/history", handlers.GetRoomHistoryHandler)
+		constellationRoomRoutes.GET("/constellations/rooms/:code/history", handlers.GetRoomHistoryHandler)
 
 		// Constellations relationship-graph edit API (#4587-B1). The shared
 		// graph a room's members agree on; only a member of the room may edit
 		// or read it (enforced in the handler on top of the Trusted gate).
-		trustedRoutes.GET("/constellations/rooms/:code/relationships", handlers.GetRelationshipsHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/relationships/set", handlers.SetRelationshipHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/relationships/clear", handlers.ClearRelationshipHandler)
+		constellationRoomRoutes.GET("/constellations/rooms/:code/relationships", handlers.GetRelationshipsHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/relationships/set", handlers.SetRelationshipHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/relationships/clear", handlers.ClearRelationshipHandler)
 
 		// Constellations relationship edit history (#4587-C1). Per-player
 		// undo/redo over the shared graph, capped per player; the app enforces
 		// no game rules (operator ruling c25775).
-		trustedRoutes.GET("/constellations/rooms/:code/relationships/history", handlers.GetRelationshipHistoryHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/relationships/undo", handlers.UndoRelationshipHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/relationships/redo", handlers.RedoRelationshipHandler)
+		constellationRoomRoutes.GET("/constellations/rooms/:code/relationships/history", handlers.GetRelationshipHistoryHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/relationships/undo", handlers.UndoRelationshipHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/relationships/redo", handlers.RedoRelationshipHandler)
 
 		// Constellations goal selection (#4807-A1). A player selects their own
 		// private goal card for the room; the choice appears only in that
 		// player's /state (serializer-scoped), never another's. No read route —
 		// a goal is read through /state, by its owner alone.
-		trustedRoutes.POST("/constellations/rooms/:code/goal/set", handlers.SetGoalHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/goal/clear", handlers.ClearGoalHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/goal/set", handlers.SetGoalHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/goal/clear", handlers.ClearGoalHandler)
 
 		// Constellations server-authoritative dice (#4587-B2). Everyone in the
 		// room sees the same resolved roll; only a member may roll or read it.
-		trustedRoutes.GET("/constellations/rooms/:code/dice", handlers.GetDiceHandler)
-		trustedRoutes.POST("/constellations/rooms/:code/dice/roll", handlers.RollDiceHandler)
+		constellationRoomRoutes.GET("/constellations/rooms/:code/dice", handlers.GetDiceHandler)
+		constellationRoomRoutes.POST("/constellations/rooms/:code/dice/roll", handlers.RollDiceHandler)
+	}
+
+	// Member tier — the member area: files, message board, translator, goals,
+	// valuation, personal apps (#5113). (Group var kept as trustedRoutes to hold
+	// the diff to the gate; it now means "member+". Constellations rooms moved to
+	// the viewer group above in #5113-B1.)
+	trustedRoutes := router.Group("/")
+	trustedRoutes.Use(authMiddleware)
+	{
+		trustedRoutes.Use(handlers.RequireTier(handlers.TierMember))
 
 		// Easter Egg Hunt
 		trustedRoutes.GET("/games/easter-hunt/state", handlers.GetEasterHuntStateHandler)
