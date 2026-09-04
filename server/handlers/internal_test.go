@@ -26,15 +26,22 @@ func TestVerifyAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to mint admin token: %v", err)
 	}
+	// Legacy role name — a JWT minted before the #5113-A2 tier migration; it
+	// must still resolve (Trusted → member tier) and be rejected below admin.
 	trustedToken, err := middleware.GenerateToken(2, "Trusted")
 	if err != nil {
 		t.Fatalf("failed to mint trusted token: %v", err)
+	}
+	// New tier vocabulary — Member is below admin.
+	memberToken, err := middleware.GenerateToken(3, "Member")
+	if err != nil {
+		t.Fatalf("failed to mint member token: %v", err)
 	}
 
 	router := gin.New()
 	adminGroup := router.Group("/")
 	adminGroup.Use(middleware.AuthMiddleware())
-	adminGroup.Use(ValidateRole("Admin"))
+	adminGroup.Use(RequireTier(TierAdmin))
 	adminGroup.GET("/internal/verify-admin", VerifyAdminHandler)
 
 	cases := []struct {
@@ -47,7 +54,8 @@ func TestVerifyAdmin(t *testing.T) {
 		{"admin auth_token cookie → 200", "", adminToken, http.StatusOK},
 		{"no credentials → 401", "", "", http.StatusUnauthorized},
 		{"gibberish token → 401", "Bearer not-a-jwt", "", http.StatusUnauthorized},
-		{"trusted-only role → 403", "Bearer " + trustedToken, "", http.StatusForbidden},
+		{"legacy trusted (member tier) → 403", "Bearer " + trustedToken, "", http.StatusForbidden},
+		{"member tier → 403", "Bearer " + memberToken, "", http.StatusForbidden},
 	}
 
 	for _, tc := range cases {

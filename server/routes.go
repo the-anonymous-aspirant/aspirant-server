@@ -97,22 +97,29 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// #2589), so this route is the only way a session actually ends.
 	router.POST("/logout", handlers.LogoutHandler)
 	router.GET("/health", handlers.HealthCheckHandler)
-	router.POST("/games/word_weaver", handlers.GetLongestWordsHandler)
 	router.GET("/fetch-object/:etag", handlers.FetchObjectHandler)
-	router.GET("/games/scores", handlers.GetGameScoresHandler)
+	// /games/word_weaver and GET /games/scores moved to the viewer tier
+	// (#5113 D1 — applications require a logged-in viewer, no longer public).
 	// Bootstrap route for creating first admin user when no users exist
 	router.POST("/bootstrap/admin", handlers.BootstrapUserHandler)
 
 	// Authentication middleware
 	authMiddleware := middleware.AuthMiddleware()
 
-	// Routes accessible to logged in users
+	// Viewer tier — applications (games, quizzes, Constellations play) and the
+	// caller's own profile. Requires a logged-in viewer+ account; applications
+	// are no longer anonymous-public (#5113 D1) and Blocked users fail the floor.
 	authRoutes := router.Group("/")
 	authRoutes.Use(authMiddleware)
+	authRoutes.Use(handlers.RequireTier(handlers.TierViewer))
 	{
-		authRoutes.GET("/data_models/users/:id", handlers.GetUserHandler)
-		authRoutes.GET("/data_models/users", handlers.GetAllUsersHandler)
+		// GET /data_models/users(+/:id) enumerate every account, so they moved
+		// up to the admin tier (#5113 D3) — a viewer must not read the roster.
 		authRoutes.POST("/games/scores", handlers.SaveGameScoreHandler)
+		// Word-finder game + score leaderboard — applications, viewer-gated
+		// (#5113 D1; formerly anonymous-public on `router`).
+		authRoutes.POST("/games/word_weaver", handlers.GetLongestWordsHandler)
+		authRoutes.GET("/games/scores", handlers.GetGameScoresHandler)
 
 		// Per-user scratchpad — any logged-in user gets their own text buffer,
 		// scoped to the session user id (never a URL/body parameter).
@@ -145,11 +152,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		authRoutes.PUT("/constellations/profile", handlers.PutConstellationProfileHandler)
 	}
 
-	// Trusted-specific routes (requires Trusted or Admin role)
+	// Member tier — the member area: files, message board, translator, goals,
+	// valuation, personal apps (#5113). Constellations rooms move to the viewer
+	// tier in subtask B1, not here. (Group var kept as trustedRoutes to hold the
+	// diff to the gate; it now means "member+".)
 	trustedRoutes := router.Group("/")
 	trustedRoutes.Use(authMiddleware)
 	{
-		trustedRoutes.Use(handlers.ValidateRole("Trusted", "Admin"))
+		trustedRoutes.Use(handlers.RequireTier(handlers.TierMember))
 
 		// Constellations companion app (epic #4587) — room lifecycle. The
 		// member app is Trusted/Admin gated (#4587-A1); create/join/leave a
@@ -314,11 +324,15 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	adminRoutes := router.Group("/")
 	adminRoutes.Use(authMiddleware)
 	{
-		adminRoutes.Use(handlers.ValidateRole("Admin"))
+		adminRoutes.Use(handlers.RequireTier(handlers.TierAdmin))
 		adminRoutes.GET("/assets", handlers.ListAssetsHandler)
 		adminRoutes.POST("/assets/upload", handlers.UploadImageHandler)
 		adminRoutes.DELETE("/assets", handlers.DeleteAssetHandler)
 		adminRoutes.GET("/data_models/roles", handlers.GetAllRolesHandler)
+		// Reading the full user roster / a single account moved up from the
+		// viewer tier (#5113 D3) — a signed-up viewer must not enumerate users.
+		adminRoutes.GET("/data_models/users", handlers.GetAllUsersHandler)
+		adminRoutes.GET("/data_models/users/:id", handlers.GetUserHandler)
 		adminRoutes.POST("/data_models/users", handlers.CreateUserHandler)
 		adminRoutes.PUT("/data_models/users/:id", handlers.UpdateUserHandler)
 		adminRoutes.DELETE("/data_models/users/:id", handlers.DeleteUserHandler)

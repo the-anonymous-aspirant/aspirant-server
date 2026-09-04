@@ -104,7 +104,7 @@ func FetchObjectHandler(c *gin.Context) {
 
 // callerCanBypassPublicETagGate returns true when the caller presents
 // a valid JWT with a role that legitimately owns the asset lifecycle
-// (Trusted or Admin). Falls back to false for unauthenticated,
+// (the member tier or above). Falls back to false for unauthenticated,
 // expired, or role-less tokens — no leak of tokens' internals to the
 // public code path.
 func callerCanBypassPublicETagGate(c *gin.Context) bool {
@@ -112,7 +112,9 @@ func callerCanBypassPublicETagGate(c *gin.Context) bool {
 	if !ok {
 		return false
 	}
-	return role == "Trusted" || role == "Admin"
+	// tierOf accepts both the tier names and the legacy role names, so a
+	// pre-#5113-A2 JWT (Trusted) and a post-migration one (Member) both pass.
+	return tierOf(role) >= TierMember
 }
 
 // UploadImageHandler uploads a file to the asset storage
@@ -179,8 +181,8 @@ func DeleteAssetHandler(c *gin.Context) {
 }
 
 // VerifyAdminHandler is a no-op endpoint whose sole purpose is to be
-// wrapped by AuthMiddleware + ValidateRole("Admin") so that nginx's
-// auth_request module can gate other upstream services on an Admin JWT.
+// wrapped by AuthMiddleware + RequireTier(TierAdmin) so that nginx's
+// auth_request module can gate other upstream services on an admin JWT.
 // A 200 means the caller holds a valid Admin token; the middleware
 // chain returns 401/403 otherwise, both of which nginx maps to a
 // /login redirect.
