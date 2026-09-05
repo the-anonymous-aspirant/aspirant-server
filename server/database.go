@@ -103,8 +103,12 @@ func AutoMigrate(db *gorm.DB) {
 				WHEN access_role = 'Deleted' THEN 'Blocked'
 				ELSE access_role END`)
 
-		// AutoMigrate User so GORM adds the new role_id column
-		db.AutoMigrate(&data_models.User{})
+		// AutoMigrate User so GORM adds the new role_id column. Routed through
+		// MigrateEmailVerified so the one-time email-verification stamp is
+		// applied here too, under its own column-existence guard.
+		if err := data_models.MigrateEmailVerified(db); err != nil {
+			log.Printf("Warning: user migrate failed: %v", err)
+		}
 
 		// Backfill role_id from the matching role name
 		db.Exec(`UPDATE users SET role_id = roles.id
@@ -119,7 +123,9 @@ func AutoMigrate(db *gorm.DB) {
 		log.Println("Migration complete: access_role column dropped")
 	} else {
 		// Column already gone — normal migrate
-		db.AutoMigrate(&data_models.User{})
+		if err := data_models.MigrateEmailVerified(db); err != nil {
+			log.Printf("Warning: user migrate failed: %v", err)
+		}
 	}
 
 	// Every user now points at a tier role (via the Step 1 role_id remap on a
@@ -127,20 +133,13 @@ func AutoMigrate(db *gorm.DB) {
 	// legacy role rows. Idempotent: matches nothing once they are gone.
 	db.Exec("DELETE FROM roles WHERE role_name IN ('Trusted', 'User', 'Guest', 'Gamer', 'Deleted')")
 
-	// Step 2a: Backfill email verification for every pre-existing account
-	// (epic #5113, subtask #5220).
-	//
-	// THIS IS THE MIGRATION'S RISK, so it runs before anything reads the
-	// column. Self-service sign-up creates accounts unverified and LoginHandler
-	// refuses an unverified account; every account that predates that flow was
-	// created by an admin and has never seen a verification mail, so without
-	// this statement the deploy that adds the login check locks out every
-	// existing user, the operator included. Idempotent: matches nothing on
-	// re-run, and matches nothing for accounts created through sign-up because
-	// those exist only after this point in the boot.
-	if err := data_models.BackfillEmailVerified(db); err != nil {
-		log.Printf("Warning: email-verified backfill failed: %v", err)
-	}
+	// The email-verification stamp for pre-existing accounts is applied inside
+	// MigrateEmailVerified above, guarded on the column having been absent
+	// before this boot. It is NOT an unconditional statement here: an
+	// every-boot UPDATE cannot tell a pre-existing admin account from a pending
+	// sign-up — both have email_verified_at NULL — so it would mark every
+	// unverified sign-up verified at the next restart and disable the
+	// verification gate on a timer (security finding #5226).
 
 	// Step 2b: Temporal display-name table (security-finding #3094). The login
 	// username must not double as a public display identity, so a separate

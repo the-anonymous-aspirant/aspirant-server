@@ -451,9 +451,9 @@ func TestVerifiedAccountCanLogIn(t *testing.T) {
 }
 
 // The migration's risk, and the test that would have caught locking out the
-// operator. It calls the same BackfillEmailVerified that AutoMigrate calls —
-// a test re-typing the SQL would pass while the shipped statement was wrong.
-func TestBackfillLetsPreExistingAccountsLogIn(t *testing.T) {
+// operator. It calls the same MigrateEmailVerified that AutoMigrate calls — a
+// test re-typing the SQL would pass while the shipped statement was wrong.
+func TestMigrateEmailVerifiedLetsPreExistingAccountsLogIn(t *testing.T) {
 	h := newSignupHarness(t)
 	loadSignupTestJWTSecret(t)
 
@@ -472,25 +472,96 @@ func TestBackfillLetsPreExistingAccountsLogIn(t *testing.T) {
 	}
 
 	if w := h.post(t, "/login", gin.H{"username": "operator", "password": goodPassword}); w.Code != http.StatusUnauthorized {
-		t.Fatalf("pre-backfill login status = %d, want 401 (the lockout this backfill exists to prevent)", w.Code)
+		t.Fatalf("pre-migration login status = %d, want 401 (the lockout this migration exists to prevent)", w.Code)
 	}
 
-	if err := data_models.BackfillEmailVerified(h.db); err != nil {
-		t.Fatalf("BackfillEmailVerified: %v", err)
+	// The harness already created the column, so remove it first to reproduce
+	// the state a real deploy migrates FROM: the column absent, every account
+	// predating it.
+	dropColumn(t, h.db, "users", "email_verified_at")
+	if h.db.Dialect().HasColumn("users", "email_verified_at") {
+		t.Fatal("the column survived the rebuild; this test would not exercise the migration path")
+	}
+
+	if err := data_models.MigrateEmailVerified(h.db); err != nil {
+		t.Fatalf("MigrateEmailVerified: %v", err)
 	}
 
 	if w := h.post(t, "/login", gin.H{"username": "operator", "password": goodPassword}); w.Code != http.StatusOK {
-		t.Fatalf("post-backfill login status = %d, want 200 — the migration locks out existing users", w.Code)
+		t.Fatalf("post-migration login status = %d, want 200 — the migration locks out existing users", w.Code)
+	}
+}
+
+// The defect the security review of PR #102 caught (finding #5226, severity
+// high), and the regression test for it.
+//
+// An unconditional every-boot backfill cannot tell a pre-existing admin
+// account from a pending sign-up — both have email_verified_at NULL — so it
+// stamps the sign-up verified at the next restart. The bot filter and the
+// proof of address ownership are bypassed on a timer, with nothing in the logs
+// to say so. The account may have been created at an address the person
+// signing up does not own.
+//
+// The earlier idempotency test did not catch this because it only asserted
+// that an already-VERIFIED row survived a second run. The property that
+// matters is the opposite one: a NULL that should stay NULL is left alone.
+func TestSecondMigrationDoesNotVerifyAPendingSignup(t *testing.T) {
+	h := newSignupHarness(t)
+	loadSignupTestJWTSecret(t)
+
+	// A genuine, unverified sign-up. The link was never followed.
+	if w := h.signup(t, "pending", "pending@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("signup: %d %s", w.Code, w.Body.String())
+	}
+	if h.user(t, "pending").IsEmailVerified() {
+		t.Fatal("a fresh sign-up is already verified")
 	}
 
-	// Idempotent, and it must not overwrite a real verification timestamp.
-	before := h.user(t, "operator").EmailVerifiedAt
-	if err := data_models.BackfillEmailVerified(h.db); err != nil {
-		t.Fatalf("second BackfillEmailVerified: %v", err)
+	// Every subsequent boot runs the migration again.
+	for i := 0; i < 3; i++ {
+		if err := data_models.MigrateEmailVerified(h.db); err != nil {
+			t.Fatalf("MigrateEmailVerified (boot %d): %v", i+2, err)
+		}
 	}
-	after := h.user(t, "operator").EmailVerifiedAt
+
+	if h.user(t, "pending").IsEmailVerified() {
+		t.Fatal("a restart marked an unverified sign-up verified — the verification gate is disabled on a timer")
+	}
+	if w := h.post(t, "/login", gin.H{"username": "pending", "password": goodPassword}); w.Code != http.StatusUnauthorized {
+		t.Fatalf("login status = %d, want 401 — an unverified account can log in after a restart", w.Code)
+	}
+
+	// And the link still works afterwards: the guard must not have broken the
+	// ordinary path.
+	token := h.tokenFromMail(t, "pending@example.com")
+	if w := h.post(t, "/verify-email", gin.H{"token": token}); w.Code != http.StatusOK {
+		t.Fatalf("verify after restarts: %d %s", w.Code, w.Body.String())
+	}
+	if !h.user(t, "pending").IsEmailVerified() {
+		t.Fatal("the account did not verify after the link was followed")
+	}
+}
+
+// A real verification timestamp must survive a migration run unchanged.
+func TestMigrationDoesNotOverwriteARealVerification(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "verified", "verified@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("signup: %d", w.Code)
+	}
+	token := h.tokenFromMail(t, "verified@example.com")
+	if w := h.post(t, "/verify-email", gin.H{"token": token}); w.Code != http.StatusOK {
+		t.Fatalf("verify: %d", w.Code)
+	}
+
+	before := h.user(t, "verified").EmailVerifiedAt
+	if err := data_models.MigrateEmailVerified(h.db); err != nil {
+		t.Fatalf("MigrateEmailVerified: %v", err)
+	}
+	after := h.user(t, "verified").EmailVerifiedAt
+
 	if before == nil || after == nil || !before.Equal(*after) {
-		t.Errorf("re-running the backfill changed the timestamp: %v -> %v", before, after)
+		t.Errorf("the migration changed a real verification timestamp: %v -> %v", before, after)
 	}
 }
 
@@ -499,5 +570,64 @@ func loadSignupTestJWTSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-jwt-secret-must-be-at-least-32-bytes-long!!")
 	if err := middleware.LoadJWTSecret(); err != nil {
 		t.Fatalf("LoadJWTSecret: %v", err)
+	}
+}
+
+// dropColumn rebuilds a table without one column.
+//
+// The bundled SQLite predates ALTER TABLE ... DROP COLUMN, so this uses the
+// copy-and-rename dance. The rebuilt table is declared with each surviving
+// column's TYPE, not created by CREATE TABLE ... AS SELECT: that shortcut
+// produces columns with no type affinity, so a datetime comes back as a string
+// and gorm fails to scan it — a broken fixture that looks exactly like a
+// broken migration. Column names and types come from the live schema, so
+// adding a field to User later does not silently drop it here and leave a test
+// asserting against a schema nobody ships.
+func dropColumn(t *testing.T, db *gorm.DB, table, column string) {
+	t.Helper()
+
+	rows, err := db.Raw("PRAGMA table_info(" + table + ")").Rows()
+	if err != nil {
+		t.Fatalf("reading %s schema: %v", table, err)
+	}
+	var (
+		decls []string
+		names []string
+	)
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             interface{}
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			t.Fatalf("scanning %s schema: %v", table, err)
+		}
+		if name == column {
+			continue
+		}
+		decl := name + " " + ctype
+		if pk == 1 {
+			decl += " PRIMARY KEY"
+		}
+		decls = append(decls, decl)
+		names = append(names, name)
+	}
+	rows.Close()
+	if len(names) == 0 {
+		t.Fatalf("no columns found on %s", table)
+	}
+
+	cols := strings.Join(names, ", ")
+	for _, stmt := range []string{
+		"CREATE TABLE " + table + "_rebuild (" + strings.Join(decls, ", ") + ")",
+		"INSERT INTO " + table + "_rebuild (" + cols + ") SELECT " + cols + " FROM " + table,
+		"DROP TABLE " + table,
+		"ALTER TABLE " + table + "_rebuild RENAME TO " + table,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("rebuilding %s (%s): %v", table, stmt, err)
+		}
 	}
 }

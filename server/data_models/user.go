@@ -168,26 +168,63 @@ func (u *User) AfterCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// BackfillEmailVerified marks every pre-existing account verified.
+// MigrateEmailVerified adds the email_verified_at column and, ONLY when the
+// column did not exist beforehand, stamps every account that predates it.
 //
-// It is the risky half of the #5220 migration and exists as a named function,
-// rather than a bare db.Exec in AutoMigrate, so a test can call the same
-// statement the boot calls — a test that re-typed the SQL would still pass
-// while the shipped statement was wrong.
+// The guard is the whole point, and getting it wrong disables the verification
+// gate on a timer. Sign-up creates accounts with email_verified_at NULL and
+// LoginHandler refuses an unverified account, so the backfill's predicate
+// (IS NULL) cannot distinguish a pre-existing admin account — which must be
+// stamped — from a pending sign-up, which must not. Running it on every boot
+// therefore marks every unverified sign-up verified at the next restart,
+// including one created at an address the person does not own: the bot filter
+// and the proof of address ownership are both bypassed, on a schedule, with
+// nothing in the logs to say so.
 //
-// Why it is needed: self-service sign-up creates accounts with
-// email_verified_at NULL and LoginHandler refuses an unverified account. Every
-// account created before that flow existed was made by an admin and has never
-// seen a verification mail, so the deploy that adds the login check would lock
-// out every existing user — the operator included — without this.
+// Keying on the column's prior absence makes the stamp genuinely one-time.
+// Column existence is read through gorm's dialect rather than
+// information_schema so the guard behaves identically under Postgres and the
+// sqlite the tests use — a guard that could only run in production would be a
+// guard nothing verifies. It mirrors the access_role column-existence branch
+// already in server.AutoMigrate.
 //
-// created_at rather than now(): the address was effectively trusted from the
-// moment an admin created the account, and stamping the deploy time would
-// record a verification that never happened at a time it did not happen.
+// Why the accounts need stamping at all: every account that exists today was
+// created by an admin and has never seen a verification mail, so without this
+// the deploy that adds the login check locks out every existing user, the
+// operator included.
 //
-// Idempotent — matches nothing once every row is stamped, and matches nothing
-// for sign-up accounts, which are created after this runs.
-func BackfillEmailVerified(db *gorm.DB) error {
+// created_at rather than now(): the address was trusted from the moment an
+// admin made the account, and recording a verification at a time it did not
+// happen would be a lie in the data.
+//
+// Origin: security review of aspirant-server PR #102 (system_3 finding #5226,
+// severity high). The first version of this ran unconditionally inside
+// AutoMigrate, and its own comment carried the mistake — "matches nothing for
+// accounts created through sign-up, because those exist only after this point
+// in the boot" is true within one boot and false across a restart.
+func MigrateEmailVerified(db *gorm.DB) error {
+	columnExisted := db.Dialect().HasColumn("users", "email_verified_at")
+
+	if err := db.AutoMigrate(&User{}).Error; err != nil {
+		return err
+	}
+
+	if columnExisted {
+		// Not the first boot with this column. Every remaining NULL is an
+		// account that has genuinely not verified its address, and leaving it
+		// alone is the entire security property.
+		return nil
+	}
+
+	return backfillEmailVerified(db)
+}
+
+// backfillEmailVerified stamps every account with no verification timestamp.
+//
+// Unexported deliberately: called correctly it runs exactly once, from
+// MigrateEmailVerified, behind that function's column guard. Called from
+// anywhere else it is the defect described above.
+func backfillEmailVerified(db *gorm.DB) error {
 	return db.Exec("UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL").Error
 }
 
