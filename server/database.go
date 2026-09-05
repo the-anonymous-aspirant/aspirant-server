@@ -186,6 +186,12 @@ func AutoMigrate(db *gorm.DB) {
 	// Unscoped() and refuses on, so it stays closed without a marker row.
 	db.AutoMigrate(&data_models.BootstrapRecord{})
 
+	// Step 5c: Site-wide policy switches (#5289) — today just the sign-up
+	// kill-switch. No seed: an absent row reads as the setting's default, so a
+	// fresh database and a configured one behave the same until an admin
+	// actually flips something.
+	db.AutoMigrate(&data_models.SiteSetting{})
+
 	// Step 6: Per-user scratchpad (one text buffer per user)
 	db.AutoMigrate(&data_models.Scratchpad{})
 
