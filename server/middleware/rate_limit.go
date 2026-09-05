@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -112,7 +113,10 @@ func ClearLoginBucketForUsername(username string) {
 func LoginRateLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
-		username := peekJSONUsername(c)
+		// Read and parse the body BEFORE taking the lock. This has always been
+		// the right order here and PR #106 copied the helper into a caller that
+		// got it wrong; see PublicAuthRateLimit.
+		usernames := extractJSONStringFields(peekJSONBody(c), "username")
 
 		l := defaultLoginLimiter
 		l.mu.Lock()
@@ -124,7 +128,22 @@ func LoginRateLimit() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		if username != "" && l.hitAndCheck(&l.byUser, strings.ToLower(username), now, l.unLimit, l.unWindow) {
+		// Every case-variant spelling is charged, because encoding/json will
+		// bind one of them and this must not depend on guessing which. Before
+		// #5240 the scan matched only "username"/"Username", so `{"USERNAME":
+		// "victim"}` bound in the handler while the per-username bucket was
+		// skipped entirely — the distributed-credential-stuffing defence was
+		// bypassable by changing the case of a JSON key.
+		overUser := false
+		for _, username := range usernames {
+			if username == "" {
+				continue
+			}
+			if l.hitAndCheck(&l.byUser, strings.ToLower(username), now, l.unLimit, l.unWindow) {
+				overUser = true
+			}
+		}
+		if overUser {
 			l.mu.Unlock()
 			log.Printf("Rate limit: too many /login attempts for username")
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many login attempts, please try again later"})
@@ -150,53 +169,72 @@ func (l *loginRateLimiter) hitAndCheck(store *map[string]*bucket, key string, no
 	return len(b.hits) > limit
 }
 
-// peekJSONUsername reads the JSON body, extracts the "username"
-// field, and rewrites the body onto the request so the downstream
-// handler's c.ShouldBindJSON still sees the payload. Returns "" on
-// any parse failure — the handler will then return 400 and the
-// per-username bucket is left untouched.
-func peekJSONUsername(c *gin.Context) string {
+// peekJSONBody reads the request body and rewrites it onto the request so a
+// downstream handler's ShouldBindJSON still sees the payload. Returns nil on
+// any read failure — callers then key on nothing and the handler reports the
+// real error to the client.
+//
+// Shared with PublicAuthRateLimit (#5222), which needs the same
+// read-without-consuming for its per-recipient buckets. Two copies of a
+// body-rewrite would be two chances to leave a handler with an empty body.
+func peekJSONBody(c *gin.Context) []byte {
 	if c.Request == nil || c.Request.Body == nil {
-		return ""
+		return nil
 	}
-	// Cap the read at 4 KiB — /login bodies are tiny, and a large
+	// Cap the read at 4 KiB — these bodies are tiny, and a large
 	// body from an attacker shouldn't burn memory here.
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 4096))
 	if err != nil {
-		return ""
+		return nil
 	}
 	// Restore the body so the handler's ShouldBindJSON sees it.
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	return extractUsername(body)
+	return body
 }
 
-// extractUsername pulls a "username" string field from a small JSON
-// object without allocating a full parse tree. Deliberately lenient
-// — a malformed body returns "" and the handler's ShouldBindJSON
-// will report the real 400 to the client.
-func extractUsername(body []byte) string {
-	// Naive but safe: search for the "username" key and take the
-	// quoted string that follows. Handles the two casings the client
-	// sends ("username" / "Username") and ignores extra whitespace.
-	for _, key := range []string{`"username"`, `"Username"`} {
-		i := strings.Index(string(body), key)
-		if i < 0 {
-			continue
-		}
-		rest := string(body)[i+len(key):]
-		colon := strings.Index(rest, ":")
-		if colon < 0 {
-			continue
-		}
-		rest = strings.TrimLeft(rest[colon+1:], " \t\r\n")
-		if len(rest) < 2 || rest[0] != '"' {
-			continue
-		}
-		end := strings.IndexByte(rest[1:], '"')
-		if end < 0 {
-			continue
-		}
-		return rest[1 : 1+end]
+// extractJSONStringFields returns every string value in a small JSON object
+// whose key matches `field`, using the SAME matching rule encoding/json uses
+// when it binds that object to a struct: an exact key match, and failing that
+// any key that differs only by case.
+//
+// It parses rather than scans, and that is the fix for a real bypass. The
+// previous version searched the raw bytes for two literals — `"email"` and
+// `"Email"` — while the handlers bind with c.ShouldBindJSON, and encoding/json
+// accepts `{"EMAIL": ...}` for a field tagged `json:"email"`. So a request with
+// a case-varied key bound fine in the handler and extracted to "" here: the
+// per-recipient bucket was skipped and the mail still went out. A limiter that
+// keys on a different parse from the one the handler acts on is not a limiter
+// (CWE-807; found by the security review of PR #106, system_3 #5240).
+//
+// ALL matching values are returned, not the first. `{"email":"a","EMAIL":"b"}`
+// binds to whichever encoding/json processes last, and rather than replicate
+// that ordering rule the caller charges every distinct value — being wrong in
+// the safe direction, since the alternative is guessing which one the handler
+// will act on. Two spellings of the SAME value are one recipient and one
+// charge; the caller keys on the value, so case variation buys no extra budget
+// and costs no legitimate caller anything either.
+//
+// Deliberately lenient about everything else: a body that is not a JSON object,
+// or whose matching value is not a string, yields nothing and the handler's own
+// ShouldBindJSON reports the real 400 to the client.
+func extractJSONStringFields(body []byte, field string) []string {
+	if len(body) == 0 {
+		return nil
 	}
-	return ""
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil
+	}
+	var out []string
+	for key, raw := range obj {
+		if !strings.EqualFold(key, field) {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
