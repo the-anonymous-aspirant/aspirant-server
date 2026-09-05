@@ -225,6 +225,7 @@ func UpdateUserHandler(c *gin.Context) {
 	}
 
 	currentPassword := user.Password
+	currentRoleID := user.RoleID
 
 	var input userInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -271,15 +272,30 @@ func UpdateUserHandler(c *gin.Context) {
 		return
 	}
 
-	// A password change here is an admin resetting someone's credential, which
-	// is one of the two reasons to do it: the account is compromised, or the
-	// person has lost access. Both want the old sessions gone (#5224). Any
-	// other edit through this endpoint — a role change, a comment — leaves
-	// sessions alone, because signing someone out for a typo'd comment would be
-	// its own small bug.
-	if passwordChanged {
+	// Two edits through this endpoint hand a different set of capabilities to
+	// whoever holds the account's live tokens, and both revoke them.
+	//
+	// A password change is an admin resetting someone's credential: either the
+	// account is compromised or the person has lost access, and both want the
+	// old sessions gone (#5224).
+	//
+	// A TIER change is the moderation action this whole subtask exists for
+	// (#5290). AuthMiddleware reads `role` from the JWT claim and never re-reads
+	// the row, and tokens live 24 hours (GenerateTokenAtEpoch), so without this
+	// an admin moving an abusive account to Blocked left it fully privileged
+	// for the rest of the day — the block was advisory until the token expired.
+	// Revoking makes it bind on the account's next request. It cuts the other
+	// way too: a promotion to Member takes effect on a fresh login rather than
+	// on a stale token, which is the same property read from the other side.
+	//
+	// The guard is on the value CHANGING, not on the field being present. The
+	// admin form PUTs the whole user on every save, so keying on presence would
+	// sign someone out for a corrected typo in their comment — the small bug
+	// the password branch's original comment already warned about.
+	roleChanged := user.RoleID != currentRoleID
+	if passwordChanged || roleChanged {
 		if err := data_models.RevokeSessions(db, user.ID); err != nil {
-			log.Printf("ERROR: password changed for user %d but revoking its sessions failed: %v", user.ID, err)
+			log.Printf("ERROR: credentials or tier changed for user %d but revoking its sessions failed: %v", user.ID, err)
 		}
 	}
 
