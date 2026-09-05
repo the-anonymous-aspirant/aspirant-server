@@ -185,6 +185,10 @@ func CreateUserHandler(c *gin.Context) {
 		RoleID:   role.ID,
 		Comment:  input.Comment,
 	}
+	// An admin entered this address, so there is no self-service claim to
+	// test; without the stamp the account is created unable to ever log in
+	// (LoginHandler refuses an unverified account, #5113-C1).
+	user.MarkEmailVerifiedNow()
 
 	if err := user.HashPassword(input.Password); err != nil {
 		log.Printf("Error hashing password: %v", err)
@@ -350,6 +354,10 @@ func BootstrapUserHandler(c *gin.Context) {
 		RoleID:   role.ID,
 		Comment:  input.Comment,
 	}
+	// Bootstrap runs only on an empty database — there is nobody to send a
+	// verification mail to, and the person running it owns the deployment.
+	// Without the stamp this endpoint creates an admin who can never log in.
+	user.MarkEmailVerifiedNow()
 
 	if err := user.HashPassword(input.Password); err != nil {
 		log.Printf("Error hashing password: %v", err)
