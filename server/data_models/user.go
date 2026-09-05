@@ -14,8 +14,15 @@ type User struct {
 	Email    string `json:"email" gorm:"unique;not null"`
 	Password string `json:"password,omitempty"`
 	RoleID   uint   `json:"-"`
-	Role     Role   `json:"-" gorm:"foreignkey:RoleID;save_associations:false"`
-	Comment  string `json:"comment"`
+	// EmailVerifiedAt is the moment the address was confirmed, and nil until it
+	// is. A nullable timestamp rather than a bool: "when" answers questions a
+	// bool cannot, and NULL is the honest value for every account created
+	// before self-service sign-up existed. Those are backfilled in AutoMigrate
+	// — see the note there, because reading NULL as "unverified" without the
+	// backfill locks out every existing user.
+	EmailVerifiedAt *time.Time `json:"-"`
+	Role            Role       `json:"-" gorm:"foreignkey:RoleID;save_associations:false"`
+	Comment         string     `json:"comment"`
 	// AvatarETag is the MD5 (content ETag) of the user's current profile
 	// picture in asset storage, or "" when no avatar is set. It is never
 	// serialised directly — the browser-facing avatar URL is derived from it
@@ -130,6 +137,14 @@ func (u *User) CheckPassword(password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password))
 }
 
+// IsEmailVerified reports whether the account's address has been confirmed.
+//
+// An unverified account exists but cannot authenticate (see LoginHandler). The
+// method exists so no caller has to remember that nil is the unverified state.
+func (u *User) IsEmailVerified() bool {
+	return u.EmailVerifiedAt != nil
+}
+
 // AfterCreate opens the user's initial display-name row (display_name =
 // username) so every creation path gets a public display identity without
 // per-caller edits (security-finding #3094). It never fails the user create:
@@ -151,6 +166,29 @@ func (u *User) AfterCreate(tx *gorm.DB) error {
 		})
 	}
 	return nil
+}
+
+// BackfillEmailVerified marks every pre-existing account verified.
+//
+// It is the risky half of the #5220 migration and exists as a named function,
+// rather than a bare db.Exec in AutoMigrate, so a test can call the same
+// statement the boot calls — a test that re-typed the SQL would still pass
+// while the shipped statement was wrong.
+//
+// Why it is needed: self-service sign-up creates accounts with
+// email_verified_at NULL and LoginHandler refuses an unverified account. Every
+// account created before that flow existed was made by an admin and has never
+// seen a verification mail, so the deploy that adds the login check would lock
+// out every existing user — the operator included — without this.
+//
+// created_at rather than now(): the address was effectively trusted from the
+// moment an admin created the account, and stamping the deploy time would
+// record a verification that never happened at a time it did not happen.
+//
+// Idempotent — matches nothing once every row is stamped, and matches nothing
+// for sign-up accounts, which are created after this runs.
+func BackfillEmailVerified(db *gorm.DB) error {
+	return db.Exec("UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL").Error
 }
 
 // CreateUser creates a new user

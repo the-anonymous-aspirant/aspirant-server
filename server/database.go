@@ -127,6 +127,21 @@ func AutoMigrate(db *gorm.DB) {
 	// legacy role rows. Idempotent: matches nothing once they are gone.
 	db.Exec("DELETE FROM roles WHERE role_name IN ('Trusted', 'User', 'Guest', 'Gamer', 'Deleted')")
 
+	// Step 2a: Backfill email verification for every pre-existing account
+	// (epic #5113, subtask #5220).
+	//
+	// THIS IS THE MIGRATION'S RISK, so it runs before anything reads the
+	// column. Self-service sign-up creates accounts unverified and LoginHandler
+	// refuses an unverified account; every account that predates that flow was
+	// created by an admin and has never seen a verification mail, so without
+	// this statement the deploy that adds the login check locks out every
+	// existing user, the operator included. Idempotent: matches nothing on
+	// re-run, and matches nothing for accounts created through sign-up because
+	// those exist only after this point in the boot.
+	if err := data_models.BackfillEmailVerified(db); err != nil {
+		log.Printf("Warning: email-verified backfill failed: %v", err)
+	}
+
 	// Step 2b: Temporal display-name table (security-finding #3094). The login
 	// username must not double as a public display identity, so a separate
 	// history-carrying table holds display names; the login users.username
