@@ -111,6 +111,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// notice goes to the address on file, so an attacker who knows only a
 	// victim's username can aim mail at them without ever typing their address.
 	router.POST("/signup", middleware.PublicAuthRateLimit("email", "username"), handlers.SignupHandler)
+	// The sign-up page reads this before rendering its form (#5289). Public
+	// because its visitor has no account, and NOT behind PublicAuthRateLimit —
+	// that limiter's per-IP budget is sized against the requests one person's
+	// sign-up-and-recover journey costs, and a page load must not spend it. See
+	// the note on GetSignupStatusHandler.
+	router.GET("/signup/status", handlers.GetSignupStatusHandler)
 	router.POST("/verify-email", middleware.PublicAuthRateLimit(), handlers.VerifyEmailHandler)
 	// Password recovery (#5113-C1). /password/forgot answers identically for a
 	// known and an unknown address — it takes an address and nothing else, so a
@@ -364,6 +370,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.POST("/data_models/users", handlers.CreateUserHandler)
 		adminRoutes.PUT("/data_models/users/:id", handlers.UpdateUserHandler)
 		adminRoutes.DELETE("/data_models/users/:id", handlers.DeleteUserHandler)
+		// Sign-up kill-switch (#5289). The admin write half; the public read
+		// half is GET /signup/status above. Enforcement is in SignupHandler.
+		adminRoutes.PUT("/settings/signup", handlers.PutSignupSettingHandler)
 		adminRoutes.GET("/files/usage", handlers.StorageUsageHandler)
 		adminRoutes.DELETE("/files/shared/delete/:filename", handlers.DeleteSharedFileHandler)
 

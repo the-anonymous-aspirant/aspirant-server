@@ -67,6 +67,12 @@ func newSignupHarness(t *testing.T) *signupHarness {
 		&data_models.Role{}, &data_models.User{},
 		&data_models.UserDisplayName{}, &data_models.UserToken{},
 		&data_models.BootstrapRecord{},
+		// SignupHandler reads the #5289 kill-switch before it touches the users
+		// table, and a missing table is a read ERROR, not an absent row — so
+		// without this every case in this file 500s. That is the flag failing
+		// closed on purpose (a database blip must not reopen a closed site),
+		// which makes the harness's job to carry the schema the server has.
+		&data_models.SiteSetting{},
 	)
 	// One connection: sqlite's in-memory driver does not do concurrent
 	// writers, and BootstrapUserHandler now opens a transaction. Without this
