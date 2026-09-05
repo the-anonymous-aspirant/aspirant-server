@@ -156,18 +156,30 @@ func (l *loginRateLimiter) hitAndCheck(store *map[string]*bucket, key string, no
 // any parse failure — the handler will then return 400 and the
 // per-username bucket is left untouched.
 func peekJSONUsername(c *gin.Context) string {
+	return extractUsername(peekJSONBody(c))
+}
+
+// peekJSONBody reads the request body and rewrites it onto the request so a
+// downstream handler's ShouldBindJSON still sees the payload. Returns nil on
+// any read failure — callers then key on nothing and the handler reports the
+// real error to the client.
+//
+// Shared with PublicAuthRateLimit (#5222), which needs the same
+// read-without-consuming for its per-recipient buckets. Two copies of a
+// body-rewrite would be two chances to leave a handler with an empty body.
+func peekJSONBody(c *gin.Context) []byte {
 	if c.Request == nil || c.Request.Body == nil {
-		return ""
+		return nil
 	}
-	// Cap the read at 4 KiB — /login bodies are tiny, and a large
+	// Cap the read at 4 KiB — these bodies are tiny, and a large
 	// body from an attacker shouldn't burn memory here.
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 4096))
 	if err != nil {
-		return ""
+		return nil
 	}
 	// Restore the body so the handler's ShouldBindJSON sees it.
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	return extractUsername(body)
+	return body
 }
 
 // extractUsername pulls a "username" string field from a small JSON
@@ -175,10 +187,16 @@ func peekJSONUsername(c *gin.Context) string {
 // — a malformed body returns "" and the handler's ShouldBindJSON
 // will report the real 400 to the client.
 func extractUsername(body []byte) string {
-	// Naive but safe: search for the "username" key and take the
-	// quoted string that follows. Handles the two casings the client
-	// sends ("username" / "Username") and ignores extra whitespace.
-	for _, key := range []string{`"username"`, `"Username"`} {
+	return extractJSONStringField(body, "username")
+}
+
+// extractJSONStringField pulls a named string field from a small JSON object
+// without allocating a full parse tree. Deliberately lenient — a malformed
+// body returns "" and the handler's ShouldBindJSON reports the real 400.
+//
+// Both casings the clients send are tried (e.g. "username" / "Username").
+func extractJSONStringField(body []byte, field string) string {
+	for _, key := range []string{`"` + field + `"`, `"` + strings.ToUpper(field[:1]) + field[1:] + `"`} {
 		i := strings.Index(string(body), key)
 		if i < 0 {
 			continue
