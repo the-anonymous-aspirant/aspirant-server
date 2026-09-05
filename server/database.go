@@ -141,6 +141,13 @@ func AutoMigrate(db *gorm.DB) {
 	// unverified sign-up verified at the next restart and disable the
 	// verification gate on a timer (security finding #5226).
 
+	// Step 2c: Session-revocation watermark (epic #5113, subtask #5224). A
+	// nullable column with no backfill — NULL means "never revoked", which is
+	// correct for every account that predates it, so unlike the
+	// email-verification stamp this migration carries no lockout risk.
+	// AutoMigrate on User (Step 2 above) adds the column; this comment records
+	// where it comes from.
+
 	// Step 2b: Temporal display-name table (security-finding #3094). The login
 	// username must not double as a public display identity, so a separate
 	// history-carrying table holds display names; the login users.username

@@ -10,8 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"aspirant-online/server/data_models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
 const testGoodSecret = "test-jwt-secret-must-be-at-least-32-bytes-long!!"
@@ -89,9 +93,36 @@ func TestLoadJWTSecret_StrongSecretAccepted(t *testing.T) {
 
 // authRouter returns a minimal gin engine that runs AuthMiddleware and
 // returns 200 when it passes.
+// authTestDB gives the router a database holding one user (id 1) who has never
+// revoked their sessions. AuthMiddleware needs it since #5224: it reads the
+// user's revocation watermark on every request and fails closed without one,
+// so a fixture with no db would 401 everything and prove nothing about tokens.
+func authTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	db.AutoMigrate(&data_models.User{})
+	if err := db.Create(&data_models.User{Username: "u1", Email: "u1@example.com"}).Error; err != nil {
+		t.Fatalf("seeding user: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 func authRouter() *gin.Engine {
+	return authRouterWithDB(nil)
+}
+
+// authRouterWithDB wires db into the request context the way main.go does. A
+// nil db is left unset, which is what the fail-closed tests want.
+func authRouterWithDB(db *gorm.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	if db != nil {
+		r.Use(func(c *gin.Context) { c.Set("db", db); c.Next() })
+	}
 	r.GET("/gated", AuthMiddleware(), func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
@@ -103,7 +134,7 @@ func TestAuthMiddleware_ValidHS256Accepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	r := authRouter()
+	r := authRouterWithDB(authTestDB(t))
 	req := httptest.NewRequest(http.MethodGet, "/gated", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -225,6 +256,13 @@ func TestParseTokenIfPresent_ValidReturnsClaims(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Request.Header.Set("Authorization", "Bearer "+token)
+	// ParseTokenIfPresent checks session revocation since #5224, so the user
+	// has to exist. Seeded with id 42 to match the token.
+	db := authTestDB(t)
+	if err := db.Create(&data_models.User{Model: gorm.Model{ID: 42}, Username: "u42", Email: "u42@example.com"}).Error; err != nil {
+		t.Fatalf("seeding user 42: %v", err)
+	}
+	c.Set("db", db)
 
 	uid, role, ok := ParseTokenIfPresent(c)
 	if !ok {

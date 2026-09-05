@@ -96,6 +96,19 @@ func (h *signupHarness) post(t *testing.T, path string, body any) *httptest.Resp
 	return w
 }
 
+func (h *signupHarness) put(t *testing.T, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.router.ServeHTTP(w, req)
+	return w
+}
+
 func (h *signupHarness) signup(t *testing.T, username, address, password string) *httptest.ResponseRecorder {
 	t.Helper()
 	return h.post(t, "/signup", gin.H{"username": username, "email": address, "password": password})

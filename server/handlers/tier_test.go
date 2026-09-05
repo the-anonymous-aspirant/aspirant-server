@@ -5,9 +5,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"aspirant-online/server/data_models"
 	"aspirant-online/server/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
 // Locks the #5113-A2 access-tier mapping. tierOf must accept BOTH the new tier
@@ -31,9 +34,9 @@ func TestTierOf(t *testing.T) {
 		"Gamer":   TierViewer,
 		"Deleted": TierBlocked,
 		// anything unknown/empty is least-privilege
-		"":            TierBlocked,
-		"nonsense":    TierBlocked,
-		"admin":       TierBlocked, // case-sensitive: only "Admin" is admin
+		"":         TierBlocked,
+		"nonsense": TierBlocked,
+		"admin":    TierBlocked, // case-sensitive: only "Admin" is admin
 	}
 	for role, want := range cases {
 		if got := tierOf(role); got != want {
@@ -71,6 +74,11 @@ func TestRequireTierFloors(t *testing.T) {
 
 	for _, f := range floors {
 		router := gin.New()
+		// AuthMiddleware reads the caller's session-revocation watermark since
+		// #5224 and fails closed without a db, so the fixture supplies one the
+		// way main.go does. The seeded user has never revoked, which is what
+		// keeps this test about tier floors rather than about revocation.
+		router.Use(func(c *gin.Context) { c.Set("db", tierTestDB(t)); c.Next() })
 		g := router.Group("/")
 		g.Use(middleware.AuthMiddleware())
 		g.Use(RequireTier(f.floor))
@@ -99,4 +107,19 @@ func TestRequireTierFloors(t *testing.T) {
 			t.Errorf("floor=%s no-creds: status %d, want 401", f.name, w.Code)
 		}
 	}
+}
+
+// tierTestDB holds one user (id 1) who has never revoked their sessions.
+func tierTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	db.AutoMigrate(&data_models.User{})
+	if err := db.Create(&data_models.User{Username: "u1", Email: "u1@example.com"}).Error; err != nil {
+		t.Fatalf("seeding user: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }

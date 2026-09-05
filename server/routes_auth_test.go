@@ -1,14 +1,18 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"aspirant-online/server/data_models"
 	"aspirant-online/server/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
 // loadTestJWTSecret installs a strong signing key so GenerateToken /
@@ -24,9 +28,14 @@ func loadTestJWTSecret(t *testing.T) {
 
 // realRouter builds the production router (the same RegisterRoutes the server
 // boots) so the role-group membership of each route is exercised as shipped,
-// not re-declared in the test. A nil db is safe here: AuthMiddleware reads the
-// role from the JWT claim and the commander proxy handlers make an outbound
-// HTTP call — neither touches the db for the paths asserted below.
+// not re-declared in the test.
+//
+// It used to pass a nil db, on the stated premise that "AuthMiddleware reads
+// the role from the JWT claim ... neither touches the db". That premise ended
+// with #5224: AuthMiddleware now reads the caller's session-revocation
+// watermark on every request and fails closed without a db, so this wires one
+// the way main.go does. The commander proxy handlers still make an outbound
+// HTTP call and touch nothing.
 func realRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -34,8 +43,25 @@ func realRouter(t *testing.T) *gin.Engine {
 	// Admin request that clears the role gate reaches the proxy and returns
 	// 502 immediately instead of blocking on the 30s client timeout.
 	t.Setenv("COMMANDER_URL", "http://127.0.0.1:1")
+
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	db.AutoMigrate(&data_models.User{})
+	// The token subjects these tests mint, none of whom has revoked.
+	for id := uint(1); id <= 3; id++ {
+		u := data_models.User{Username: fmt.Sprintf("u%d", id), Email: fmt.Sprintf("u%d@example.com", id)}
+		u.ID = id
+		if err := db.Create(&u).Error; err != nil {
+			t.Fatalf("seeding user %d: %v", id, err)
+		}
+	}
+	t.Cleanup(func() { db.Close() })
+
 	r := gin.New()
-	RegisterRoutes(r, nil)
+	r.Use(func(c *gin.Context) { c.Set("db", db); c.Next() })
+	RegisterRoutes(r, db)
 	return r
 }
 

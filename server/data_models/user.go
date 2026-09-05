@@ -14,6 +14,19 @@ type User struct {
 	Email    string `json:"email" gorm:"unique;not null"`
 	Password string `json:"password,omitempty"`
 	RoleID   uint   `json:"-"`
+	// SessionsValidFrom is the watermark that revokes tokens issued before it.
+	//
+	// A JWT here is stateless with a 24h expiry and there is no denylist, so
+	// changing a password used to leave every session already issued alive for
+	// up to a day — including the session of whoever the password was being
+	// changed to lock out. Every token carries an `iat`, so a token issued
+	// before this moment is stale by arithmetic on what it already contains,
+	// with no new claim and no change to how tokens are minted.
+	//
+	// NULL means "never revoked", which is the honest value for every account
+	// that predates this and needs no backfill.
+	SessionsValidFrom *time.Time `json:"-"`
+
 	// EmailVerifiedAt is the moment the address was confirmed, and nil until it
 	// is. A nullable timestamp rather than a bool: "when" answers questions a
 	// bool cannot, and NULL is the honest value for every account created
@@ -191,6 +204,38 @@ func (u *User) AfterCreate(tx *gorm.DB) error {
 func (u *User) MarkEmailVerifiedNow() {
 	now := time.Now()
 	u.EmailVerifiedAt = &now
+}
+
+// RevokeSessions invalidates every token issued to a user before now.
+//
+// Call it wherever a credential changes hands. It is the whole revocation
+// mechanism: the watermark is compared against each token's `iat` on every
+// authenticated request, so this takes effect immediately and everywhere,
+// including the paths nobody remembered to think about.
+//
+// It is per user and all-or-nothing. That is why logout does NOT call it —
+// a single watermark cannot distinguish "this device" from "every device",
+// and signing someone out of their phone because they logged out on their
+// laptop would be a worse bug than the one this fixes. Per-session revocation
+// needs per-session identity (a jti and a store) and is a separate design.
+func RevokeSessions(db *gorm.DB, userID uint) error {
+	now := time.Now()
+	return db.Model(&User{}).Where("id = ?", userID).
+		Update("sessions_valid_from", now).Error
+}
+
+// SessionsValidFromFor reads a user's revocation watermark.
+//
+// Returns a nil time when the user has never revoked, and an error only when
+// the read itself fails — a user row that has vanished is reported as an
+// error, because a token for a user who no longer exists must not be honoured
+// on the strength of a missing row.
+func SessionsValidFromFor(db *gorm.DB, userID uint) (*time.Time, error) {
+	var user User
+	if err := db.Select("sessions_valid_from").Where("id = ?", userID).First(&user).Error; err != nil {
+		return nil, err
+	}
+	return user.SessionsValidFrom, nil
 }
 
 // MigrateEmailVerified adds the email_verified_at column and, ONLY when the

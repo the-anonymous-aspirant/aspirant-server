@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"aspirant-online/server/data_models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jinzhu/gorm"
 )
 
 const (
@@ -100,6 +103,68 @@ func parseAndValidate(tokenString string) (jwt.MapClaims, error) {
 	return claims, nil
 }
 
+// tokenIsCurrent reports whether a parsed token predates its user's session
+// revocation watermark.
+//
+// This is the entire revocation mechanism, and it lives in one function called
+// from BOTH parse paths on purpose. AuthMiddleware is the obvious door;
+// ParseTokenIfPresent is the quiet one, used by /fetch-object to let an admin
+// bypass the published-ETag whitelist (security-finding system_3 #1381).
+// Checking only the obvious door would leave a revoked admin token still
+// unlocking that, which is the same shape as the #5232 lockout — a code path
+// nobody was thinking about behaving differently from the one under review.
+//
+// It fails CLOSED. No db in the request context is a wiring error, and the
+// answer is "not current" rather than "skip the check": a revocation a
+// misconfiguration switches off is not a revocation. The same goes for a user
+// row that cannot be read — a token for a user who no longer exists must not
+// be honoured on the strength of a failed lookup.
+//
+// Cost is one indexed read per authenticated request on a middleware that was
+// previously stateless. Deliberately uncached: a cache here would need its own
+// invalidation and would be exactly the thing that silently keeps a revoked
+// session alive.
+func tokenIsCurrent(c *gin.Context, userID uint, claims jwt.MapClaims) bool {
+	dbVal, exists := c.Get("db")
+	if !exists {
+		log.Println("ERROR: no db in context; cannot check session revocation")
+		return false
+	}
+	db, ok := dbVal.(*gorm.DB)
+	if !ok || db == nil {
+		log.Printf("ERROR: db in context is %T; cannot check session revocation", dbVal)
+		return false
+	}
+
+	validFrom, err := data_models.SessionsValidFromFor(db, userID)
+	if err != nil {
+		log.Printf("Session revocation check failed for user %d: %v", userID, err)
+		return false
+	}
+	if validFrom == nil {
+		// Never revoked. Every account that predates this column is here, which
+		// is why the migration needs no backfill.
+		return true
+	}
+
+	issuedAt, ok := claims["iat"].(float64)
+	if !ok {
+		// Every token this service mints carries iat, and the parser validates
+		// it. One without is not ours.
+		log.Printf("Token for user %d has no usable iat claim", userID)
+		return false
+	}
+
+	// Strictly-after, so a token minted in the same second as the revocation is
+	// refused. A reset and an issue that land together resolve against the
+	// account owner, not against whoever else is holding a session.
+	if !time.Unix(int64(issuedAt), 0).After(*validFrom) {
+		log.Printf("Token for user %d was issued before its sessions were revoked", userID)
+		return false
+	}
+	return true
+}
+
 // AuthMiddleware is a middleware function for the Gin framework that handles
 // authentication by validating the JWT token provided in the "Authorization" header.
 // If the token is missing, invalid, or the claims are not as expected, it responds
@@ -150,12 +215,34 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		if !tokenIsCurrent(c, uint(userID), claims) {
+			// Same response as any other invalid token: whether a session was
+			// revoked or the token was never valid is not something the holder
+			// gets to distinguish.
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
 		log.Printf("Token parsed successfully - role: %s, user_id: %d", role, uint(userID))
 
 		c.Set("role", role)
 		c.Set("user_id", uint(userID))
 		c.Next()
 	}
+}
+
+// tokenStringFrom reads the bearer token from the Authorization header, or
+// failing that the auth_token cookie. One definition, so the two parse paths
+// cannot disagree about where a token comes from.
+func tokenStringFrom(c *gin.Context) string {
+	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	if cookie, err := c.Cookie("auth_token"); err == nil && cookie != "" {
+		return cookie
+	}
+	return ""
 }
 
 // ParseTokenIfPresent decodes the same Authorization/auth_token cookie
@@ -166,13 +253,40 @@ func AuthMiddleware() gin.HandlerFunc {
 // callers. Used by /fetch-object so admins previewing uploaded
 // assets bypass the published-ETag whitelist (security-finding
 // system_3 #1381) without breaking the pre-JWT SPA shell.
+//
+// It honours session revocation (#5224), because granting capability is
+// exactly what a revoked token must stop doing. A caller that needs to read a
+// token WITHOUT that check — logging out is the case — must reach for
+// ParseTokenIgnoringRevocation and say why.
 func ParseTokenIfPresent(c *gin.Context) (userID uint, role string, ok bool) {
-	tokenString := ""
-	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
-		tokenString = strings.TrimPrefix(authHeader, "Bearer ")
-	} else if cookie, err := c.Cookie("auth_token"); err == nil && cookie != "" {
-		tokenString = cookie
+	uid, role, ok := ParseTokenIgnoringRevocation(c)
+	if !ok {
+		return 0, "", false
 	}
+	claims, err := parseAndValidate(tokenStringFrom(c))
+	if err != nil {
+		return 0, "", false
+	}
+	if !tokenIsCurrent(c, uid, claims) {
+		return 0, "", false
+	}
+	return uid, role, true
+}
+
+// ParseTokenIgnoringRevocation is ParseTokenIfPresent without the
+// session-revocation check.
+//
+// It exists for one caller and the name is deliberately awkward. LogoutHandler
+// uses it to recover the user from a still-present cookie so it can release
+// the one-game-at-a-time room lock (#4778) — and logging out has to work when
+// the session has ALREADY been revoked, which is precisely when someone most
+// wants to clear their cookie. Refusing to identify them there would strand
+// the room lock held by a session nobody can use.
+//
+// Do not reach for this to grant capability. Whatever it returns may belong to
+// a session that was revoked.
+func ParseTokenIgnoringRevocation(c *gin.Context) (userID uint, role string, ok bool) {
+	tokenString := tokenStringFrom(c)
 	if tokenString == "" {
 		return 0, "", false
 	}

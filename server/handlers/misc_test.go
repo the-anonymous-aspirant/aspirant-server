@@ -5,9 +5,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"aspirant-online/server/data_models"
 	"aspirant-online/server/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
 // --- IsPubliclyPublishedETag: whitelist lookup semantics ---
@@ -52,10 +55,39 @@ func TestIsPubliclyPublishedETag_StripsQuotedInput(t *testing.T) {
 // --- FetchObjectHandler: gate behaviour ---
 
 func newFetchObjectRouter() *gin.Engine {
+	return newFetchObjectRouterWithDB(nil)
+}
+
+// newFetchObjectRouterWithDB wires a db into the request context the way
+// main.go does. The bypass path goes through ParseTokenIfPresent, which since
+// #5224 checks the caller's session-revocation watermark and fails closed
+// without a db — so a bypass test needs one, and the seeded user has never
+// revoked.
+func newFetchObjectRouterWithDB(db *gorm.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	if db != nil {
+		r.Use(func(c *gin.Context) { c.Set("db", db); c.Next() })
+	}
 	r.GET("/fetch-object/:etag", FetchObjectHandler)
 	return r
+}
+
+// fetchObjectTestDB holds one user with the given id who has never revoked.
+func fetchObjectTestDB(t *testing.T, id uint) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	db.AutoMigrate(&data_models.User{})
+	u := data_models.User{Username: "bypass", Email: "bypass@example.com"}
+	u.ID = id
+	if err := db.Create(&u).Error; err != nil {
+		t.Fatalf("seeding user: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }
 
 func TestFetchObjectHandler_UnknownETagUnauthenticatedReturns404(t *testing.T) {
@@ -109,7 +141,7 @@ func TestFetchObjectHandler_TrustedBearerBypassesGate(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	r := newFetchObjectRouter()
+	r := newFetchObjectRouterWithDB(fetchObjectTestDB(t, 42))
 	req := httptest.NewRequest(http.MethodGet, "/fetch-object/"+unknownETag, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -129,7 +161,7 @@ func TestFetchObjectHandler_AdminBearerBypassesGate(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	r := newFetchObjectRouter()
+	r := newFetchObjectRouterWithDB(fetchObjectTestDB(t, 1))
 	req := httptest.NewRequest(http.MethodGet, "/fetch-object/"+unknownETag, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
