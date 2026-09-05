@@ -58,20 +58,17 @@ func main() {
 	server.AutoMigrate(db)
 	log.Println("Database connected and migrated successfully")
 
-	// Build the outbound-mail sender. Fail fast on a half-configured relay:
-	// SenderFromEnv returns ErrIncompleteConfig when some SMTP_* variables are
-	// set and some are missing, and the alternative to exiting is a service
-	// that answers 200 to every sign-up while writing the verification mail to
-	// a log nobody reads. That failure is silent and permanent; this one is a
-	// container that will not start.
-	//
-	// With none of them set it returns the development sink, which is the
-	// current production state: system_3 #5119 is waiting on the operator to
-	// choose a relay (corpus/decisions/2026-09-04-signup-email-provider.md).
-	// The startup line below is how that state is visible without reading env.
+	// Build the outbound-mail sender. A mail misconfiguration must NOT stop the
+	// server: on 2026-09-05 an earlier version log.Fatal'd here and took the
+	// whole site down for want of two environment variables, because compose
+	// gives this service `env_file: .env` and the monitor's SMTP credentials
+	// were visible in it. SenderFromEnv always returns a usable Sender; a
+	// partial configuration additionally returns an error to shout about, and
+	// the process carries on writing mail to the log.
 	mailer, mailerSends, err := email.SenderFromEnv()
 	if err != nil {
-		log.Fatalf("FATAL: %v", err)
+		log.Printf("ERROR: %v", err)
+		log.Println("ERROR: outbound mail is DISABLED — messages will be written to this log and not delivered")
 	}
 	if mailerSends {
 		log.Printf("Email: sending via SMTP relay %s", os.Getenv(email.EnvHost))
