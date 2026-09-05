@@ -73,10 +73,10 @@ func GetDBStatsHandler(c *gin.Context) {
 	}
 
 	type tableInfo struct {
-		Name     string `json:"name"`
-		Rows     int64  `json:"rows"`
-		SizeBytes int64 `json:"size_bytes"`
-		SizeMB   float64 `json:"size_mb"`
+		Name      string  `json:"name"`
+		Rows      int64   `json:"rows"`
+		SizeBytes int64   `json:"size_bytes"`
+		SizeMB    float64 `json:"size_mb"`
 	}
 
 	rows, err := gormDB.Raw(`
@@ -111,7 +111,7 @@ func GetDBStatsHandler(c *gin.Context) {
 	}
 
 	RespondWithSuccess(c, gin.H{
-		"tables":     tables,
+		"tables":        tables,
 		"total_size_mb": float64(totalSize) / 1024 / 1024,
 		"total_rows":    totalRows,
 		"table_count":   len(tables),
