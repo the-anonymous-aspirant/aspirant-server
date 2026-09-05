@@ -74,6 +74,13 @@ The server listens on **port 8080**.
 | `TRANSCRIBER_URL` | No | Transcriber service URL (default: `http://transcriber:8000`) |
 | `COMMANDER_URL` | No | Commander service URL (default: `http://commander:8000`) |
 | `TRANSLATOR_URL` | No | Translator service URL (default: `http://translator:8000`) |
+| `SMTP_HOST` | No* | Mail relay hostname. Setting any one of the four `SMTP_*` credentials makes all four required — a half-configured relay is a startup error, not a silent fallback |
+| `SMTP_USERNAME` | No* | Mail relay username |
+| `SMTP_PASSWORD` | No* | Mail relay password |
+| `SMTP_FROM` | No* | Envelope and header sender; must be an address the relay and the domain's SPF record authorise |
+| `SMTP_PORT` | No | Mail relay submission port (default: `587`). Not `465` — the client speaks STARTTLS, not implicit TLS. Not `25` — blocked outbound from the deployment host |
+
+\* With none of the four set, the server logs outbound mail instead of sending it and says so at startup. That is the current production state: the relay is pending an operator decision (system_3 #5119).
 
 ## Database Tables
 

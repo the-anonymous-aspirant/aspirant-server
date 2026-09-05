@@ -2,6 +2,7 @@ package main
 
 import (
 	"aspirant-online/server"
+	"aspirant-online/server/email"
 	"aspirant-online/server/middleware"
 	"aspirant-online/server/storage"
 	"log"
@@ -57,6 +58,27 @@ func main() {
 	server.AutoMigrate(db)
 	log.Println("Database connected and migrated successfully")
 
+	// Build the outbound-mail sender. Fail fast on a half-configured relay:
+	// SenderFromEnv returns ErrIncompleteConfig when some SMTP_* variables are
+	// set and some are missing, and the alternative to exiting is a service
+	// that answers 200 to every sign-up while writing the verification mail to
+	// a log nobody reads. That failure is silent and permanent; this one is a
+	// container that will not start.
+	//
+	// With none of them set it returns the development sink, which is the
+	// current production state: system_3 #5119 is waiting on the operator to
+	// choose a relay (corpus/decisions/2026-09-04-signup-email-provider.md).
+	// The startup line below is how that state is visible without reading env.
+	mailer, mailerSends, err := email.SenderFromEnv()
+	if err != nil {
+		log.Fatalf("FATAL: %v", err)
+	}
+	if mailerSends {
+		log.Printf("Email: sending via SMTP relay %s", os.Getenv(email.EnvHost))
+	} else {
+		log.Println("Email: NO SMTP relay configured — messages are written to this log and not delivered")
+	}
+
 	// Initialize local asset storage
 	assetPath := os.Getenv("ASSET_BASE_PATH")
 	if assetPath == "" {
@@ -85,6 +107,14 @@ func main() {
 	// Add asset storage to context
 	r.Use(func(c *gin.Context) {
 		c.Set("storage", assets)
+		c.Next()
+	})
+
+	// Add the mail sender to context, alongside db and storage. Always
+	// non-nil: SenderFromEnv either returns a usable Sender or the process
+	// has already exited above.
+	r.Use(func(c *gin.Context) {
+		c.Set("mailer", mailer)
 		c.Next()
 	})
 
