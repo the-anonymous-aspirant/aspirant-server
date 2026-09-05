@@ -78,12 +78,27 @@ type Sender interface {
 // ErrIncompleteConfig reports a partially configured relay: some of the SMTP
 // variables are set and some are missing.
 //
-// This is an error rather than a fallback to LogSender on purpose. A silent
-// fallback in production is the worst available outcome: the service keeps
-// answering 200 to sign-up requests, writes the verification mail to a log file
-// nobody reads, and no user can ever complete registration — with nothing
-// anywhere reporting a fault. Refusing at startup turns a silent, permanent
-// data-loss bug into a container that will not start.
+// It is returned ALONGSIDE a usable LogSender, never instead of one, and the
+// caller is expected to log it loudly and carry on. That is the opposite of
+// what this package did first, and the reversal has a date attached.
+//
+// The original reasoning: a silent fallback lets the service answer 200 to
+// sign-up while writing verification mail to a log nobody reads, so refusing to
+// start turns a silent permanent bug into a container that will not start. Each
+// clause of that is true and the conclusion was still wrong, because it weighed
+// mail against nothing. At 18:01Z on 2026-09-05 it weighed mail against the
+// whole site: the deployment's compose file gives the server `env_file: .env`,
+// which injects the MONITOR service's SMTP credentials — SMTP_HOST, SMTP_USER
+// and SMTP_PASSWORD, set for alert mail and nothing to do with this package —
+// into the server's environment. Two of the four names matched, the config read
+// as half-configured, and every page on the-aspirant.com returned 502 for as
+// long as it took to notice.
+//
+// A subsystem that sends registration mail must not be able to stop the server
+// from serving. Mail loss is loud in the log and recoverable by asking for
+// another link; an outage is neither. And a process cannot assume the
+// environment it is handed is addressed to it — ambient variables that merely
+// share a prefix are not configuration for this package.
 var ErrIncompleteConfig = errors.New("email: SMTP configuration is incomplete")
 
 // ErrUnsendable reports a recipient, subject or sender the message builder
@@ -183,16 +198,21 @@ func (s SMTPSender) Send(to, subject, body string) error {
 
 // SenderFromEnv builds the Sender the process should use.
 //
-// With none of the SMTP variables set it returns a LogSender: the state every
-// developer checkout and the current production deployment are in. With all of
-// them set it returns an SMTPSender. With some set it returns
-// ErrIncompleteConfig — see that error's comment for why this is not a
-// fallback.
+// It ALWAYS returns a usable Sender. With none of the SMTP variables set, or
+// with only some of them, that is a LogSender; only a complete configuration
+// produces an SMTPSender, so a partial one can never half-send. An incomplete
+// configuration also returns ErrIncompleteConfig for the caller to log — see
+// that error's comment for why this reports rather than refuses.
 //
 // The returned bool reports whether mail will actually leave the process, so
 // main can say so at startup. An operator reading "no SMTP relay configured"
-// in the logs is the intended way to discover a deployment that silently is not
-// sending.
+// in the logs is the intended way to discover a deployment that is not sending.
+//
+// Note it reads SMTP_USERNAME, not the SMTP_USER that this deployment sets for
+// its monitor service. Deliberately: adopting credentials that happen to be
+// visible in the environment would make the server start sending mail as
+// whatever account they belong to, which is not a decision a name collision
+// gets to make.
 func SenderFromEnv() (Sender, bool, error) {
 	host := strings.TrimSpace(os.Getenv(EnvHost))
 	username := strings.TrimSpace(os.Getenv(EnvUsername))
@@ -224,11 +244,11 @@ func SenderFromEnv() (Sender, bool, error) {
 	}
 	if len(missing) > 0 {
 		// Sorted so the message is stable across runs; Go map iteration is not.
-		return nil, false, fmt.Errorf("%w: set %s or unset all of them", ErrIncompleteConfig, strings.Join(sorted(missing), ", "))
+		return LogSender{}, false, fmt.Errorf("%w: set %s or unset all of them", ErrIncompleteConfig, strings.Join(sorted(missing), ", "))
 	}
 
 	if _, err := mail.ParseAddress(from); err != nil {
-		return nil, false, fmt.Errorf("%w: %s is not a valid address: %v", ErrIncompleteConfig, EnvFrom, err)
+		return LogSender{}, false, fmt.Errorf("%w: %s is not a valid address: %v", ErrIncompleteConfig, EnvFrom, err)
 	}
 
 	if port == "" {
