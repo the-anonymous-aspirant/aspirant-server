@@ -8,6 +8,8 @@ import (
 
 	"aspirant-online/server/data_models"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
@@ -80,6 +82,12 @@ func TestRevokedTokenIsRefusedAndAFreshOneIsNot(t *testing.T) {
 		t.Fatalf("pre-revocation status = %d, want 200", code)
 	}
 
+	// No sleep, deliberately: mint, revoke and re-mint all inside one second.
+	// That is the case second-resolution `iat` could not resolve — and the two
+	// shipped attempts each got one side of it wrong — so running same-second
+	// is exactly the assertion worth making now (system_3 #5275).
+
+	// The real function, not a hand-written UPDATE.
 	if err := data_models.RevokeSessions(db, 7); err != nil {
 		t.Fatalf("RevokeSessions: %v", err)
 	}
@@ -87,16 +95,16 @@ func TestRevokedTokenIsRefusedAndAFreshOneIsNot(t *testing.T) {
 		t.Fatalf("post-revocation status = %d, want 401 — the old session survived", code)
 	}
 
-	// `iat` has one-second resolution, so a replacement minted inside the same
-	// second as the revocation is genuinely indistinguishable from the token
-	// being revoked and is refused (see the boundary test below). Waiting for
-	// the next second is what a real login a moment later does; there is no way
-	// to fake it, because the parser rejects a future `iat`.
-	time.Sleep(1100 * time.Millisecond)
-
-	after, err := GenerateToken(7, "Member")
+	// Minted at the user's CURRENT epoch, which is what LoginHandler does after
+	// reading the row. Using the epoch-blind GenerateToken here would mint at 0
+	// and be refused — correctly, since that is the fail-safe default.
+	epoch, err := data_models.SessionEpochFor(db, 7)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+		t.Fatalf("SessionEpochFor: %v", err)
+	}
+	after, err := GenerateTokenAtEpoch(7, "Member", epoch)
+	if err != nil {
+		t.Fatalf("GenerateTokenAtEpoch: %v", err)
 	}
 	if code := gatedGET(t, db, after); code != http.StatusOK {
 		t.Fatalf("post-revocation NEW token status = %d, want 200 — recovery left the account unusable", code)
@@ -121,9 +129,10 @@ func TestRevocationDoesNotTouchOtherUsers(t *testing.T) {
 	}
 }
 
-// NULL means never revoked, which is every account that predates the column —
-// so the migration needs no backfill and nobody is signed out by the deploy.
-func TestNullWatermarkAcceptsEverything(t *testing.T) {
+// Epoch 0 is never-revoked, which is every account that predates the column and
+// also what a token with no epoch claim reads as — so the migration needs no
+// backfill and nobody is signed out by the deploy.
+func TestEpochZeroAcceptsEverything(t *testing.T) {
 	db := revokeTestDB(t, 7)
 
 	token, err := GenerateToken(7, "Member")
@@ -134,31 +143,113 @@ func TestNullWatermarkAcceptsEverything(t *testing.T) {
 	if err := db.Where("id = ?", 7).First(&user).Error; err != nil {
 		t.Fatalf("reading user: %v", err)
 	}
-	if user.SessionsValidFrom != nil {
-		t.Fatalf("a freshly created user already has a watermark (%v); the deploy would sign everyone out", user.SessionsValidFrom)
+	if user.SessionEpoch != 0 {
+		t.Fatalf("a freshly created user is already at epoch %d; the deploy would sign everyone out", user.SessionEpoch)
 	}
 	if code := gatedGET(t, db, token); code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 on a never-revoked account", code)
 	}
 }
 
-// A token issued in the same second as the revocation is refused. A reset and
-// an issue that land together resolve against the account owner, not against
-// whoever else is holding a session.
-func TestTokenIssuedExactlyAtTheWatermarkIsRefused(t *testing.T) {
+// Ordering in both directions, with no delay of any kind between the calls.
+//
+// This is the case three timestamp-based attempts each got half-wrong
+// (system_3 #5275): comparing two independently-taken clock readings cannot
+// order events that fall inside the same tick, at any resolution. An epoch has
+// no tick — the database orders the increment against the read — so both of
+// these hold however fast the calls follow one another.
+func TestSessionMintedJustAfterRevocationIsAccepted(t *testing.T) {
 	db := revokeTestDB(t, 7)
 
-	token, err := GenerateToken(7, "Member")
-	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+	if err := data_models.RevokeSessions(db, 7); err != nil {
+		t.Fatalf("RevokeSessions: %v", err)
 	}
-	// The watermark set to the token's own iat second.
-	if err := db.Model(&data_models.User{}).Where("id = ?", 7).
-		Update("sessions_valid_from", time.Now()).Error; err != nil {
-		t.Fatalf("revoking: %v", err)
+	epoch, err := data_models.SessionEpochFor(db, 7)
+	if err != nil {
+		t.Fatalf("SessionEpochFor: %v", err)
+	}
+	// The owner signing back in a moment later, as LoginHandler does.
+	token, err := GenerateTokenAtEpoch(7, "Member", epoch)
+	if err != nil {
+		t.Fatalf("GenerateTokenAtEpoch: %v", err)
+	}
+	if code := gatedGET(t, db, token); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the owner's fresh session was refused", code)
+	}
+}
+
+func TestSessionMintedJustBeforeRevocationIsRefused(t *testing.T) {
+	db := revokeTestDB(t, 7)
+
+	// The session someone else is already holding, minted at the user's
+	// current epoch.
+	epoch, err := data_models.SessionEpochFor(db, 7)
+	if err != nil {
+		t.Fatalf("SessionEpochFor: %v", err)
+	}
+	token, err := GenerateTokenAtEpoch(7, "Member", epoch)
+	if err != nil {
+		t.Fatalf("GenerateTokenAtEpoch: %v", err)
+	}
+	if err := data_models.RevokeSessions(db, 7); err != nil {
+		t.Fatalf("RevokeSessions: %v", err)
 	}
 	if code := gatedGET(t, db, token); code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 at the boundary", code)
+		t.Fatalf("status = %d, want 401 — a session from before the reset survived it", code)
+	}
+}
+
+// Revoking twice keeps working: the epoch is a counter, not a flag.
+func TestSecondRevocationInvalidatesTheSessionIssuedAfterTheFirst(t *testing.T) {
+	db := revokeTestDB(t, 7)
+
+	if err := data_models.RevokeSessions(db, 7); err != nil {
+		t.Fatalf("first RevokeSessions: %v", err)
+	}
+	epoch, _ := data_models.SessionEpochFor(db, 7)
+	token, err := GenerateTokenAtEpoch(7, "Member", epoch)
+	if err != nil {
+		t.Fatalf("GenerateTokenAtEpoch: %v", err)
+	}
+	if code := gatedGET(t, db, token); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after the first revocation", code)
+	}
+
+	if err := data_models.RevokeSessions(db, 7); err != nil {
+		t.Fatalf("second RevokeSessions: %v", err)
+	}
+	if code := gatedGET(t, db, token); code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 — the second revocation did nothing", code)
+	}
+}
+
+// A token minted before the epoch claim shipped, still inside its 24h life. It
+// reads as epoch 0, which matches a never-revoked account — so existing
+// sessions survive the deploy — and stops matching the moment anything revokes.
+func TestLegacyTokenWithoutEpochClaim(t *testing.T) {
+	db := revokeTestDB(t, 7)
+
+	now := time.Now()
+	legacyClaims := func() jwt.MapClaims {
+		return jwt.MapClaims{
+			"user_id": 7,
+			"role":    "Member",
+			"iat":     now.Unix(),
+			"exp":     now.Add(24 * time.Hour).Unix(),
+			// no epoch
+		}
+	}
+
+	legacy := mintTokenWithSecret(t, []byte(testGoodSecret), legacyClaims())
+	if code := gatedGET(t, db, legacy); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the deploy signed out an existing session", code)
+	}
+
+	if err := data_models.RevokeSessions(db, 7); err != nil {
+		t.Fatalf("RevokeSessions: %v", err)
+	}
+	if code := gatedGET(t, db, legacy); code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 — a legacy token survived a revocation", code)
 	}
 }
 
@@ -225,7 +316,7 @@ func TestParseTokenIfPresentHonoursRevocation(t *testing.T) {
 	}
 
 	if err := db.Model(&data_models.User{}).Where("id = ?", 7).
-		Update("sessions_valid_from", time.Now().Add(time.Second)).Error; err != nil {
+		Update("session_epoch", gorm.Expr("session_epoch + 1")).Error; err != nil {
 		t.Fatalf("revoking: %v", err)
 	}
 
