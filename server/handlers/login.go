@@ -62,6 +62,19 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
+	// An unverified account exists but cannot authenticate (#5113-C1). This
+	// check is deliberately placed AFTER CheckPassword rather than before it,
+	// and returns the identical response: reaching it early, or answering
+	// differently, would turn "this username exists and you got its password
+	// right" into an observable outcome — reintroducing on the verification
+	// axis exactly the oracle the dummy-bcrypt hash above closes on the
+	// existence axis (CWE-204, security-finding #1380).
+	if !user.IsEmailVerified() {
+		log.Printf("Login refused for unverified account: %s", user.Username)
+		RespondWithError(c, http.StatusUnauthorized, "Invalid login credentials")
+		return
+	}
+
 	// Generate JWT token
 	token, err := middleware.GenerateToken(user.ID, user.Role.RoleName)
 	if err != nil {
