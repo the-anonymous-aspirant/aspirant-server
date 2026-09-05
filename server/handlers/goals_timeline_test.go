@@ -19,7 +19,6 @@ func makeTime(s string) *time.Time {
 	return &t
 }
 
-
 // setupTimelineNodes creates a set of nodes with various timeline configurations.
 func setupTimelineNodesDB(t *testing.T) (*httptest.ResponseRecorder, func(string) *httptest.ResponseRecorder) {
 	t.Helper()
@@ -168,9 +167,9 @@ func TestTimeline_AchievedMonth_January(t *testing.T) {
 	// Should match: "Unplanned done" (completed Jan 28)
 	names := nodeNames(nodes)
 	assertContains(t, names, "Unplanned done")
-	assertNotContains(t, names, "Jan task")         // not completed
-	assertNotContains(t, names, "Feb completed")    // completed in Feb
-	assertNotContains(t, names, "Q1 spanning")      // completed in Mar
+	assertNotContains(t, names, "Jan task")      // not completed
+	assertNotContains(t, names, "Feb completed") // completed in Feb
+	assertNotContains(t, names, "Q1 spanning")   // completed in Mar
 }
 
 func TestTimeline_CombinedMode_PlannedAndAchieved(t *testing.T) {

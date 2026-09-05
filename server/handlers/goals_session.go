@@ -21,11 +21,11 @@ type openTreeResponse struct {
 }
 
 type lockedElsewhereResponse struct {
-	TreeID               uint   `json:"tree_id"`
-	Status               string `json:"status"`
-	ExistingSessionID    string `json:"existing_session_id"`
-	CanTakeOver          bool   `json:"can_take_over"`
-	LastActivityAt       string `json:"last_activity_at,omitempty"`
+	TreeID            uint   `json:"tree_id"`
+	Status            string `json:"status"`
+	ExistingSessionID string `json:"existing_session_id"`
+	CanTakeOver       bool   `json:"can_take_over"`
+	LastActivityAt    string `json:"last_activity_at,omitempty"`
 }
 
 func generateSessionID() string {

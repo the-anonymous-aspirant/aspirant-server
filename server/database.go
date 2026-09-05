@@ -179,6 +179,13 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.PushupMilestone{})
 	data_models.SeedPushupMilestones(db)
 
+	// Step 5b: Bootstrap marker (#5264). One row, fixed primary key, recording
+	// that this deployment has been set up — so public admin creation can never
+	// reopen because the live user count happened to reach zero. No seed: an
+	// existing deployment has users, which ClaimBootstrap counts with
+	// Unscoped() and refuses on, so it stays closed without a marker row.
+	db.AutoMigrate(&data_models.BootstrapRecord{})
+
 	// Step 6: Per-user scratchpad (one text buffer per user)
 	db.AutoMigrate(&data_models.Scratchpad{})
 

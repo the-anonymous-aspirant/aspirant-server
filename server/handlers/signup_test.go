@@ -66,7 +66,14 @@ func newSignupHarness(t *testing.T) *signupHarness {
 	db.AutoMigrate(
 		&data_models.Role{}, &data_models.User{},
 		&data_models.UserDisplayName{}, &data_models.UserToken{},
+		&data_models.BootstrapRecord{},
 	)
+	// One connection: sqlite's in-memory driver does not do concurrent
+	// writers, and BootstrapUserHandler now opens a transaction. Without this
+	// the concurrency test deadlocks every racer instead of serialising them,
+	// which would read as "the guard rejected everyone" rather than "exactly
+	// one won".
+	db.DB().SetMaxOpenConns(1)
 	if err := data_models.SeedRoles(db); err != nil {
 		t.Fatalf("SeedRoles: %v", err)
 	}

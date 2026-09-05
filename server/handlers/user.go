@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
@@ -323,20 +324,6 @@ func DeleteUserHandler(c *gin.Context) {
 func BootstrapUserHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
-	// Check if any users exist
-	var userCount int64
-	if err := db.Model(&data_models.User{}).Count(&userCount).Error; err != nil {
-		log.Printf("Error checking user count: %v", err)
-		RespondWithError(c, http.StatusInternalServerError, "Error checking user count")
-		return
-	}
-
-	// If users exist, require authentication
-	if userCount > 0 {
-		RespondWithError(c, http.StatusForbidden, "Bootstrap not allowed: users already exist")
-		return
-	}
-
 	var input userInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		log.Printf("Invalid user data: %v", err)
@@ -367,9 +354,10 @@ func BootstrapUserHandler(c *gin.Context) {
 		RoleID:   role.ID,
 		Comment:  input.Comment,
 	}
-	// Bootstrap runs only on an empty database — there is nobody to send a
-	// verification mail to, and the person running it owns the deployment.
-	// Without the stamp this endpoint creates an admin who can never log in.
+	// Bootstrap runs only on a never-bootstrapped database — there is nobody to
+	// send a verification mail to, and the person running it owns the
+	// deployment. Without the stamp this endpoint creates an admin who can
+	// never log in (#5232).
 	user.MarkEmailVerifiedNow()
 
 	if err := user.HashPassword(input.Password); err != nil {
@@ -378,8 +366,40 @@ func BootstrapUserHandler(c *gin.Context) {
 		return
 	}
 
-	if err := user.CreateUser(db); err != nil {
+	// Claim and create in ONE transaction (#5264).
+	//
+	// The guard this replaces counted live users, which under gorm's
+	// soft-delete scope is not the same question as "has this deployment ever
+	// been set up" — and it read that count in a separate step from the create,
+	// so two requests on an empty database could both pass it. This is the most
+	// dangerous public route on the service: unauthenticated, creates an Admin
+	// with the role taken from the request body, and since #5232 immediately
+	// loginable. Its guard should not depend on another handler's rules or on
+	// two requests not arriving together.
+	tx := db.Begin()
+	if tx.Error != nil {
+		log.Printf("Error starting bootstrap transaction: %v", tx.Error)
+		RespondWithError(c, http.StatusInternalServerError, "Error creating user")
+		return
+	}
+	if err := data_models.ClaimBootstrap(tx, input.Username); err != nil {
+		tx.Rollback()
+		if errors.Is(err, data_models.ErrAlreadyBootstrapped) {
+			RespondWithError(c, http.StatusForbidden, "Bootstrap not allowed: users already exist")
+			return
+		}
+		log.Printf("Error claiming bootstrap: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error checking user count")
+		return
+	}
+	if err := user.CreateUser(tx); err != nil {
+		tx.Rollback()
 		log.Printf("Error creating bootstrap user: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error creating user")
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("Error committing bootstrap: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error creating user")
 		return
 	}
