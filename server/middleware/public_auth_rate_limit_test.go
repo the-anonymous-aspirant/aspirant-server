@@ -364,3 +364,189 @@ func TestMachineSpeedBurstIsStillStopped(t *testing.T) {
 		t.Errorf("the handler ran %d times, want %d", h.served, PublicAuthBurstLimit)
 	}
 }
+
+// --- the parser differential (#5240 defect A) --------------------------------
+
+// The bypass the security review of PR #106 found, and the reason the
+// extractor now parses instead of scanning.
+//
+// The handlers bind with c.ShouldBindJSON, and encoding/json accepts
+// `{"EMAIL": ...}` for a field tagged `json:"email"` — exact match preferred,
+// case-insensitive accepted. The old extractor searched the raw bytes for two
+// literals, "email" and "Email", so a case-varied key bound fine in the handler
+// while extracting to "" here: the per-recipient bucket was skipped and the
+// mail still went out. Rotating source IPs then defeated everything that was
+// left, which is precisely the threat the per-recipient limit exists to close.
+//
+// Every spelling encoding/json would accept has to be counted.
+func TestPerRecipientLimitCountsCaseVariedKeys(t *testing.T) {
+	for _, key := range []string{"email", "Email", "EMAIL", "eMaIl", "EMAil"} {
+		t.Run(key, func(t *testing.T) {
+			h := newLimiterHarness(t, "/password/forgot", "email")
+			body := `{"` + key + `":"victim@example.com"}`
+
+			for i := 0; i < PublicAuthTargetLimit; i++ {
+				ip := fmt.Sprintf("203.0.113.%d", i+1)
+				if w := h.post("/password/forgot", ip, body); w.Code != http.StatusOK {
+					t.Fatalf("request %d = %d, want 200", i+1, w.Code)
+				}
+			}
+			// Fresh IP, so only the per-recipient bucket can stop this.
+			if w := h.post("/password/forgot", "198.51.100.99", body); w.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want 429 — key %q bypassed the per-recipient limit", w.Code, key)
+			}
+		})
+	}
+}
+
+// Case-varied spellings share one bucket: an attacker cannot spread their
+// attempts across "email", "Email" and "EMAIL" to get three times the budget.
+func TestCaseVariedKeysShareOneRecipientBucket(t *testing.T) {
+	h := newLimiterHarness(t, "/password/forgot", "email")
+
+	spellings := []string{"email", "Email", "EMAIL"}
+	for i := 0; i < PublicAuthTargetLimit; i++ {
+		body := `{"` + spellings[i%len(spellings)] + `":"victim@example.com"}`
+		if w := h.post("/password/forgot", fmt.Sprintf("203.0.113.%d", i+1), body); w.Code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200", i+1, w.Code)
+		}
+	}
+	if w := h.post("/password/forgot", "198.51.100.99", `{"eMaIl":"victim@example.com"}`); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 — rotating the key's case bought extra budget", w.Code)
+	}
+}
+
+// /signup keys on username too, so the same bypass applied there — and an
+// attacker who knows only a victim's username could aim mail at them.
+func TestSignupUsernameLimitCountsCaseVariedKeys(t *testing.T) {
+	h := newLimiterHarness(t, "/signup", "email", "username")
+
+	for i := 0; i < PublicAuthTargetLimit; i++ {
+		body := fmt.Sprintf(`{"USERNAME":"victim","EMAIL":"throwaway%d@example.com"}`, i)
+		if w := h.post("/signup", fmt.Sprintf("203.0.113.%d", i+1), body); w.Code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200", i+1, w.Code)
+		}
+	}
+	if w := h.post("/signup", "198.51.100.99", `{"USERNAME":"victim","EMAIL":"another@example.com"}`); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 — an upper-case username key bypassed the limit", w.Code)
+	}
+}
+
+// Two spellings of the SAME recipient are one charge, because they are one
+// recipient and one mail. Charging twice would over-count and start refusing
+// legitimate traffic; the property that matters is the one above — that case
+// variation buys no extra budget.
+func TestSameRecipientInTwoSpellingsIsChargedOnce(t *testing.T) {
+	h := newLimiterHarness(t, "/password/forgot", "email")
+
+	body := `{"email":"victim@example.com","EMAIL":"victim@example.com"}`
+	for i := 0; i < PublicAuthTargetLimit; i++ {
+		if w := h.post("/password/forgot", fmt.Sprintf("203.0.113.%d", i+1), body); w.Code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200 — one recipient was charged more than once", i+1, w.Code)
+		}
+	}
+	if w := h.post("/password/forgot", "198.51.100.99", body); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
+	}
+}
+
+// Two DIFFERENT recipients in one body are both charged. encoding/json binds
+// whichever key it processes last, so only one of them is actually mailed —
+// charging both is deliberately the safe direction, since the alternative is
+// guessing which one the handler will pick.
+func TestTwoDifferentRecipientsInOneBodyAreBothCharged(t *testing.T) {
+	h := newLimiterHarness(t, "/password/forgot", "email")
+
+	body := `{"email":"alice@example.com","EMAIL":"bob@example.com"}`
+	for i := 0; i < PublicAuthTargetLimit; i++ {
+		if w := h.post("/password/forgot", fmt.Sprintf("203.0.113.%d", i+1), body); w.Code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200", i+1, w.Code)
+		}
+	}
+	// Both names are now at the cap, reached only through the combined body.
+	for _, addr := range []string{"alice@example.com", "bob@example.com"} {
+		w := h.post("/password/forgot", "198.51.100.99", fmt.Sprintf(`{"email":%q}`, addr))
+		if w.Code != http.StatusTooManyRequests {
+			t.Errorf("%s: status = %d, want 429 — it was not charged from the combined body", addr, w.Code)
+		}
+	}
+}
+
+// A value that is not a string, and a body that is not an object, must not
+// panic or count — the handler's own binding reports the real error.
+func TestNonStringAndNonObjectBodiesAreIgnored(t *testing.T) {
+	for _, body := range []string{
+		`{"email":123}`,
+		`{"email":null}`,
+		`{"email":{"nested":"x"}}`,
+		`["not","an","object"]`,
+		`"just a string"`,
+		``,
+	} {
+		h := newLimiterHarness(t, "/password/forgot", "email")
+		if w := h.post("/password/forgot", "203.0.113.7", body); w.Code != http.StatusOK {
+			t.Errorf("body %q: status = %d, want the request to reach the handler", body, w.Code)
+		}
+	}
+}
+
+// --- the lock (#5240 defect B) ----------------------------------------------
+
+// blockingBody stalls on Read until released, standing in for a slow client.
+type blockingBody struct {
+	release chan struct{}
+	done    bool
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	<-b.release
+	b.done = true
+	copy(p, []byte(`{"email":"slow@example.com"}`))
+	return len(`{"email":"slow@example.com"}`), nil
+}
+
+// The regression test for the lock ordering: reading the body under the
+// process-wide mutex let one slow client stall every public account endpoint
+// for everyone, because all four share a limiter.
+//
+// A slow request is started and left mid-body-read; a second, ordinary request
+// must still complete. If the body read happens under the lock, the second
+// request blocks until the first finishes and this times out.
+func TestSlowBodyDoesNotStallOtherCallers(t *testing.T) {
+	h := newLimiterHarness(t, "/password/forgot", "email")
+
+	release := make(chan struct{})
+	slowDone := make(chan struct{})
+	go func() {
+		defer close(slowDone)
+		req := httptest.NewRequest(http.MethodPost, "/password/forgot", &blockingBody{release: release})
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "203.0.113.50:1234"
+		h.router.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+
+	// Give the slow request time to reach the body read.
+	time.Sleep(50 * time.Millisecond)
+
+	fast := make(chan int, 1)
+	go func() {
+		fast <- h.post("/password/forgot", "198.51.100.4", `{"email":"someone@example.com"}`).Code
+	}()
+
+	select {
+	case code := <-fast:
+		if code != http.StatusOK {
+			t.Fatalf("second caller got %d, want 200", code)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		<-slowDone
+		t.Fatal("a slow client's body read blocked an unrelated request — the limiter mutex is held across the read")
+	}
+
+	close(release)
+	<-slowDone
+}
