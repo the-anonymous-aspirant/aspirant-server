@@ -108,6 +108,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// are middleware and land in #5222.
 	router.POST("/signup", handlers.SignupHandler)
 	router.POST("/verify-email", handlers.VerifyEmailHandler)
+	// Password recovery (#5113-C1). /password/forgot answers identically for a
+	// known and an unknown address — it takes an address and nothing else, so a
+	// distinguishable answer would make it a bulk address-membership oracle.
+	// It is also an unauthenticated way to make this server send mail to an
+	// address the caller picks, so #5222 gives it a per-address limit as well
+	// as the per-IP one.
+	router.POST("/password/forgot", handlers.ForgotPasswordHandler)
+	router.POST("/password/reset", handlers.ResetPasswordHandler)
 
 	// Authentication middleware
 	authMiddleware := middleware.AuthMiddleware()
