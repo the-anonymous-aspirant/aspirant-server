@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"aspirant-online/server/data_models"
 	"aspirant-online/server/middleware"
@@ -57,6 +56,10 @@ func TestPasswordResetRevokesLiveSessions(t *testing.T) {
 		t.Fatalf("the session was not live to begin with: %d", code)
 	}
 
+	// No delay of any kind between minting and revoking: an epoch has no tick
+	// to fall inside, which is the whole reason it replaced a timestamp
+	// comparison (system_3 #5275).
+
 	if w := h.forgot(t, "alice@example.com"); w.Code != http.StatusOK {
 		t.Fatalf("forgot: %d", w.Code)
 	}
@@ -90,6 +93,10 @@ func TestAdminPasswordChangeRevokesLiveSessions(t *testing.T) {
 	if code := h.gatedWith(t, live); code != http.StatusOK {
 		t.Fatalf("session not live to begin with: %d", code)
 	}
+
+	// No delay of any kind between minting and revoking: an epoch has no tick
+	// to fall inside, which is the whole reason it replaced a timestamp
+	// comparison (system_3 #5275).
 
 	if w := h.put(t, "/data_models/users/"+itoaU(user.ID), gin.H{
 		"username": "alice", "email": "alice@example.com",
@@ -125,8 +132,8 @@ func TestAdminEditWithoutPasswordChangeKeepsSessions(t *testing.T) {
 	if code := h.gatedWith(t, live); code != http.StatusOK {
 		t.Fatalf("an edit that changed no password signed the user out: %d", code)
 	}
-	if h.user(t, "alice").SessionsValidFrom != nil {
-		t.Error("a non-password edit set the revocation watermark")
+	if h.user(t, "alice").SessionEpoch != 0 {
+		t.Error("a non-password edit bumped the session epoch")
 	}
 }
 
@@ -139,27 +146,27 @@ func TestSignupLeavesTheWatermarkUnset(t *testing.T) {
 	if w := h.signup(t, "newcomer", "newcomer@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("signup: %d", w.Code)
 	}
-	if got := h.user(t, "newcomer").SessionsValidFrom; got != nil {
-		t.Errorf("SessionsValidFrom = %v on a fresh account, want nil", got)
+	if got := h.user(t, "newcomer").SessionEpoch; got != 0 {
+		t.Errorf("SessionEpoch = %d on a fresh account, want 0", got)
 	}
 }
 
-// RevokeSessions writes a usable timestamp, not a zero value that merely reads
-// as non-nil.
-func TestRevokeSessionsStampsAUsableTime(t *testing.T) {
+// RevokeSessions increments rather than setting a flag, so a second revocation
+// is distinguishable from the first.
+func TestRevokeSessionsIncrementsTheEpoch(t *testing.T) {
 	h := newRevocationHarness(t)
 	user := seedVerifiedUser(t, h, "alice", "alice@example.com", goodPassword)
 
-	before := time.Now().Add(-time.Second)
-	if err := data_models.RevokeSessions(h.db, user.ID); err != nil {
-		t.Fatalf("RevokeSessions: %v", err)
+	if got := h.user(t, "alice").SessionEpoch; got != 0 {
+		t.Fatalf("starting epoch = %d, want 0", got)
 	}
-	got := h.user(t, "alice").SessionsValidFrom
-	if got == nil {
-		t.Fatal("RevokeSessions left the watermark nil")
-	}
-	if got.Before(before) {
-		t.Errorf("watermark %v is older than the call that set it", got)
+	for want := uint(1); want <= 3; want++ {
+		if err := data_models.RevokeSessions(h.db, user.ID); err != nil {
+			t.Fatalf("RevokeSessions: %v", err)
+		}
+		if got := h.user(t, "alice").SessionEpoch; got != want {
+			t.Fatalf("epoch = %d after %d revocations, want %d", got, want, want)
+		}
 	}
 }
 

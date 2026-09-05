@@ -76,7 +76,10 @@ func LoginHandler(c *gin.Context) {
 	}
 
 	// Generate JWT token
-	token, err := middleware.GenerateToken(user.ID, user.Role.RoleName)
+	// Stamped with the user's current session epoch, which is already loaded on
+	// the row above — no extra read. A later RevokeSessions bumps that epoch and
+	// this token stops being current everywhere at once (#5224/#5275).
+	token, err := middleware.GenerateTokenAtEpoch(user.ID, user.Role.RoleName, user.SessionEpoch)
 	if err != nil {
 		log.Printf("Failed to generate token: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Authentication error")
