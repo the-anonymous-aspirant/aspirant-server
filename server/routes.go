@@ -102,6 +102,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// (#5113 D1 — applications require a logged-in viewer, no longer public).
 	// Bootstrap route for creating first admin user when no users exist
 	router.POST("/bootstrap/admin", handlers.BootstrapUserHandler)
+	// Public self-service sign-up (#5113-C1). Unauthenticated by definition —
+	// the caller has no account yet. Both endpoints answer identically whether
+	// or not an account exists, so neither is an existence oracle; abuse limits
+	// are middleware and land in #5222.
+	router.POST("/signup", handlers.SignupHandler)
+	router.POST("/verify-email", handlers.VerifyEmailHandler)
 
 	// Authentication middleware
 	authMiddleware := middleware.AuthMiddleware()

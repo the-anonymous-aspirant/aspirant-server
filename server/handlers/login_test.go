@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"aspirant-online/server/data_models"
 
@@ -44,6 +45,16 @@ func TestLoginHandlerSetsAuthCookie(t *testing.T) {
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("failed to seed user: %v", err)
+	}
+	// LoginHandler refuses an unverified account (#5113-C1), and a row created
+	// directly like this one has email_verified_at NULL. Stamp it: this test is
+	// about the auth cookie, not the gate, and the gate has its own coverage in
+	// signup_test.go. Set directly rather than by calling the migration —
+	// migration code is not a test fixture, and reaching for it here is what
+	// made the every-boot backfill look reasonable (finding #5226).
+	verifiedAt := time.Now()
+	if err := db.Model(&user).Update("email_verified_at", verifiedAt).Error; err != nil {
+		t.Fatalf("failed to mark the fixture verified: %v", err)
 	}
 
 	router := gin.New()
