@@ -161,6 +161,13 @@ func AutoMigrate(db *gorm.DB) {
 	// Step 6: Per-user scratchpad (one text buffer per user)
 	db.AutoMigrate(&data_models.Scratchpad{})
 
+	// Step 6b: Single-use expiring user tokens backing email verification and
+	// password recovery (epic #5113, subtask #5219). No seed — tokens are
+	// minted at runtime only. One table serves both flows; the TTL and the
+	// retire-previous-token behaviour that differ between them live in the
+	// policy table in data_models/user_token.go, not in a second schema.
+	db.AutoMigrate(&data_models.UserToken{})
+
 	// Step 7: Constellations companion app — relationship-type vocabulary
 	// (epic #4587, subtask #4594-A2). Colours live on the row, not in the
 	// frontend; seed is idempotent.
