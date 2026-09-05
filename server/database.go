@@ -199,6 +199,15 @@ func AutoMigrate(db *gorm.DB) {
 	// (epic #4807, subtask #4807-A1). No seed; a goal is chosen at runtime and
 	// is private to the selecting player.
 	db.AutoMigrate(&data_models.PlayerGoal{})
+	// The "one goal per player per room" constraint AutoMigrate cannot express:
+	// a PARTIAL unique index, scoped to live rows because the model
+	// soft-deletes. See EnsurePlayerGoalUniqueIndex — the struct tag that was
+	// meant to carry this was GORM v2 syntax and silently produced a
+	// NON-unique index plus two `syntax error at or near "unique"` lines on
+	// every boot (task #5157).
+	if err := data_models.EnsurePlayerGoalUniqueIndex(db); err != nil {
+		log.Printf("player_goals unique index: %v", err)
+	}
 
 	// Step 15: Constellations companion app — general append-only
 	// relationship-event log (epic #4807, subtask #4829-A3). Uncapped, ordered;
