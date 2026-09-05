@@ -114,8 +114,12 @@ func TestSenderFromEnv_PartialConfigIsAnError(t *testing.T) {
 			if !errors.Is(err, ErrIncompleteConfig) {
 				t.Fatalf("err = %v, want ErrIncompleteConfig", err)
 			}
-			if sender != nil {
-				t.Errorf("got sender %T alongside the error; want nil so a caller cannot ignore it", sender)
+			// A usable sender MUST come back with the error. Returning nil is
+			// what let main.go turn a mail misconfiguration into a site-wide
+			// outage on 2026-09-05; there is no longer a code path that leaves
+			// a caller without somewhere to put a message.
+			if _, ok := sender.(LogSender); !ok {
+				t.Errorf("got %T alongside the error, want LogSender — a caller must never be left without a sender", sender)
 			}
 			if sends {
 				t.Error("reported sending on an incomplete config")
@@ -132,8 +136,42 @@ func TestSenderFromEnv_RejectsUnparseableFrom(t *testing.T) {
 	env[EnvFrom] = "not an address"
 	setSMTPEnv(t, env)
 
-	if _, _, err := SenderFromEnv(); !errors.Is(err, ErrIncompleteConfig) {
+	sender, sends, err := SenderFromEnv()
+	if !errors.Is(err, ErrIncompleteConfig) {
 		t.Fatalf("err = %v, want ErrIncompleteConfig", err)
+	}
+	if _, ok := sender.(LogSender); !ok {
+		t.Errorf("got %T, want LogSender", sender)
+	}
+	if sends {
+		t.Error("reported sending on an unparseable From")
+	}
+}
+
+// The exact shape that took the site down: the deployment's compose file gives
+// the server `env_file: .env`, so the monitor service's SMTP_HOST / SMTP_USER /
+// SMTP_PASSWORD are visible to this process. Two of the four names this package
+// reads matched, and the incomplete config was fatal.
+//
+// SMTP_USER is deliberately NOT read — adopting credentials that merely share a
+// prefix would make the server send mail as whatever account they belong to.
+func TestSenderFromEnv_AmbientMonitorCredentialsDoNotStopTheProcess(t *testing.T) {
+	setSMTPEnv(t, map[string]string{
+		EnvHost:     "smtp.gmail.com",
+		EnvPort:     "587",
+		EnvPassword: "app-password",
+	})
+	t.Setenv("SMTP_USER", "someone@gmail.com") // the monitor's variable, not ours
+
+	sender, sends, err := SenderFromEnv()
+	if !errors.Is(err, ErrIncompleteConfig) {
+		t.Fatalf("err = %v, want ErrIncompleteConfig reported", err)
+	}
+	if _, ok := sender.(LogSender); !ok {
+		t.Fatalf("got %T, want a usable LogSender — this is the outage", sender)
+	}
+	if sends {
+		t.Error("adopted the monitor's credentials and reported that it would send")
 	}
 }
 
