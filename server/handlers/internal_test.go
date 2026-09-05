@@ -1,13 +1,17 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"aspirant-online/server/data_models"
 	"aspirant-online/server/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
 // Locks the nginx auth_request contract: /internal/verify-admin returns
@@ -39,6 +43,10 @@ func TestVerifyAdmin(t *testing.T) {
 	}
 
 	router := gin.New()
+	// AuthMiddleware checks the caller's session-revocation watermark since
+	// #5224 and fails closed without a db, so the fixture supplies one holding
+	// the three token subjects, none of whom has revoked.
+	router.Use(func(c *gin.Context) { c.Set("db", internalTestDB(t)); c.Next() })
 	adminGroup := router.Group("/")
 	adminGroup.Use(middleware.AuthMiddleware())
 	adminGroup.Use(RequireTier(TierAdmin))
@@ -75,4 +83,24 @@ func TestVerifyAdmin(t *testing.T) {
 			}
 		})
 	}
+}
+
+// internalTestDB holds the three token subjects (ids 1, 2, 3), none of whom
+// has revoked their sessions.
+func internalTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	db.AutoMigrate(&data_models.User{})
+	for id := uint(1); id <= 3; id++ {
+		u := data_models.User{Username: fmt.Sprintf("u%d", id), Email: fmt.Sprintf("u%d@example.com", id)}
+		u.ID = id
+		if err := db.Create(&u).Error; err != nil {
+			t.Fatalf("seeding user %d: %v", id, err)
+		}
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }

@@ -173,6 +173,18 @@ func ResetPasswordHandler(c *gin.Context) {
 		return
 	}
 
+	// Revoke every session issued before now (#5224). Without this a reset
+	// performed BECAUSE someone else has the account does not evict them: the
+	// JWT is stateless with a 24h expiry, so their session outlives the
+	// recovery by up to a day — the whole window the flow exists to close.
+	if err := data_models.RevokeSessions(db, user.ID); err != nil {
+		// The password is already changed and the token already spent. Refusing
+		// now would leave the caller unable to retry with a link that no longer
+		// works, so this reports rather than fails — loudly, because a reset
+		// that did not revoke is exactly the case worth investigating.
+		log.Printf("ERROR: password was reset for user %d but revoking its sessions failed: %v", user.ID, err)
+	}
+
 	// Release the login rate-limit bucket. LoginHandler already does this on a
 	// successful login for the same reason: someone who has just recovered
 	// their account is exactly the person whose earlier failed attempts filled
