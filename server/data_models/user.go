@@ -168,6 +168,31 @@ func (u *User) AfterCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// MarkEmailVerifiedNow stamps the address as confirmed, as of this instant.
+//
+// For the two paths where an administrator creates the account rather than a
+// person signing themselves up: POST /bootstrap/admin and the Admin-only
+// POST /data_models/users.
+//
+// Those accounts are verified by the admin's act. Self-service verification
+// exists to prove that whoever typed an address can receive mail at it; when an
+// admin enters it there is no such claim to test, and bootstrap additionally
+// runs only on an empty database, where there is nobody to send anything to.
+//
+// It is a shared method rather than two inline literals so the reason lives in
+// one place and a third creation path cannot quietly acquire the behaviour
+// without acquiring the justification.
+//
+// Origin: the #5220 dogfood walk on merged main. POST /bootstrap/admin returned
+// 200 and the admin it created then got 401 on every login — a fresh install's
+// first account permanently locked out, because the one-time migration that
+// stamps pre-existing accounts had already run at boot. No unit test caught it:
+// every test created users through a path already under consideration.
+func (u *User) MarkEmailVerifiedNow() {
+	now := time.Now()
+	u.EmailVerifiedAt = &now
+}
+
 // MigrateEmailVerified adds the email_verified_at column and, ONLY when the
 // column did not exist beforehand, stamps every account that predates it.
 //
