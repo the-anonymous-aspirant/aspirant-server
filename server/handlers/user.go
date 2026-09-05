@@ -253,7 +253,8 @@ func UpdateUserHandler(c *gin.Context) {
 	}
 
 	// Only hash password if it was changed
-	if input.Password != "" && input.Password != currentPassword {
+	passwordChanged := input.Password != "" && input.Password != currentPassword
+	if passwordChanged {
 		if err := user.HashPassword(input.Password); err != nil {
 			log.Printf("Error hashing password: %v", err)
 			RespondWithError(c, http.StatusInternalServerError, "Error processing user data")
@@ -267,6 +268,18 @@ func UpdateUserHandler(c *gin.Context) {
 		log.Printf("Error updating user: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error updating user")
 		return
+	}
+
+	// A password change here is an admin resetting someone's credential, which
+	// is one of the two reasons to do it: the account is compromised, or the
+	// person has lost access. Both want the old sessions gone (#5224). Any
+	// other edit through this endpoint — a role change, a comment — leaves
+	// sessions alone, because signing someone out for a typo'd comment would be
+	// its own small bug.
+	if passwordChanged {
+		if err := data_models.RevokeSessions(db, user.ID); err != nil {
+			log.Printf("ERROR: password changed for user %d but revoking its sessions failed: %v", user.ID, err)
+		}
 	}
 
 	// Reload role for response

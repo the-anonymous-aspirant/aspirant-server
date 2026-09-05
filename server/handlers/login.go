@@ -150,7 +150,11 @@ func LogoutHandler(c *gin.Context) {
 	// so an anonymous or already-expired caller is simply skipped and the
 	// public logout contract is unchanged. Best-effort: a failure here is
 	// logged, never surfaced — clearing the cookie must always succeed.
-	if userID, _, ok := middleware.ParseTokenIfPresent(c); ok {
+	// ParseTokenIgnoringRevocation, not ParseTokenIfPresent: logging out has to
+	// work when the session has already been revoked (#5224), which is exactly
+	// when someone most wants their cookie cleared. Refusing to identify them
+	// here would strand the room lock held by a session nobody can use.
+	if userID, _, ok := middleware.ParseTokenIgnoringRevocation(c); ok {
 		db := c.MustGet("db").(*gorm.DB)
 		if err := data_models.LeaveAllActiveRooms(db, userID); err != nil {
 			log.Printf("Constellations: leave-all on logout for user %d: %v", userID, err)
