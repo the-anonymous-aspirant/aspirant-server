@@ -62,13 +62,32 @@ func LoadJWTSecret() error {
 	return nil
 }
 
+// GenerateToken mints a token at epoch 0.
+//
+// Kept for callers with no user row to hand — chiefly tests. Epoch 0 is the
+// fail-SAFE default: any account that has ever revoked has a higher epoch, so a
+// token minted here is refused rather than wrongly honoured. Production login
+// uses GenerateTokenAtEpoch.
 func GenerateToken(userID uint, role string) (string, error) {
+	return GenerateTokenAtEpoch(userID, role, 0)
+}
+
+// GenerateTokenAtEpoch mints a token stamped with the user's session epoch.
+//
+// The epoch is what makes revocation exact. A token is current only while its
+// claim still matches the user's row, so a revocation that increments the row
+// invalidates every token minted before it and none minted after — with no
+// clock comparison anywhere, and therefore no boundary to get wrong. Three
+// earlier attempts compared timestamps and each mistreated one party inside the
+// ambiguous tick (system_3 #5275).
+func GenerateTokenAtEpoch(userID uint, role string, epoch uint) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"role":    role,
 		"iat":     now.Unix(),
 		"exp":     now.Add(24 * time.Hour).Unix(),
+		"epoch":   epoch,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -136,29 +155,22 @@ func tokenIsCurrent(c *gin.Context, userID uint, claims jwt.MapClaims) bool {
 		return false
 	}
 
-	validFrom, err := data_models.SessionsValidFromFor(db, userID)
+	current, err := data_models.SessionEpochFor(db, userID)
 	if err != nil {
 		log.Printf("Session revocation check failed for user %d: %v", userID, err)
 		return false
 	}
-	if validFrom == nil {
-		// Never revoked. Every account that predates this column is here, which
-		// is why the migration needs no backfill.
-		return true
+
+	// A token with no epoch claim predates this change and reads as 0 — which
+	// is also every account that has never revoked, so nothing is disturbed
+	// until something actually revokes, and the first revocation invalidates
+	// those older tokens exactly as it should.
+	var claimed uint
+	if raw, ok := claims["epoch"].(float64); ok && raw > 0 {
+		claimed = uint(raw)
 	}
 
-	issuedAt, ok := claims["iat"].(float64)
-	if !ok {
-		// Every token this service mints carries iat, and the parser validates
-		// it. One without is not ours.
-		log.Printf("Token for user %d has no usable iat claim", userID)
-		return false
-	}
-
-	// Strictly-after, so a token minted in the same second as the revocation is
-	// refused. A reset and an issue that land together resolve against the
-	// account owner, not against whoever else is holding a session.
-	if !time.Unix(int64(issuedAt), 0).After(*validFrom) {
+	if claimed != current {
 		log.Printf("Token for user %d was issued before its sessions were revoked", userID)
 		return false
 	}

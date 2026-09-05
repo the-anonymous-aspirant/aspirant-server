@@ -14,20 +14,28 @@ type User struct {
 	Email    string `json:"email" gorm:"unique;not null"`
 	Password string `json:"password,omitempty"`
 	RoleID   uint   `json:"-"`
-	// SessionsValidFrom is the watermark that revokes tokens issued before it.
+	// SessionEpoch is bumped to revoke every session issued before now.
 	//
-	// A JWT here is stateless with a 24h expiry and there is no denylist, so
-	// changing a password used to leave every session already issued alive for
-	// up to a day — including the session of whoever the password was being
-	// changed to lock out. Every token carries an `iat`, so a token issued
-	// before this moment is stale by arithmetic on what it already contains,
-	// with no new claim and no change to how tokens are minted.
+	// A COUNTER, not a timestamp, and that is the whole point. The first three
+	// attempts at this compared the token's issue time against a revocation
+	// time (system_3 #5275) and each got a boundary wrong, because comparing
+	// two independently-taken clock readings to establish an ordering is racy
+	// at every resolution — I lost that argument at second scale twice and at
+	// millisecond scale once. The database orders the increment against the
+	// read for free, so there is no window to get wrong.
 	//
-	// NULL means "never revoked", which is the honest value for every account
-	// that predates this and needs no backfill.
-	SessionsValidFrom *time.Time `json:"-"`
+	// A token carries the epoch its user had when it was minted; it is current
+	// only while those still match. Zero for every account that predates this,
+	// and zero is what a token with no epoch claim is read as, so the migration
+	// needs no backfill and no existing session is disturbed until something
+	// actually revokes.
+	//
+	// `sessions_valid_from` from the first attempt is left in the database as a
+	// dead column: AutoMigrate does not drop columns, and removing it is not
+	// worth a hand-written migration on a table this important.
+	SessionEpoch uint `json:"-" gorm:"not null;default:0"`
 
-	// EmailVerifiedAt is the moment the address was confirmed, and nil until it
+	// EmailVerifiedAt is the moment the address was confirmed	// EmailVerifiedAt is the moment the address was confirmed, and nil until it
 	// is. A nullable timestamp rather than a bool: "when" answers questions a
 	// bool cannot, and NULL is the honest value for every account created
 	// before self-service sign-up existed. Those are backfilled in AutoMigrate
@@ -209,33 +217,34 @@ func (u *User) MarkEmailVerifiedNow() {
 // RevokeSessions invalidates every token issued to a user before now.
 //
 // Call it wherever a credential changes hands. It is the whole revocation
-// mechanism: the watermark is compared against each token's `iat` on every
+// mechanism: the epoch is compared against each token's claim on every
 // authenticated request, so this takes effect immediately and everywhere,
 // including the paths nobody remembered to think about.
 //
-// It is per user and all-or-nothing. That is why logout does NOT call it —
-// a single watermark cannot distinguish "this device" from "every device",
-// and signing someone out of their phone because they logged out on their
-// laptop would be a worse bug than the one this fixes. Per-session revocation
-// needs per-session identity (a jti and a store) and is a separate design.
+// The increment happens in SQL rather than read-modify-write in Go, so two
+// concurrent revocations cannot land on the same value.
+//
+// It is per user and all-or-nothing. That is why logout does NOT call it — a
+// single epoch cannot distinguish "this device" from "every device", and
+// signing someone out of their phone because they logged out on their laptop
+// would be a worse bug than the one this fixes. Per-session revocation needs
+// per-session identity (a jti and a store) and is a separate design.
 func RevokeSessions(db *gorm.DB, userID uint) error {
-	now := time.Now()
 	return db.Model(&User{}).Where("id = ?", userID).
-		Update("sessions_valid_from", now).Error
+		Update("session_epoch", gorm.Expr("session_epoch + 1")).Error
 }
 
-// SessionsValidFromFor reads a user's revocation watermark.
+// SessionEpochFor reads a user's current session epoch.
 //
-// Returns a nil time when the user has never revoked, and an error only when
-// the read itself fails — a user row that has vanished is reported as an
-// error, because a token for a user who no longer exists must not be honoured
-// on the strength of a missing row.
-func SessionsValidFromFor(db *gorm.DB, userID uint) (*time.Time, error) {
+// Returns an error only when the read itself fails — a user row that has
+// vanished is reported as an error, because a token for a user who no longer
+// exists must not be honoured on the strength of a missing row.
+func SessionEpochFor(db *gorm.DB, userID uint) (uint, error) {
 	var user User
-	if err := db.Select("sessions_valid_from").Where("id = ?", userID).First(&user).Error; err != nil {
-		return nil, err
+	if err := db.Select("session_epoch").Where("id = ?", userID).First(&user).Error; err != nil {
+		return 0, err
 	}
-	return user.SessionsValidFrom, nil
+	return user.SessionEpoch, nil
 }
 
 // MigrateEmailVerified adds the email_verified_at column and, ONLY when the
