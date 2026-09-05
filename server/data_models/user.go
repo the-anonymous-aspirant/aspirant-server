@@ -74,6 +74,18 @@ type UserResponse struct {
 	Email      string    `json:"email"`
 	AccessRole string    `json:"access_role"`
 	Comment    string    `json:"comment"`
+	// EmailVerifiedAt is when the account confirmed its address, or null when
+	// it never has (#5290). It is the column the operator moderates on: a
+	// self-service account that never followed its link is what a bot sign-up
+	// looks like from the admin page, and before this the roster could not tell
+	// one from a real user.
+	//
+	// Admin DTO only. PublicUserResponse deliberately does not gain it — that
+	// DTO exists to keep account facts off the non-admin path (#1380/#3093),
+	// and whether a stranger has confirmed their address is exactly such a
+	// fact. A nullable timestamp rather than a bool for the same reason the
+	// column is one: "when" answers questions "whether" cannot.
+	EmailVerifiedAt *time.Time `json:"email_verified_at"`
 	// AvatarURL mirrors PublicUserResponse's field so the message-board author
 	// strip renders avatars for an ADMIN caller too. GetAllUsersHandler returns
 	// this DTO (not the public one) to admins, so without this the admin — the
@@ -112,14 +124,15 @@ type PublicUserResponse struct {
 // ToResponse converts a User (with preloaded Role) to the API response DTO.
 func (u *User) ToResponse() UserResponse {
 	return UserResponse{
-		ID:         u.ID,
-		CreatedAt:  u.CreatedAt,
-		UpdatedAt:  u.UpdatedAt,
-		Username:   u.Username,
-		Email:      u.Email,
-		AccessRole: u.Role.RoleName,
-		Comment:    u.Comment,
-		AvatarURL:  AvatarURLFor(u.ID, u.AvatarETag),
+		ID:              u.ID,
+		CreatedAt:       u.CreatedAt,
+		UpdatedAt:       u.UpdatedAt,
+		Username:        u.Username,
+		Email:           u.Email,
+		AccessRole:      u.Role.RoleName,
+		Comment:         u.Comment,
+		AvatarURL:       AvatarURLFor(u.ID, u.AvatarETag),
+		EmailVerifiedAt: u.EmailVerifiedAt,
 	}
 }
 
