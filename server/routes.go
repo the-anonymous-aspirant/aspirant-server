@@ -106,16 +106,20 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// the caller has no account yet. Both endpoints answer identically whether
 	// or not an account exists, so neither is an existence oracle; abuse limits
 	// are middleware and land in #5222.
-	router.POST("/signup", handlers.SignupHandler)
-	router.POST("/verify-email", handlers.VerifyEmailHandler)
+	// PublicAuthRateLimit's variadic argument names the body fields that
+	// identify a mail recipient. /signup passes both: its duplicate-signup
+	// notice goes to the address on file, so an attacker who knows only a
+	// victim's username can aim mail at them without ever typing their address.
+	router.POST("/signup", middleware.PublicAuthRateLimit("email", "username"), handlers.SignupHandler)
+	router.POST("/verify-email", middleware.PublicAuthRateLimit(), handlers.VerifyEmailHandler)
 	// Password recovery (#5113-C1). /password/forgot answers identically for a
 	// known and an unknown address — it takes an address and nothing else, so a
 	// distinguishable answer would make it a bulk address-membership oracle.
 	// It is also an unauthenticated way to make this server send mail to an
 	// address the caller picks, so #5222 gives it a per-address limit as well
 	// as the per-IP one.
-	router.POST("/password/forgot", handlers.ForgotPasswordHandler)
-	router.POST("/password/reset", handlers.ResetPasswordHandler)
+	router.POST("/password/forgot", middleware.PublicAuthRateLimit("email"), handlers.ForgotPasswordHandler)
+	router.POST("/password/reset", middleware.PublicAuthRateLimit(), handlers.ResetPasswordHandler)
 
 	// Authentication middleware
 	authMiddleware := middleware.AuthMiddleware()
