@@ -48,7 +48,10 @@ func realRouter(t *testing.T) *gin.Engine {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
-	db.AutoMigrate(&data_models.User{})
+	// SiteSetting joins User here for #5289: the sign-up kill-switch reads its
+	// row on the public status route, and a missing table would make that a
+	// 500 rather than the 200 the gate test is asserting.
+	db.AutoMigrate(&data_models.User{}, &data_models.SiteSetting{})
 	// The token subjects these tests mint, none of whom has revoked.
 	for id := uint(1); id <= 3; id++ {
 		u := data_models.User{Username: fmt.Sprintf("u%d", id), Email: fmt.Sprintf("u%d@example.com", id)}
@@ -125,6 +128,71 @@ func TestOperatorDefaultsIsAdminOnly(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code == http.StatusForbidden {
 			t.Fatalf("Trusted POST generate = 403, want the Trusted token accepted on a sibling trusted route")
+		}
+	})
+}
+
+// putSignupSetting issues the admin kill-switch write with the given token
+// (empty for unauthenticated).
+func putSignupSetting(t *testing.T, r *gin.Engine, token string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/settings/signup", strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w.Code
+}
+
+// TestSignupKillSwitchRouteGates locks the two halves of #5289 to the tiers
+// they belong to: anyone may READ whether sign-up is open, only an Admin may
+// change it.
+//
+// It runs against the real router so the group membership is the shipped one.
+func TestSignupKillSwitchRouteGates(t *testing.T) {
+	loadTestJWTSecret(t)
+	r := realRouter(t)
+
+	t.Run("the status read is public", func(t *testing.T) {
+		// The sign-up page's visitor has no account, so a gate here would make
+		// the switch unreadable by its only consumer.
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/signup/status", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("unauthenticated GET /signup/status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("the write refuses an unauthenticated caller", func(t *testing.T) {
+		if code := putSignupSetting(t, r, ""); code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated PUT /settings/signup = %d, want 401", code)
+		}
+	})
+
+	t.Run("the write refuses a Member", func(t *testing.T) {
+		if code := putSignupSetting(t, r, mustToken(t, 1, "Member")); code != http.StatusForbidden {
+			t.Fatalf("Member PUT /settings/signup = %d, want 403 — the route must be Admin-only", code)
+		}
+	})
+
+	t.Run("the Member token is otherwise valid", func(t *testing.T) {
+		// Positive control: without it, a 403 above could be a bad token rather
+		// than role scoping, and the gate assertion would pass for the wrong
+		// reason.
+		req := httptest.NewRequest(http.MethodGet, "/files/list", nil)
+		req.Header.Set("Authorization", "Bearer "+mustToken(t, 1, "Member"))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code == http.StatusForbidden || w.Code == http.StatusUnauthorized {
+			t.Fatalf("Member GET /files/list = %d, want the Member token accepted on a sibling member route", w.Code)
+		}
+	})
+
+	t.Run("Admin clears the gate", func(t *testing.T) {
+		if code := putSignupSetting(t, r, mustToken(t, 2, "Admin")); code == http.StatusForbidden || code == http.StatusUnauthorized {
+			t.Fatalf("Admin PUT /settings/signup = %d, want the request to clear the role gate", code)
 		}
 	})
 }

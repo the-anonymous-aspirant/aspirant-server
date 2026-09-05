@@ -72,6 +72,15 @@ const (
 // account existence through timing (CWE-204, security-finding #1380).
 const signupResponseMessage = "If that username and address are available, a verification link has been sent. Check your inbox."
 
+// signupClosedMessage is returned when the #5289 kill-switch is off.
+//
+// It is a different answer from signupResponseMessage on purpose, and that is
+// not an oracle: it describes the site's policy, which is the same for every
+// caller and already readable at GET /signup/status. What would be an oracle is
+// a refusal that arrived for some usernames and not others, which is why the
+// check runs before the users table is touched at all.
+const signupClosedMessage = "Sign-up is currently closed."
+
 type signupInput struct {
 	Username string `json:"username" binding:"required"`
 	Email    string `json:"email" binding:"required"`
@@ -136,6 +145,26 @@ func SignupHandler(c *gin.Context) {
 	var input signupInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		RespondWithError(c, http.StatusBadRequest, "Username, email and password are required")
+		return
+	}
+
+	// The kill-switch (#5289) is checked before anything else touches the users
+	// table, and answers with a fixed message that does not depend on the body.
+	// Placing it here rather than after the existence check is what keeps a
+	// closed site from becoming the oracle this whole file is built to avoid: a
+	// refusal that arrived only for un-taken usernames would say which
+	// usernames are taken.
+	//
+	// A read error refuses too. Sign-up cannot proceed without the database
+	// anyway, and a flag that a database blip reopens is not a kill-switch.
+	signupOpen, settingErr := data_models.SignupEnabled(db)
+	if settingErr != nil {
+		log.Printf("ERROR: signup could not read the signup_enabled setting: %v", settingErr)
+		RespondWithError(c, http.StatusInternalServerError, "Could not process the request")
+		return
+	}
+	if !signupOpen {
+		RespondWithError(c, http.StatusForbidden, signupClosedMessage)
 		return
 	}
 
