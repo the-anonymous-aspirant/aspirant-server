@@ -130,24 +130,43 @@ func PublicAuthRateLimit(targetFields ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		l := defaultPublicAuthLimiter
 
+		ip := c.ClientIP()
+
+		// Read and parse the body BEFORE taking the lock. peekJSONBody blocks on
+		// io.ReadAll of the client stream, and all four public account endpoints
+		// share one limiter — so doing this under the mutex let a single slow
+		// client stall sign-up, verification and recovery together, for everyone
+		// (CWE-667/CWE-400; security review of PR #106, system_3 #5240). The
+		// sibling LoginRateLimit always had this order and this file copied its
+		// helper without its ordering.
+		//
+		// Every case-variant spelling of a target field is collected, because
+		// encoding/json binds `{"EMAIL": ...}` to a field tagged `json:"email"`
+		// and the limiter must key on the same value the handler will act on.
+		targets := make(map[string]struct{})
+		if len(targetFields) > 0 {
+			body := peekJSONBody(c)
+			for _, field := range targetFields {
+				for _, raw := range extractJSONStringFields(body, field) {
+					value := strings.ToLower(strings.TrimSpace(raw))
+					if value == "" {
+						continue
+					}
+					targets[field+"\x00"+value] = struct{}{}
+				}
+			}
+		}
+
 		l.mu.Lock()
 		now := l.nowFn()
 
-		ip := c.ClientIP()
 		overBurst := hitAndCheckBucket(l.byIP, "burst\x00"+ip, now, PublicAuthBurstLimit, PublicAuthBurstWindow)
 		overSustained := hitAndCheckBucket(l.byIP, "sustained\x00"+ip, now, PublicAuthSustainedLimit, PublicAuthSustainedWindow)
 
 		overTarget := false
-		if len(targetFields) > 0 {
-			body := peekJSONBody(c)
-			for _, field := range targetFields {
-				value := strings.ToLower(strings.TrimSpace(extractJSONStringField(body, field)))
-				if value == "" {
-					continue
-				}
-				if hitAndCheckBucket(l.byTarget, field+"\x00"+value, now, PublicAuthTargetLimit, PublicAuthTargetWindow) {
-					overTarget = true
-				}
+		for key := range targets {
+			if hitAndCheckBucket(l.byTarget, key, now, PublicAuthTargetLimit, PublicAuthTargetWindow) {
+				overTarget = true
 			}
 		}
 		if overBurst || overSustained || overTarget {
