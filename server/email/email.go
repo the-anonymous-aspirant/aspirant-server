@@ -41,6 +41,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -110,14 +111,71 @@ var ErrUnsendable = errors.New("email: message rejected before sending")
 // It is the default when no relay is configured, and it is what local
 // development and the not-yet-provisioned production deployment both use.
 //
-// The body is logged in full. That is a deliberate trade and it is safe only
-// because this sender never runs with a relay configured: verification and
-// password-reset links are single-use credentials, and writing them to a log is
-// exactly how a developer completes a sign-up with no mailbox. Once SMTP_* is
-// set, SenderFromEnv returns an SMTPSender and no link is ever logged.
+// The body is logged, with single-use tokens ELIDED unless the operator opts in
+// by setting EMAIL_LOG_BODIES=1.
+//
+// The original trade was to log the body in full, and its stated safety
+// condition was that "this sender never runs with a relay configured" — which
+// was read as "this only ever runs in development". That inference does not
+// hold. Measured on the deployed server at 2026-09-06T05:5xZ: no SMTP_HOST,
+// SMTP_USERNAME or SMTP_PASSWORD in its environment, boot line "Email: NO SMTP
+// relay configured — messages are written to this log and not delivered", and
+// public sign-up OPEN. So this sender is the production sender, and the next
+// self-service sign-up or password reset would write a live single-use
+// credential into a container log (system_3 #5286). None had, at that reading —
+// the exposure was one sign-up away, not realised.
+//
+// The developer value the full body carried is real: following the link out of
+// the log is how you complete a sign-up with no mailbox. So it is kept and made
+// EXPLICIT rather than assumed. A developer sets EMAIL_LOG_BODIES=1 and gets
+// exactly what this used to do; a deployment that sets nothing gets a log line
+// that still says who, what and that a link was issued, without the credential.
+//
+// The precondition is now enforced by the code that depends on it, instead of
+// being a sentence in a comment about a deployment this package cannot see.
 type LogSender struct {
 	// Logf defaults to log.Printf. Tests substitute it to capture output.
 	Logf func(format string, v ...any)
+
+	// LogBodies logs the body verbatim, tokens included. Defaults from
+	// EMAIL_LOG_BODIES; tests set it directly.
+	LogBodies bool
+}
+
+// EnvLogBodies opts the dev sink into logging message bodies verbatim.
+const EnvLogBodies = "EMAIL_LOG_BODIES"
+
+// newLogSender builds the dev sink with its opt-in read from the environment.
+//
+// A deployment that sets nothing gets elision, which is the safe default and
+// the one production is on today. Only "1" and "true" enable it: a stray
+// EMAIL_LOG_BODIES=false should not switch logging ON, and an unrecognised
+// value is not consent.
+func newLogSender() LogSender {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(EnvLogBodies)))
+	return LogSender{LogBodies: v == "1" || v == "true"}
+}
+
+// tokenParam matches the single-use credential in a verification or recovery
+// link: `?token=` or `&token=` followed by the value.
+//
+// It matches the QUERY PARAMETER rather than "anything that looks like a
+// token", because the parameter name is the contract this package controls —
+// signup.go and password_recovery.go both build `%s/verify-email?token=%s`.
+// A shape-matcher over base64-looking runs would elide message text that merely
+// resembles one and still miss a link built some other way; keying on the
+// parameter is exact for what exists and fails visibly if a third link shape is
+// ever added without updating this.
+var tokenParam = regexp.MustCompile(`([?&]token=)[^\s&]+`)
+
+// elideTokens replaces single-use credential values with a marker, leaving the
+// rest of the message readable.
+func elideTokens(body string) (string, int) {
+	n := len(tokenParam.FindAllString(body, -1))
+	if n == 0 {
+		return body, 0
+	}
+	return tokenParam.ReplaceAllString(body, "${1}<elided>"), n
 }
 
 // Send records the message and reports success.
@@ -133,10 +191,23 @@ func (s LogSender) Send(to, subject, body string) error {
 	if logf == nil {
 		logf = log.Printf
 	}
+	logged := body
+	elided := 0
+	if !s.LogBodies {
+		logged, elided = elideTokens(body)
+	}
+
+	note := ""
+	if elided > 0 {
+		note = fmt.Sprintf(
+			"\n  note:    %d single-use link(s) elided; set %s=1 to log them",
+			elided, EnvLogBodies)
+	}
+
 	logf("email(dev sink): no SMTP relay configured, message not sent\n"+
 		"  to:      %s\n"+
-		"  subject: %s\n"+
-		"  body:\n%s", to, subject, indent(body))
+		"  subject: %s%s\n"+
+		"  body:\n%s", to, subject, note, indent(logged))
 	return nil
 }
 
@@ -240,15 +311,15 @@ func SenderFromEnv() (Sender, bool, error) {
 	if set == 0 {
 		// Nothing configured, including SMTP_PORT on its own — a lone port is
 		// not evidence of intent to send.
-		return LogSender{}, false, nil
+		return newLogSender(), false, nil
 	}
 	if len(missing) > 0 {
 		// Sorted so the message is stable across runs; Go map iteration is not.
-		return LogSender{}, false, fmt.Errorf("%w: set %s or unset all of them", ErrIncompleteConfig, strings.Join(sorted(missing), ", "))
+		return newLogSender(), false, fmt.Errorf("%w: set %s or unset all of them", ErrIncompleteConfig, strings.Join(sorted(missing), ", "))
 	}
 
 	if _, err := mail.ParseAddress(from); err != nil {
-		return LogSender{}, false, fmt.Errorf("%w: %s is not a valid address: %v", ErrIncompleteConfig, EnvFrom, err)
+		return newLogSender(), false, fmt.Errorf("%w: %s is not a valid address: %v", ErrIncompleteConfig, EnvFrom, err)
 	}
 
 	if port == "" {
