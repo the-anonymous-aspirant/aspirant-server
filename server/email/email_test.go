@@ -387,3 +387,161 @@ var (
 	_ Sender = LogSender{}
 	_ Sender = SMTPSender{}
 )
+
+// --- token elision in the dev sink (system_3 #5286) -------------------------
+
+// The dev sink is the PRODUCTION sender on the deployed server: measured
+// 2026-09-06T05:5xZ, no SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD in its
+// environment and a boot line reading "NO SMTP relay configured". So its
+// output is a production log, and the links it carries are live single-use
+// credentials.
+
+// signupMailBody is the shape handlers/signup.go actually builds, so the test
+// elides what the product emits rather than what the test author imagined.
+const signupMailBody = `Hello someone,
+
+Confirm this address to finish creating your account:
+
+https://the-aspirant.com/verify-email?token=2K0ZW3pByB3qSZ-4itCgUk8IAHbeFJmC_Q7LpiYtzAc
+
+The link is good for 24 hours and can be used once.`
+
+const liveToken = "2K0ZW3pByB3qSZ-4itCgUk8IAHbeFJmC_Q7LpiYtzAc"
+
+func TestLogSender_ElidesTheTokenByDefault(t *testing.T) {
+	var got string
+	s := LogSender{Logf: func(format string, v ...any) { got = fmt.Sprintf(format, v...) }}
+
+	if err := s.Send("user@example.com", "Confirm your address", signupMailBody); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if strings.Contains(got, liveToken) {
+		t.Errorf("the single-use token reached the log\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "token=<elided>") {
+		t.Errorf("the link is not recognisable as elided\ngot:\n%s", got)
+	}
+	// Elision must not be silent. A reader of this log has to know a
+	// credential was removed, or they will think the mail had no link.
+	if !strings.Contains(got, "1 single-use link(s) elided") {
+		t.Errorf("the log does not say a link was elided\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, EnvLogBodies) {
+		t.Errorf("the log does not name the opt-in that would show it\ngot:\n%s", got)
+	}
+	// And the rest of the message survives: the point is a readable log, not
+	// a redacted one.
+	for _, want := range []string{"user@example.com", "Confirm your address", "Hello someone", "good for 24 hours"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("elision removed %q, which is not a credential\ngot:\n%s", want, got)
+		}
+	}
+}
+
+func TestLogSender_LogsTheTokenWhenAskedTo(t *testing.T) {
+	// The developer value the full body carried is real — following the link
+	// out of the log is how you finish a sign-up with no mailbox — so it is
+	// kept, as an explicit opt-in rather than an accident of deployment.
+	var got string
+	s := LogSender{
+		Logf:      func(format string, v ...any) { got = fmt.Sprintf(format, v...) },
+		LogBodies: true,
+	}
+
+	if err := s.Send("user@example.com", "Confirm your address", signupMailBody); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !strings.Contains(got, liveToken) {
+		t.Errorf("the opt-in did not produce the token\ngot:\n%s", got)
+	}
+	if strings.Contains(got, "elided") {
+		t.Errorf("the opt-in still claims elision\ngot:\n%s", got)
+	}
+}
+
+func TestLogSender_ElidesEveryLinkNotJustTheFirst(t *testing.T) {
+	// A body carrying two links must lose both. A ReplaceAll that stopped at
+	// the first would leave a live credential behind the one it removed, which
+	// is the worst of both outcomes: the log looks redacted and is not.
+	var got string
+	s := LogSender{Logf: func(format string, v ...any) { got = fmt.Sprintf(format, v...) }}
+	body := "one: https://x/verify-email?token=AAA\ntwo: https://x/reset-password?token=BBB"
+
+	if err := s.Send("user@example.com", "Two links", body); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	for _, tok := range []string{"AAA", "BBB"} {
+		if strings.Contains(got, "token="+tok) {
+			t.Errorf("token %s survived\ngot:\n%s", tok, got)
+		}
+	}
+	if !strings.Contains(got, "2 single-use link(s) elided") {
+		t.Errorf("the count is wrong\ngot:\n%s", got)
+	}
+}
+
+func TestLogSender_LeavesAMessageWithNoLinkAlone(t *testing.T) {
+	// The duplicate-signup notice carries no token. It must not grow an
+	// elision note, or every reader learns to ignore the note.
+	var got string
+	s := LogSender{Logf: func(format string, v ...any) { got = fmt.Sprintf(format, v...) }}
+
+	if err := s.Send("user@example.com", "Someone tried to sign up", "Nothing to do. No new account was created."); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if strings.Contains(got, "elided") {
+		t.Errorf("a message with no link claims elision\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "No new account was created") {
+		t.Errorf("the body did not survive\ngot:\n%s", got)
+	}
+}
+
+func TestNewLogSender_ReadsTheOptInStrictly(t *testing.T) {
+	// Only an affirmative opts in. EMAIL_LOG_BODIES=false must not switch
+	// logging ON, and an unrecognised value is not consent — the failure
+	// direction matters, because getting this backwards logs credentials.
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"1", true},
+		{"true", true},
+		{"TRUE", true},
+		{" true ", true},
+		{"0", false},
+		{"false", false},
+		{"yes", false},
+		{"maybe", false},
+	} {
+		t.Setenv(EnvLogBodies, tc.value)
+		if got := newLogSender().LogBodies; got != tc.want {
+			t.Errorf("%s=%q → LogBodies=%v, want %v", EnvLogBodies, tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestSenderFromEnv_UnconfiguredSinkElidesByDefault(t *testing.T) {
+	// The path production is actually on: nothing configured, so the sink is
+	// returned — and it must come back with elision ON, because that is the
+	// case this whole change is about.
+	for _, k := range []string{EnvHost, EnvPort, EnvUsername, EnvPassword, EnvFrom, EnvLogBodies} {
+		t.Setenv(k, "")
+	}
+	s, configured, err := SenderFromEnv()
+	if err != nil {
+		t.Fatalf("SenderFromEnv: %v", err)
+	}
+	if configured {
+		t.Fatal("reported a configured relay with nothing set")
+	}
+	ls, ok := s.(LogSender)
+	if !ok {
+		t.Fatalf("expected the dev sink, got %T", s)
+	}
+	if ls.LogBodies {
+		t.Error("the unconfigured sink logs bodies verbatim by default")
+	}
+}
