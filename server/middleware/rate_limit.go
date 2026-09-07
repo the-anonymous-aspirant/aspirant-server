@@ -123,7 +123,13 @@ func LoginRateLimit() gin.HandlerFunc {
 		now := l.nowFn()
 		if l.hitAndCheck(&l.byIP, ip, now, l.ipLimit, l.ipWindow) {
 			l.mu.Unlock()
-			log.Printf("Rate limit: too many /login attempts from IP %s", ip)
+			// No IP in the log line: a log file is durable, so writing the
+			// client IP on the rejection path would turn a throttle that
+			// retains nothing into a retention surface (epic #5113's binding
+			// NO-IP-RETENTION constraint; security ruling on #5227). The bucket
+			// still keys on `ip` above — only the diagnostic drops it, matching
+			// PublicAuthRateLimit and the username variant below.
+			log.Printf("Rate limit: too many /login attempts")
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many login attempts, please try again later"})
 			c.Abort()
 			return
