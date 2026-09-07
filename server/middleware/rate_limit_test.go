@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,36 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// TestLoginOverLimitLogLineCarriesNoIP is the LoginRateLimit twin of
+// public_auth_rate_limit_test.go's TestOverLimitLogLineCarriesNoIPOrRecipient.
+// The over-limit /login rejection logged the client IP (#5227), undoing the
+// throttle's no-retention property; this asserts the line is emitted but
+// carries no IP. The `Rate limit` guard keeps the test from passing vacuously
+// if the line ever stops being logged.
+func TestLoginOverLimitLogLineCarriesNoIP(t *testing.T) {
+	ResetLoginRateLimiter()
+	r := newLoginRouter()
+
+	var captured bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&captured)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	const ip = "203.0.113.7"
+	for i := 0; i < PerIPLimit+2; i++ {
+		postLogin(r, ip, "user-"+string(rune('a'+i%26)), "bad")
+	}
+
+	logged := captured.String()
+	if !strings.Contains(logged, "Rate limit") {
+		t.Fatalf("no rate-limit line was logged; this test would pass vacuously:\n%s", logged)
+	}
+	if strings.Contains(logged, ip) {
+		t.Errorf("the client IP was written to the log:\n%s", logged)
+	}
+}
 
 // newLoginRouter builds a minimal router with the rate limiter in
 // front of a stub /login handler that always returns 401. Tests
