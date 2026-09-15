@@ -89,45 +89,38 @@ func putOperatorDefaults(t *testing.T, r *gin.Engine, token string) int {
 	return w.Code
 }
 
-// TestOperatorDefaultsIsAdminOnly locks the #3182 fix: the shared valuation
-// operator-defaults config (appraiser identity + default likviditet) is
-// writable only by Admin, not by any Trusted user. Follow-up to the #3096
-// broken-access-control remediation; OWASP A01:2021.
-func TestOperatorDefaultsIsAdminOnly(t *testing.T) {
+// TestOperatorDefaultsIsMemberWritable locks the #5924 modelling fix: appraiser
+// identity is a user's OWN record, so the write is Member-tier (no Admin gate),
+// while an unauthenticated caller is still refused. This supersedes the #3182
+// Admin-only lock — that gate protected a single shared global record; identity
+// is now per-user and scoped by the commander on the forge-proof caller header,
+// so there is no shared record to corrupt and no Admin gate to justify. The
+// no-cross-user-write property is enforced (and tested) in the commander.
+func TestOperatorDefaultsIsMemberWritable(t *testing.T) {
 	loadTestJWTSecret(t)
 	r := realRouter(t)
 
-	t.Run("Trusted is forbidden", func(t *testing.T) {
-		code := putOperatorDefaults(t, r, mustToken(t, 1, "Trusted"))
-		if code != http.StatusForbidden {
-			t.Fatalf("Trusted PUT operator-defaults = %d, want 403 — the route must be Admin-only", code)
-		}
-	})
-
-	t.Run("Admin clears the role gate", func(t *testing.T) {
-		// Admin passes ValidateRole and reaches the commander proxy, which
-		// fails to connect (127.0.0.1:1) and returns 502. The assertion is
-		// role-scoped: anything but 403/401 proves the Admin role is allowed
-		// through; 502 is the expected reach-through with no commander up.
-		code := putOperatorDefaults(t, r, mustToken(t, 2, "Admin"))
+	t.Run("Member clears the tier gate", func(t *testing.T) {
+		// A Member reaches the commander proxy, which fails to connect
+		// (127.0.0.1:1) and returns 502. Anything but 401/403 proves the Member
+		// tier is allowed through — the point of #5924.
+		code := putOperatorDefaults(t, r, mustToken(t, 1, "Member"))
 		if code == http.StatusForbidden || code == http.StatusUnauthorized {
-			t.Fatalf("Admin PUT operator-defaults = %d, want the request to clear the role gate (not 401/403)", code)
+			t.Fatalf("Member PUT operator-defaults = %d, want the request to clear the tier gate (not 401/403) — identity is the user's own to write", code)
 		}
 	})
 
-	t.Run("Trusted token is otherwise valid on a sibling trusted route", func(t *testing.T) {
-		// Guards against a false-green where the 403 above is a bad token
-		// rather than role scoping: the same Trusted token must NOT be
-		// forbidden on the sibling /generate route, which stays Trusted.
-		req := httptest.NewRequest(http.MethodPost,
-			"/commander/valuation-statement/generate",
-			strings.NewReader(`{"objekt":"LGH 1001"}`))
+	t.Run("unauthenticated is refused", func(t *testing.T) {
+		// No token → the auth middleware rejects before any tier check. The
+		// write must never be anonymous.
+		req := httptest.NewRequest(http.MethodPut,
+			"/commander/valuation-statement/operator-defaults",
+			strings.NewReader(`{"maklare_namn":"x"}`))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+mustToken(t, 1, "Trusted"))
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code == http.StatusForbidden {
-			t.Fatalf("Trusted POST generate = 403, want the Trusted token accepted on a sibling trusted route")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated PUT operator-defaults = %d, want 401", w.Code)
 		}
 	})
 }
