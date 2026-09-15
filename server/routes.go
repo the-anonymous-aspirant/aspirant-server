@@ -284,14 +284,16 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// (#5920). Same tier as /extract — a Member uploading is who needs it.
 		trustedRoutes.POST("/commander/valuation-statement/decide", handlers.PostCommanderValuationDecideHandler)
 		trustedRoutes.POST("/commander/valuation-statement/generate", handlers.PostCommanderValuationGenerateHandler)
-		// operator-defaults: the WRITE (appraiser identity + default likviditet) is
-		// shared operator config, Admin-only — registered in adminRoutes below
-		// (system_3 #3182, follow-up to #3096). The READ is Member-tier and lives
-		// here: the manual-entry form (#5914) pre-fills from it, and the block it
-		// returns is exactly what /extract already embeds for a Member, so it is no
-		// new exposure. Its GET route was also missing until #5920 (manual entry
-		// silently opened with empty defaults).
+		// operator-defaults is a user's OWN appraiser identity (#5924), so both the
+		// READ and the WRITE are Member-tier. It used to be one shared global record,
+		// which is why #3182 gated the write to Admin (a #3096 follow-up: any Trusted
+		// user could rewrite the identity every other user's documents were signed
+		// with). Commander now scopes both by the forge-proof X-Aspirant-User-Id the
+		// proxy sets — a Member can only ever read/write their own record, there is no
+		// shared record to corrupt, so #3182's integrity property holds without the
+		// Admin gate. (The GET was itself missing until #5920.)
 		trustedRoutes.GET("/commander/valuation-statement/operator-defaults", handlers.GetCommanderValuationOperatorDefaultsHandler)
+		trustedRoutes.PUT("/commander/valuation-statement/operator-defaults", handlers.PutCommanderValuationOperatorDefaultsHandler)
 
 		// Valuation Statement — processed-valuations store ('Tidigare värderingar' tab).
 		// export.csv is registered BEFORE the :id route so the literal path segment wins
@@ -404,11 +406,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.POST("/commander/process", handlers.TriggerCommanderProcessHandler)
 		adminRoutes.GET("/commander/vocabulary", handlers.GetCommanderVocabularyHandler)
 
-		// Valuation Statement — shared operator defaults (appraiser identity +
-		// default likviditet). Admin-only: these are global config writable by
-		// any Trusted user before #3182. Moved here from trustedRoutes as the
-		// #3096 follow-up (integrity finding on shared config; OWASP A01:2021).
-		adminRoutes.PUT("/commander/valuation-statement/operator-defaults", handlers.PutCommanderValuationOperatorDefaultsHandler)
+		// (operator-defaults PUT moved to trustedRoutes in #5924: identity is now
+		// per-user and scoped by the proxy's forge-proof caller header, so it is no
+		// longer a shared record needing the #3182 Admin gate.)
 
 		// Commander notes (proxied to commander service)
 		adminRoutes.GET("/commander/notes", handlers.ListCommanderNotesHandler)
