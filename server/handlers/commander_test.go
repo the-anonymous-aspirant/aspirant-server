@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -142,6 +143,68 @@ func TestCommanderProxyPreservesQueryString(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Locks the timeout-vs-refusal discrimination (#5919): when the commander call
+// times out — the OCR-era failure jenny hit — the proxy must answer 504 with a
+// message that names slowness, not a generic 502 "Commander service unavailable"
+// that reads as "the server refused your file". A genuine connection failure
+// (nothing listening) stays a 502. This is what lets the client's uploadError
+// path distinguish "took too long" from "the server refused" off the status.
+func TestCommanderProxyDistinguishesTimeoutFromRefusal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("upstream timeout -> 504 with slowness message", func(t *testing.T) {
+		// A commander that never answers within the client deadline.
+		slowCommander := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer slowCommander.Close()
+		t.Setenv("COMMANDER_URL", slowCommander.URL)
+
+		// Shrink the client deadline for the test, restore the production value.
+		saved := commanderClient
+		commanderClient = &http.Client{Timeout: 40 * time.Millisecond}
+		defer func() { commanderClient = saved }()
+
+		r := gin.New()
+		r.POST("/commander/valuation-statement/extract", PostCommanderValuationExtractHandler)
+		req, _ := http.NewRequest("POST", "/commander/valuation-statement/extract",
+			strings.NewReader("multipart-body-stub"))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusGatewayTimeout {
+			t.Fatalf("expected 504 on upstream timeout, got %d: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "lång tid") {
+			t.Errorf("504 body %q should name slowness (lång tid)", w.Body.String())
+		}
+	})
+
+	t.Run("connection refused -> 502 unavailable", func(t *testing.T) {
+		// Start then immediately close a server so its port is free: connecting
+		// there is a deterministic, immediate refusal — a net.Error whose
+		// Timeout() is false — not a slow/filtered hang.
+		deadCommander := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := deadCommander.URL
+		deadCommander.Close()
+		t.Setenv("COMMANDER_URL", deadURL)
+
+		r := gin.New()
+		r.POST("/commander/valuation-statement/extract", PostCommanderValuationExtractHandler)
+		req, _ := http.NewRequest("POST", "/commander/valuation-statement/extract",
+			strings.NewReader("multipart-body-stub"))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("expected 502 on connection failure, got %d: %s", w.Code, w.Body.String())
+		}
+	})
 }
 
 // Locks the identity-propagation contract (security-finding #3096): the proxy

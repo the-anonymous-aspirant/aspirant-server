@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -11,7 +12,27 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var commanderClient = &http.Client{Timeout: 30 * time.Second}
+// 30s was an enormous margin when extraction was a sub-second text-layer read.
+// Since #5907 shipped OCR it is not: a 4-page scan is ~16-24s uncontended and
+// stretches past 30s under concurrent OCR (CPU-bound, no GPU), which surfaced
+// as an intermittent 502 on a valid upload (#5919, jenny). 300s matches the
+// advisor client's margin for a comparably slow upstream. This is a timeout,
+// not a capacity plan — see the row for the concurrency-bounding disposition.
+var commanderClient = &http.Client{Timeout: 300 * time.Second}
+
+// respondCommanderError maps a failed commander call to a status the user can
+// read correctly (#5919). A timeout is "the extraction took too long", not "the
+// server refused" — the operator's first reading of the 502 was that jenny's
+// file was at fault. A genuine connection failure stays a 502.
+func respondCommanderError(c *gin.Context, err error) {
+	log.Printf("Failed to reach commander: %v", err)
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		RespondWithError(c, http.StatusGatewayTimeout,
+			"Underlaget tog för lång tid att läsa. Skannade PDF:er kan ta upp till en minut — försök igen.")
+		return
+	}
+	RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+}
 
 func commanderURL() string {
 	if url := os.Getenv("COMMANDER_URL"); url != "" {
@@ -26,8 +47,7 @@ func commanderProxyGet(c *gin.Context, path string) {
 
 	resp, err := commanderClient.Get(url)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -70,8 +90,7 @@ func UpdateCommanderTaskHandler(c *gin.Context) {
 
 	resp, err := commanderClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -99,8 +118,7 @@ func DeleteCommanderTaskHandler(c *gin.Context) {
 
 	resp, err := commanderClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -129,8 +147,7 @@ func TriggerCommanderProcessHandler(c *gin.Context) {
 
 	resp, err := commanderClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -178,8 +195,7 @@ func UpdateCommanderNoteHandler(c *gin.Context) {
 
 	resp, err := commanderClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -207,8 +223,7 @@ func DeleteCommanderNoteHandler(c *gin.Context) {
 
 	resp, err := commanderClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -268,8 +283,7 @@ func commanderProxyPassthrough(c *gin.Context, method string, path string) {
 
 	resp, err := commanderClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to reach commander: %v", err)
-		RespondWithError(c, http.StatusBadGateway, "Commander service unavailable")
+		respondCommanderError(c, err)
 		return
 	}
 	defer resp.Body.Close()
