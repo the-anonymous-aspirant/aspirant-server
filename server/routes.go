@@ -279,10 +279,19 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 
 		// Valuation Statement (proxied to commander service)
 		trustedRoutes.POST("/commander/valuation-statement/extract", handlers.PostCommanderValuationExtractHandler)
+		// The OCR pre-flight (#5915). Its route was missing, so every client call
+		// 404'd into the silent fallback and the announcement never ran in prod
+		// (#5920). Same tier as /extract — a Member uploading is who needs it.
+		trustedRoutes.POST("/commander/valuation-statement/decide", handlers.PostCommanderValuationDecideHandler)
 		trustedRoutes.POST("/commander/valuation-statement/generate", handlers.PostCommanderValuationGenerateHandler)
-		// operator-defaults (appraiser identity + default likviditet) is shared
-		// operator config, not per-user data, so it is Admin-only — registered in
-		// adminRoutes below, not here (system_3 #3182, follow-up to #3096).
+		// operator-defaults: the WRITE (appraiser identity + default likviditet) is
+		// shared operator config, Admin-only — registered in adminRoutes below
+		// (system_3 #3182, follow-up to #3096). The READ is Member-tier and lives
+		// here: the manual-entry form (#5914) pre-fills from it, and the block it
+		// returns is exactly what /extract already embeds for a Member, so it is no
+		// new exposure. Its GET route was also missing until #5920 (manual entry
+		// silently opened with empty defaults).
+		trustedRoutes.GET("/commander/valuation-statement/operator-defaults", handlers.GetCommanderValuationOperatorDefaultsHandler)
 
 		// Valuation Statement — processed-valuations store ('Tidigare värderingar' tab).
 		// export.csv is registered BEFORE the :id route so the literal path segment wins

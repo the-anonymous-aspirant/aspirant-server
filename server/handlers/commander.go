@@ -20,6 +20,17 @@ import (
 // not a capacity plan — see the row for the concurrency-bounding disposition.
 var commanderClient = &http.Client{Timeout: 300 * time.Second}
 
+// decideClient is deliberately far tighter than commanderClient's 300s (#5920).
+// /decide is the fast pre-flight the client calls BEFORE the blocking /extract to
+// announce OCR and estimate it; being quick is its whole value. Because the client
+// awaits /decide and THEN /extract, every second /decide spends is added in front
+// of extraction — so a slow or stuck /decide must fail fast into the client's #306
+// fallback (generic phases, no announcement) rather than delay the extract behind
+// it. Deployed /decide is ~2.3s (fitz-only, commander PR #40); 15s absorbs
+// CPU-contention slowdown under concurrent OCR while still failing well inside
+// extract's budget. Re-measurable, not a budget any implementation inherits.
+var decideClient = &http.Client{Timeout: 15 * time.Second}
+
 // respondCommanderError maps a failed commander call to a status the user can
 // read correctly (#5919). A timeout is "the extraction took too long", not "the
 // server refused" — the operator's first reading of the 502 was that jenny's
@@ -254,6 +265,14 @@ func GetCommanderHealthHandler(c *gin.Context) {
 // docx and the client receives a docx download when the operator asked for a
 // PDF. Locked by TestCommanderProxyPreservesQueryString.
 func commanderProxyPassthrough(c *gin.Context, method string, path string) {
+	commanderProxyPassthroughVia(c, commanderClient, method, path)
+}
+
+// commanderProxyPassthroughVia is commanderProxyPassthrough with the upstream
+// client made explicit, so /decide can run on decideClient's tighter deadline
+// instead of the 300s extract client (#5920). Everything else — query string,
+// identity propagation, header and body streaming — is identical.
+func commanderProxyPassthroughVia(c *gin.Context, client *http.Client, method string, path string) {
 	url := fmt.Sprintf("%s%s", commanderURL(), path)
 	if raw := c.Request.URL.RawQuery; raw != "" {
 		url += "?" + raw
@@ -281,7 +300,7 @@ func commanderProxyPassthrough(c *gin.Context, method string, path string) {
 		req.Header.Set("X-Aspirant-User-Id", fmt.Sprintf("%v", uid))
 	}
 
-	resp, err := commanderClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -310,10 +329,33 @@ func PostCommanderValuationExtractHandler(c *gin.Context) {
 	commanderProxyPassthrough(c, "POST", "/valuation-statement/extract")
 }
 
+// PostCommanderValuationDecideHandler proxies POST /valuation-statement/decide,
+// the OCR pre-flight (#5915) whose server route was missing so every client call
+// 404'd into the silent #306 fallback — a shipped feature dark in prod with green
+// tests on both sides (#5920). Runs on decideClient's short ceiling, not the 300s
+// extract client, so a slow /decide fails fast into that same fallback instead of
+// delaying the extract that follows it.
+func PostCommanderValuationDecideHandler(c *gin.Context) {
+	commanderProxyPassthroughVia(c, decideClient, "POST", "/valuation-statement/decide")
+}
+
 // PostCommanderValuationGenerateHandler proxies POST /valuation-statement/generate.
 // JSON body of reviewed values → docx file download.
 func PostCommanderValuationGenerateHandler(c *gin.Context) {
 	commanderProxyPassthrough(c, "POST", "/valuation-statement/generate")
+}
+
+// GetCommanderValuationOperatorDefaultsHandler proxies GET
+// /valuation-statement/operator-defaults. The client reads it to pre-fill the
+// manual-entry form (#5914); like PutCommander… it was registered on the server,
+// but only the PUT was — the GET 404'd, so manual entry always opened with empty
+// defaults, the same missing-proxy-hop class as /decide (surfaced by the route
+// agreement test, #5920). Member-tier: the block it returns (appraiser identity +
+// likviditet) is exactly what /extract already embeds for a Member, so it exposes
+// nothing new. Registered on trustedRoutes, not adminRoutes (the write stays
+// Admin-only, #3182).
+func GetCommanderValuationOperatorDefaultsHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "GET", "/valuation-statement/operator-defaults")
 }
 
 // PutCommanderValuationOperatorDefaultsHandler proxies PUT
