@@ -329,6 +329,24 @@ func PostCommanderValuationExtractHandler(c *gin.Context) {
 	commanderProxyPassthrough(c, "POST", "/valuation-statement/extract")
 }
 
+// PostCommanderValuationExtractAsyncHandler proxies POST
+// /valuation-statement/extract-async — the async submit (system_3 #5977/#5973).
+// It returns a job id at once so the request never outlives the ~100s Cloudflare
+// edge that severs a slow synchronous /extract (#5969); commander runs the
+// extraction in the background and the client polls GET /jobs/:id. Runs on the
+// same 300s commanderClient as /extract (the submit itself is fast) so the hop is
+// instrumented in proxy_request_log under commander.valuation (#5953).
+func PostCommanderValuationExtractAsyncHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "POST", "/valuation-statement/extract-async")
+}
+
+// GetCommanderValuationJobHandler proxies GET /valuation-statement/jobs/:id — the
+// async extraction poll (#5977). Streams commander's {status, result?, error?}
+// (and its 404 for an unknown id) back verbatim.
+func GetCommanderValuationJobHandler(c *gin.Context) {
+	commanderProxyPassthrough(c, "GET", fmt.Sprintf("/valuation-statement/jobs/%s", c.Param("id")))
+}
+
 // PostCommanderValuationDecideHandler proxies POST /valuation-statement/decide,
 // the OCR pre-flight (#5915) whose server route was missing so every client call
 // 404'd into the silent #306 fallback — a shipped feature dark in prod with green
