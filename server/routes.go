@@ -279,6 +279,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 
 		// Valuation Statement (proxied to commander service)
 		trustedRoutes.POST("/commander/valuation-statement/extract", handlers.PostCommanderValuationExtractHandler)
+		// Async extraction (#5977/#5973): submit returns a job id, poll for the result.
+		trustedRoutes.POST("/commander/valuation-statement/extract-async", handlers.PostCommanderValuationExtractAsyncHandler)
+		trustedRoutes.GET("/commander/valuation-statement/jobs/:id", handlers.GetCommanderValuationJobHandler)
 		// The OCR pre-flight (#5915). Its route was missing, so every client call
 		// 404'd into the silent fallback and the announcement never ran in prod
 		// (#5920). Same tier as /extract — a Member uploading is who needs it.
