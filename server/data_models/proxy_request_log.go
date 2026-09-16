@@ -3,8 +3,18 @@ package data_models
 import "time"
 
 // ProxyRequestLog is one row per outbound proxied call made by aspirant-server's
-// handler clients (commander, decide, advisor, transcriber, browser, monitor,
-// translator). system_3 #5953.
+// handler clients. system_3 #5953.
+//
+// Upstream is the join key agreed with #5931's ceiling registry
+// (registry.upstream_key), so item 2's margin detector joins
+// proxy_request_log.upstream = registry.upstream_key with no translation layer:
+//
+//	commander.valuation (300s), commander.decide (15s), advisor (300s),
+//	voice (120s), browser (60s), monitor (30s), translator (30s).
+//
+// The registry's eighth key, nginx.api, is the browser→nginx→server edge that
+// sits in FRONT of aspirant-server — not one of these outbound clients — so no
+// row here carries it; its latency comes from a different source.
 //
 // Shape: it is deliberately request_log-shaped — mirroring the columns
 // system_3's backend/health_backend.py::_read_api_latency aggregates

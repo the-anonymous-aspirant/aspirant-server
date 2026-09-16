@@ -14,10 +14,11 @@ import (
 // Proxy-call latency instrumentation (system_3 #5953).
 //
 // Every proxied upstream call this service makes carries a fixed timeout
-// ceiling (commander 300s, decide 15s, advisor 300s, transcriber 120s, browser
-// 60s, monitor 30s, translator 30s), and until now nothing measured the latency
-// beneath those ceilings — so a workload that grew toward a ceiling (the #5919
-// OCR regression: /decide's upstream cost rising into its 15s ceiling) was
+// ceiling (commander.valuation 300s, commander.decide 15s, advisor 300s, voice
+// 120s, browser 60s, monitor 30s, translator 30s), and until now nothing
+// measured the latency beneath those ceilings — so a workload that grew toward a
+// ceiling (the #5919 OCR regression: commander.decide's upstream cost rising into
+// its 15s ceiling) was
 // invisible until it crossed and a member got a 502. This records route,
 // upstream, status, latency and the ceiling for each call into a
 // request_log-shaped table (#5931 consumes it to alert on margin, not failure).
