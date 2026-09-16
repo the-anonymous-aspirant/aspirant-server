@@ -257,9 +257,11 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.RelationshipEvent{})
 
 	// Step 16: Proxy-call latency log (system_3 #5953). One row per outbound
-	// proxied upstream call (commander/decide/advisor/transcriber/browser/
-	// monitor/translator), request_log-shaped so system_3 (#5931) can compute
-	// per-upstream p99 and its margin against the recorded timeout ceiling.
+	// proxied upstream call (upstream keyed commander.valuation / commander.decide
+	// / advisor / voice / browser / monitor / translator, the join vocabulary
+	// agreed with #5931's ceiling registry), request_log-shaped so system_3
+	// (#5931) can compute per-upstream p99 and its margin against the recorded
+	// timeout ceiling.
 	db.AutoMigrate(&data_models.ProxyRequestLog{})
 
 	// Clean up legacy table
