@@ -40,8 +40,8 @@ func TestNewProxyClientRecordsCall(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := newProxyClient("commander", 300*time.Second)
-	resp, err := client.Get(upstream.URL + "/valuation-statement/decide")
+	client := newProxyClient("commander.valuation", 300*time.Second)
+	resp, err := client.Get(upstream.URL + "/valuation-statement/generate")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -54,11 +54,11 @@ func TestNewProxyClientRecordsCall(t *testing.T) {
 		t.Fatalf("recorded %d samples, want 1", len(*got))
 	}
 	s := (*got)[0]
-	if s.upstream != "commander" {
-		t.Errorf("upstream = %q, want commander", s.upstream)
+	if s.upstream != "commander.valuation" {
+		t.Errorf("upstream = %q, want commander.valuation", s.upstream)
 	}
-	if s.route != "/valuation-statement/decide" {
-		t.Errorf("route = %q, want /valuation-statement/decide", s.route)
+	if s.route != "/valuation-statement/generate" {
+		t.Errorf("route = %q, want /valuation-statement/generate", s.route)
 	}
 	if s.status != http.StatusCreated {
 		t.Errorf("status = %d, want 201", s.status)
@@ -193,7 +193,7 @@ func TestCommanderProxyGetRecordsViaWiredGlobal(t *testing.T) {
 	if len(*got) != 1 {
 		t.Fatalf("recorded %d samples via the wired global, want 1", len(*got))
 	}
-	if s := (*got)[0]; s.upstream != "commander" || s.route != "/valuation-statement/health" {
-		t.Errorf("got upstream=%q route=%q, want commander//valuation-statement/health", s.upstream, s.route)
+	if s := (*got)[0]; s.upstream != "commander.valuation" || s.route != "/valuation-statement/health" {
+		t.Errorf("got upstream=%q route=%q, want commander.valuation//valuation-statement/health", s.upstream, s.route)
 	}
 }
