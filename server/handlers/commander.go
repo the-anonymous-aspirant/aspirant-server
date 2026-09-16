@@ -18,7 +18,7 @@ import (
 // as an intermittent 502 on a valid upload (#5919, jenny). 300s matches the
 // advisor client's margin for a comparably slow upstream. This is a timeout,
 // not a capacity plan — see the row for the concurrency-bounding disposition.
-var commanderClient = &http.Client{Timeout: 300 * time.Second}
+var commanderClient = newProxyClient("commander", 300*time.Second)
 
 // decideClient is deliberately far tighter than commanderClient's 300s (#5920).
 // /decide is the fast pre-flight the client calls BEFORE the blocking /extract to
@@ -29,7 +29,7 @@ var commanderClient = &http.Client{Timeout: 300 * time.Second}
 // it. Deployed /decide is ~2.3s (fitz-only, commander PR #40); 15s absorbs
 // CPU-contention slowdown under concurrent OCR while still failing well inside
 // extract's budget. Re-measurable, not a budget any implementation inherits.
-var decideClient = &http.Client{Timeout: 15 * time.Second}
+var decideClient = newProxyClient("decide", 15*time.Second)
 
 // respondCommanderError maps a failed commander call to a status the user can
 // read correctly (#5919). A timeout is "the extraction took too long", not "the
