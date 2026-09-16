@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var translatorClient = &http.Client{Timeout: 30 * time.Second}
+var translatorClient = newProxyClient("translator", 30*time.Second)
 
 func translatorURL() string {
 	if url := os.Getenv("TRANSLATOR_URL"); url != "" {

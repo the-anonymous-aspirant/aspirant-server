@@ -12,7 +12,7 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
-var monitorClient = &http.Client{Timeout: 30 * time.Second}
+var monitorClient = newProxyClient("monitor", 30*time.Second)
 
 func monitorURL() string {
 	if url := os.Getenv("MONITOR_URL"); url != "" {

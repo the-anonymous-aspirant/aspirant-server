@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var proxyClient = &http.Client{Timeout: 120 * time.Second}
+var proxyClient = newProxyClient("transcriber", 120*time.Second)
 
 func transcriberURL() string {
 	if url := os.Getenv("TRANSCRIBER_URL"); url != "" {

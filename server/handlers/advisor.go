@@ -12,7 +12,7 @@ import (
 )
 
 // Longer timeout for advisor — LLM generation on CPU can take 2-3 minutes
-var advisorClient = &http.Client{Timeout: 300 * time.Second}
+var advisorClient = newProxyClient("advisor", 300*time.Second)
 
 func advisorURL() string {
 	if url := os.Getenv("ADVISOR_URL"); url != "" {
