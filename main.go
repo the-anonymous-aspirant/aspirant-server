@@ -3,6 +3,7 @@ package main
 import (
 	"aspirant-online/server"
 	"aspirant-online/server/email"
+	"aspirant-online/server/handlers"
 	"aspirant-online/server/middleware"
 	"aspirant-online/server/storage"
 	"log"
@@ -57,6 +58,12 @@ func main() {
 	// Set up the database tables (migrations)
 	server.AutoMigrate(db)
 	log.Println("Database connected and migrated successfully")
+
+	// Start the background writer that persists proxied-call latency samples to
+	// aspirant_db (system_3 #5953). Best-effort: the request path never blocks on
+	// it and a nil db would make it a no-op (db is non-nil here — we fail fast
+	// above). Must run after the DB is up so the drain loop has a live handle.
+	handlers.StartProxyLatencyWriter(db)
 
 	// Build the outbound-mail sender. A mail misconfiguration must NOT stop the
 	// server: on 2026-09-05 an earlier version log.Fatal'd here and took the

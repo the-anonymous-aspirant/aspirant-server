@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var browserClient = &http.Client{Timeout: 60 * time.Second}
+var browserClient = newProxyClient("browser", 60*time.Second)
 
 func browserURL() string {
 	if url := os.Getenv("BROWSER_URL"); url != "" {
