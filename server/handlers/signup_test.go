@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -290,6 +291,150 @@ func TestSignupNotifiesTheOwnerNotTheRequester(t *testing.T) {
 	if strings.Contains(notices[0].body, "/verify-email?token=") {
 		t.Error("the duplicate-signup notice carries a verification link — it must not create or confirm anything")
 	}
+}
+
+// --- collisions the existence check cannot see (system_3 #6780) -------------
+
+// A soft-deleted account still holds its username and email, because neither
+// unique index is scoped to live rows — while the existence check above IS
+// scoped and therefore misses it. The insert is what finds out.
+//
+// This pins the visitor-facing half: the answer stays identical to a fresh
+// sign-up (the oracle invariant), no account is created, and — deliberately —
+// nobody is mailed, because the only address on file belongs to a deleted
+// account. Whether the identifier should instead be released is a moderation
+// decision recorded on #6780; if it is taken, THIS test is the one that changes.
+func TestSignupWithASoftDeletedAccountsIdentifiers(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "gone", "gone@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+	if err := h.db.Delete(h.user(t, "gone")).Error; err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	// The premise of the whole test: the row must still be there, deleted.
+	var remaining int
+	if err := h.db.Unscoped().Model(&data_models.User{}).
+		Where("deleted_at IS NOT NULL").Count(&remaining).Error; err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("soft-deleted rows = %d, want 1 — the harness is hard-deleting and this test proves nothing", remaining)
+	}
+
+	fresh := h.signup(t, "unrelated", "unrelated@example.com", goodPassword)
+	h.mail.sent = nil
+	before := h.userCount(t)
+
+	for _, tc := range []struct {
+		name              string
+		username, address string
+	}{
+		{"email held by a deleted account", "someone_new", "gone@example.com"},
+		{"username held by a deleted account", "gone", "someone_new@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h.mail.sent = nil
+			w := h.signup(t, tc.username, tc.address, goodPassword)
+
+			if w.Code != fresh.Code || w.Body.String() != fresh.Body.String() {
+				t.Errorf("answer differs from a fresh sign-up — an existence oracle:\n got %d %s\nwant %d %s",
+					w.Code, w.Body.String(), fresh.Code, fresh.Body.String())
+			}
+			if n := h.userCount(t); n != before {
+				t.Errorf("live user count moved from %d to %d — an account was created over a held identifier", before, n)
+			}
+			if got := len(h.mail.sent); got != 0 {
+				t.Errorf("sent %d messages, want 0 — nothing should be mailed about a deleted account", got)
+			}
+		})
+	}
+}
+
+// The log line is the only thing this case changes for anyone outside the
+// handler, so it is the only thing that can prove the classification happened.
+// Everything the test above asserts — 200, no account, no mail — was already
+// true of the unfixed code, which answered every post-check collision with
+// "likely a race on a unique index" whether or not anything raced. Without this
+// assertion the regression test passes against the bug.
+func TestSignupLogsASoftDeletedCollisionAsSuchNotAsARace(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "gone", "gone@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+	if err := h.db.Delete(h.user(t, "gone")).Error; err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	if w := h.signup(t, "someone_new", "gone@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "SOFT-DELETED") {
+		t.Errorf("log does not identify the cause as a soft-deleted holder:\n%s", got)
+	}
+	if strings.Contains(got, "race") {
+		t.Errorf("log still attributes this to a race, which it is not:\n%s", got)
+	}
+}
+
+// The two arms of a post-check collision are different events and must be
+// classified differently. Exercised at the seam rather than over HTTP on
+// purpose: for a LIVE colliding row the scoped existence check finds it first
+// and returns early, so the insert-collision path is not reachable through the
+// endpoint without a real concurrent writer. The seam is what the handler
+// branches on, so this is where the discriminator is worth pinning.
+func TestFindCollidingUserDistinguishesDeletedFromLive(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "live", "live@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+
+	t.Run("live row is reported as not deleted", func(t *testing.T) {
+		got, deleted, found := findCollidingUser(h.db, "live", "other@example.com")
+		if !found {
+			t.Fatal("found = false; want the live row")
+		}
+		if deleted {
+			t.Error("deleted = true for a live row")
+		}
+		if got.Username != "live" {
+			t.Errorf("username = %q, want %q", got.Username, "live")
+		}
+	})
+
+	if err := h.db.Delete(h.user(t, "live")).Error; err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	t.Run("soft-deleted row is still found, and flagged", func(t *testing.T) {
+		got, deleted, found := findCollidingUser(h.db, "live", "other@example.com")
+		if !found {
+			t.Fatal("found = false — the unscoped read is scoped and cannot see the row it must classify")
+		}
+		if !deleted {
+			t.Error("deleted = false for a soft-deleted row")
+		}
+		if got.ID == 0 {
+			t.Error("returned a zero user; the caller logs its id")
+		}
+	})
+
+	t.Run("no collision at all is reported as not found", func(t *testing.T) {
+		if _, _, found := findCollidingUser(h.db, "nobody", "nobody@example.com"); found {
+			t.Error("found = true with no matching row")
+		}
+	})
 }
 
 // A send failure must not become an oracle either: "we couldn't mail that
