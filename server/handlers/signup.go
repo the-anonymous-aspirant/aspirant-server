@@ -236,10 +236,12 @@ func SignupHandler(c *gin.Context) {
 		return
 	}
 	if err := user.CreateUser(db); err != nil {
-		// A unique-constraint violation here means someone took the name
-		// between the check above and this insert. The database is the
-		// authority; answer as though it were taken, which it is.
-		log.Printf("signup: create failed for %q (likely a race on a unique index): %v", username, err)
+		// The insert lost to a unique index the existence check above did not
+		// see. There are exactly two ways that happens and they are not the
+		// same event, so classify before answering — the log line used to call
+		// this a race unconditionally, which was wrong half the time and sent
+		// the reader looking for concurrency that was never there.
+		onSignupInsertCollision(c, db, username, address, err)
 		signupAccepted(c)
 		return
 	}
@@ -285,6 +287,78 @@ nothing about your account has changed.
 — %s`, publicBaseURL(), attemptedUsername, publicBaseURL())
 
 	sendOrLog(c, existing.Email, "Someone tried to sign up with your details", body, "duplicate-signup notice")
+}
+
+// onSignupInsertCollision handles the insert losing to a unique index that the
+// existence check did not see, and is the only place that tells the two causes
+// apart.
+//
+// The existence check runs scoped, so it never sees soft-deleted rows, while
+// users_username_key and users_email_key are unconditional. That gives two
+// distinct arms:
+//
+//  1. A LIVE row now holds the identifier. This is the genuine race the old
+//     comment here described — a concurrent sign-up inserted between our check
+//     and our insert. The account is taken by someone real, which is the same
+//     state the err == nil branch above handles, so it gets the same treatment:
+//     the owner is told someone tried. Before this, a racing sign-up got
+//     silence where one arriving a second later got a notice, purely on
+//     timing.
+//
+//  2. A SOFT-DELETED row holds it. Nothing raced; the identifier is simply
+//     unusable and will stay unusable, because a soft delete does not release
+//     the unique keys (no `WHERE deleted_at IS NULL` on either index). No mail
+//     goes out: the only address on file belongs to an account that has been
+//     deleted, and mailing it would tell a deleted user about sign-up traffic
+//     they did not ask to hear about. That leaves a visitor unable to register
+//     an address they may well own, which is a real dead end — but whether a
+//     deleted account's identifiers should be released is a moderation
+//     question (delete is the admin tool in handlers/user.go
+//     DeleteUserHandler, so releasing them would let a removed account
+//     re-register at once), not one this handler may decide. Until it is
+//     decided the honest thing is an accurate log line naming the state, which
+//     is what the operator has to act on. system_3 task #6780.
+//
+// The response is signupAccepted either way. Every database-dependent exit in
+// this file answers identically and that is not relaxed here — the caller must
+// not learn which arm they hit, or the arms become the existence oracle the
+// whole file is built to avoid.
+func onSignupInsertCollision(c *gin.Context, db *gorm.DB, username, address string, insertErr error) {
+	colliding, deleted, found := findCollidingUser(db, username, address)
+	switch {
+	case found && !deleted:
+		log.Printf("signup: create for %q lost a race to a concurrent insert; notifying the account owner: %v",
+			username, insertErr)
+		onExistingAccountSignupAttempt(c, colliding, username)
+	case found && deleted:
+		log.Printf("signup: create for %q refused because a SOFT-DELETED account (id %d) still holds the "+
+			"username or email; no mail sent and no account created, and this will recur until the "+
+			"identifier is released or that account is restored (system_3 #6780): %v",
+			username, colliding.ID, insertErr)
+	default:
+		// Neither arm: the index that rejected us is not one we can attribute
+		// to a row, or the collision vanished between the insert and this read.
+		// Say exactly that rather than guessing a cause.
+		log.Printf("signup: create failed for %q and no colliding row could be read back, "+
+			"so the cause is unattributed: %v", username, insertErr)
+	}
+}
+
+// findCollidingUser reads back the row whose unique index the insert hit,
+// including soft-deleted ones.
+//
+// Unscoped() is the whole point: the scoped read is what missed the row in the
+// first place, so repeating it here would classify every soft-delete collision
+// as "no colliding row". The bool reports whether the row it found is
+// soft-deleted, which is the discriminator the caller branches on.
+func findCollidingUser(db *gorm.DB, username, address string) (user data_models.User, deleted bool, found bool) {
+	err := db.Unscoped().
+		Where("username = ? OR email = ?", username, address).
+		First(&user).Error
+	if err != nil {
+		return data_models.User{}, false, false
+	}
+	return user, user.DeletedAt != nil, true
 }
 
 // verificationMailBody renders the verification message.
