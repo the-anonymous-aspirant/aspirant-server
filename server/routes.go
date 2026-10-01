@@ -60,7 +60,7 @@ func SetupMiddleware(r *gin.Engine) {
 		return fmt.Sprintf("[GIN] %v | %3d | %15s | %-7s %#v | role: %s | user: %d | username: %s\n",
 			param.TimeStamp.Format("2006-01-02T15:04:05Z"),
 			param.StatusCode,
-			param.ClientIP,
+			maskClientIP(param.ClientIP),
 			param.Method,
 			param.Path,
 			role,
