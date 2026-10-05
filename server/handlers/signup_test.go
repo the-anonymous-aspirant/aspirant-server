@@ -75,6 +75,15 @@ func newSignupHarness(t *testing.T) *signupHarness {
 		// which makes the harness's job to carry the schema the server has.
 		&data_models.SiteSetting{},
 	)
+	// The uniqueness on username and email is no longer a struct tag — it is a
+	// PARTIAL unique index scoped to live rows (#7009), which AutoMigrate
+	// cannot express. Without this call the users table here has no uniqueness
+	// at all, and every collision case in this file passes against any code.
+	// server.AutoMigrate makes the same call; this harness cannot reach it
+	// (importing server from handlers is a cycle), so it makes it directly.
+	if err := data_models.EnsureUserIdentifierUniqueIndexes(db); err != nil {
+		t.Fatalf("users identifier unique indexes: %v", err)
+	}
 	// One connection: sqlite's in-memory driver does not do concurrent
 	// writers, and BootstrapUserHandler now opens a transaction. Without this
 	// the concurrency test deadlocks every racer instead of serialising them,
@@ -293,28 +302,37 @@ func TestSignupNotifiesTheOwnerNotTheRequester(t *testing.T) {
 	}
 }
 
-// --- collisions the existence check cannot see (system_3 #6780) -------------
+// --- a soft-deleted account releases its identifiers (system_3 #7009) ------
 
-// A soft-deleted account still holds its username and email, because neither
-// unique index is scoped to live rows — while the existence check above IS
-// scoped and therefore misses it. The insert is what finds out.
+// A soft-deleted account no longer holds its username or email: both unique
+// indexes are scoped to live rows, so the namespace is released on delete and
+// a visitor who genuinely owns the address can register it.
 //
-// This pins the visitor-facing half: the answer stays identical to a fresh
-// sign-up (the oracle invariant), no account is created, and — deliberately —
-// nobody is mailed, because the only address on file belongs to a deleted
-// account. Whether the identifier should instead be released is a moderation
-// decision recorded on #6780; if it is taken, THIS test is the one that changes.
+// This test used to pin the opposite, deliberately, and said so: "whether the
+// identifier should instead be released is a moderation decision recorded on
+// #6780; if it is taken, THIS test is the one that changes." It was taken on
+// #7009. What makes it safe is that removal and moderation are now different
+// verbs — an abusive account is moved to the Blocked tier (#5290), which
+// leaves its row LIVE and therefore still holding its identifiers under the
+// indexes below, so releasing on DELETE releases nothing an admin was using
+// to keep someone out.
+//
+// The oracle invariant is unchanged and is asserted here too: the answer must
+// still be byte-identical to a fresh sign-up. It now matches because both
+// succeed, where it used to match because both were refused silently.
 func TestSignupWithASoftDeletedAccountsIdentifiers(t *testing.T) {
 	h := newSignupHarness(t)
 
 	if w := h.signup(t, "gone", "gone@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("seed signup failed: %d", w.Code)
 	}
+	deletedID := h.user(t, "gone").ID
 	if err := h.db.Delete(h.user(t, "gone")).Error; err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
 
-	// The premise of the whole test: the row must still be there, deleted.
+	// The premise of the whole test: the row must still be there, deleted. A
+	// harness that hard-deletes would make every assertion below vacuous.
 	var remaining int
 	if err := h.db.Unscoped().Model(&data_models.User{}).
 		Where("deleted_at IS NOT NULL").Count(&remaining).Error; err != nil {
@@ -325,113 +343,152 @@ func TestSignupWithASoftDeletedAccountsIdentifiers(t *testing.T) {
 	}
 
 	fresh := h.signup(t, "unrelated", "unrelated@example.com", goodPassword)
-	h.mail.sent = nil
-	before := h.userCount(t)
 
 	for _, tc := range []struct {
 		name              string
 		username, address string
 	}{
-		{"email held by a deleted account", "someone_new", "gone@example.com"},
-		{"username held by a deleted account", "gone", "someone_new@example.com"},
+		{"email released by a deleted account", "someone_new", "gone@example.com"},
+		{"username released by a deleted account", "gone", "someone_new@example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h.mail.sent = nil
+			before := h.userCount(t)
+
 			w := h.signup(t, tc.username, tc.address, goodPassword)
 
 			if w.Code != fresh.Code || w.Body.String() != fresh.Body.String() {
 				t.Errorf("answer differs from a fresh sign-up — an existence oracle:\n got %d %s\nwant %d %s",
 					w.Code, w.Body.String(), fresh.Code, fresh.Body.String())
 			}
-			if n := h.userCount(t); n != before {
-				t.Errorf("live user count moved from %d to %d — an account was created over a held identifier", before, n)
+			if n := h.userCount(t); n != before+1 {
+				t.Errorf("live user count %d -> %d, want +1 — the identifier was not released", before, n)
 			}
-			if got := len(h.mail.sent); got != 0 {
-				t.Errorf("sent %d messages, want 0 — nothing should be mailed about a deleted account", got)
+			if got := len(h.mail.to(tc.address)); got != 1 {
+				t.Errorf("sent %d messages to %s, want 1 verification mail", got, tc.address)
+			}
+
+			// The new account is a new row. Releasing the identifier must not
+			// resurrect or overwrite the deleted one, whose history stays.
+			created := h.user(t, tc.username)
+			if created.ID == deletedID {
+				t.Errorf("reused the soft-deleted row id %d instead of creating an account", deletedID)
+			}
+			var stillDeleted data_models.User
+			if err := h.db.Unscoped().Where("id = ?", deletedID).First(&stillDeleted).Error; err != nil {
+				t.Fatalf("the soft-deleted row is gone: %v", err)
+			}
+			if stillDeleted.DeletedAt == nil {
+				t.Error("the soft-deleted row was un-deleted")
 			}
 		})
 	}
 }
 
-// The log line is the only thing this case changes for anyone outside the
-// handler, so it is the only thing that can prove the classification happened.
-// Everything the test above asserts — 200, no account, no mail — was already
-// true of the unfixed code, which answered every post-check collision with
-// "likely a race on a unique index" whether or not anything raced. Without this
-// assertion the regression test passes against the bug.
-func TestSignupLogsASoftDeletedCollisionAsSuchNotAsARace(t *testing.T) {
+// A LIVE account still holds its identifiers, and that is the half of the
+// change that must NOT move. The index is partial, not absent: scoping it to
+// live rows releases a deleted account's namespace without weakening anything
+// about an account that exists. Without this the test above would also pass
+// against a build that simply dropped uniqueness.
+func TestSignupOverALiveAccountsIdentifiersStillCreatesNothing(t *testing.T) {
 	h := newSignupHarness(t)
 
-	if w := h.signup(t, "gone", "gone@example.com", goodPassword); w.Code != http.StatusOK {
+	if w := h.signup(t, "here", "here@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("seed signup failed: %d", w.Code)
 	}
-	if err := h.db.Delete(h.user(t, "gone")).Error; err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
 
-	var logs bytes.Buffer
-	previous := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	fresh := h.signup(t, "unrelated", "unrelated@example.com", goodPassword)
+	h.mail.sent = nil
+	before := h.userCount(t)
 
-	if w := h.signup(t, "someone_new", "gone@example.com", goodPassword); w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
+	w := h.signup(t, "someone_new", "here@example.com", goodPassword)
 
-	got := logs.String()
-	if !strings.Contains(got, "SOFT-DELETED") {
-		t.Errorf("log does not identify the cause as a soft-deleted holder:\n%s", got)
+	if w.Code != fresh.Code || w.Body.String() != fresh.Body.String() {
+		t.Errorf("answer differs from a fresh sign-up — an existence oracle:\n got %d %s\nwant %d %s",
+			w.Code, w.Body.String(), fresh.Code, fresh.Body.String())
 	}
-	if strings.Contains(got, "race") {
-		t.Errorf("log still attributes this to a race, which it is not:\n%s", got)
+	if n := h.userCount(t); n != before {
+		t.Errorf("live user count moved from %d to %d — an account was created over a live identifier", before, n)
+	}
+	if got := len(h.mail.to("here@example.com")); got != 1 {
+		t.Errorf("sent %d messages to the account owner, want the 1 duplicate-signup notice", got)
 	}
 }
 
-// The two arms of a post-check collision are different events and must be
-// classified differently. Exercised at the seam rather than over HTTP on
-// purpose: for a LIVE colliding row the scoped existence check finds it first
-// and returns early, so the insert-collision path is not reachable through the
-// endpoint without a real concurrent writer. The seam is what the handler
-// branches on, so this is where the discriminator is worth pinning.
-func TestFindCollidingUserDistinguishesDeletedFromLive(t *testing.T) {
+// The index must be partial in the database, not merely intended to be. A
+// second soft delete of the same identifier has to be insertable too —
+// otherwise the "live rows only" scope is really "at most two rows ever", and
+// the dead end comes back the second time an account at that address is
+// removed.
+func TestAnIdentifierCanBeReleasedMoreThanOnce(t *testing.T) {
 	h := newSignupHarness(t)
 
+	for i := 0; i < 3; i++ {
+		if w := h.signup(t, "recycled", "recycled@example.com", goodPassword); w.Code != http.StatusOK {
+			t.Fatalf("signup %d: status = %d", i, w.Code)
+		}
+		if n := h.userCount(t); n != 1 {
+			t.Fatalf("after signup %d live users = %d, want 1 — the account was not created", i, n)
+		}
+		if err := h.db.Delete(h.user(t, "recycled")).Error; err != nil {
+			t.Fatalf("soft delete %d: %v", i, err)
+		}
+	}
+
+	var archived int
+	if err := h.db.Unscoped().Model(&data_models.User{}).
+		Where("username = ? AND deleted_at IS NOT NULL", "recycled").Count(&archived).Error; err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if archived != 3 {
+		t.Errorf("soft-deleted rows for the identifier = %d, want 3 — the history was not kept", archived)
+	}
+}
+
+// Only a LIVE row can reject the insert now, so the collision read must be
+// scoped — and this is the case that proves why. A live account holds the
+// username while an unrelated soft-deleted account holds the email. The
+// insert fails on the live one, so its owner is the person to notify; an
+// unscoped read ordered by id would return the deleted row instead and the
+// real owner would hear nothing.
+//
+// Exercised at the seam rather than over HTTP on purpose: for a live colliding
+// row the scoped existence check finds it first and returns early, so the
+// insert-collision path is not reachable through the endpoint without a real
+// concurrent writer. The seam is what the handler branches on.
+func TestFindLiveCollidingUserPrefersTheLiveRow(t *testing.T) {
+	h := newSignupHarness(t)
+
+	// Seed the soft-deleted holder FIRST so it has the lower id — the exact
+	// ordering under which an unscoped First() returns the wrong row.
+	if w := h.signup(t, "old_owner", "contested@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+	if err := h.db.Delete(h.user(t, "old_owner")).Error; err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
 	if w := h.signup(t, "live", "live@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("seed signup failed: %d", w.Code)
 	}
 
-	t.Run("live row is reported as not deleted", func(t *testing.T) {
-		got, deleted, found := findCollidingUser(h.db, "live", "other@example.com")
+	t.Run("the live row wins over a lower-id soft-deleted one", func(t *testing.T) {
+		got, found := findLiveCollidingUser(h.db, "live", "contested@example.com")
 		if !found {
 			t.Fatal("found = false; want the live row")
 		}
-		if deleted {
-			t.Error("deleted = true for a live row")
-		}
 		if got.Username != "live" {
-			t.Errorf("username = %q, want %q", got.Username, "live")
+			t.Errorf("username = %q, want %q — the deleted row was classified as the collision", got.Username, "live")
 		}
 	})
 
-	if err := h.db.Delete(h.user(t, "live")).Error; err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
-
-	t.Run("soft-deleted row is still found, and flagged", func(t *testing.T) {
-		got, deleted, found := findCollidingUser(h.db, "live", "other@example.com")
-		if !found {
-			t.Fatal("found = false — the unscoped read is scoped and cannot see the row it must classify")
-		}
-		if !deleted {
-			t.Error("deleted = false for a soft-deleted row")
-		}
-		if got.ID == 0 {
-			t.Error("returned a zero user; the caller logs its id")
+	t.Run("a soft-deleted row alone is not a collision", func(t *testing.T) {
+		if _, found := findLiveCollidingUser(h.db, "old_owner", "contested@example.com"); found {
+			t.Error("found = true for a soft-deleted row — it can no longer reject an insert")
 		}
 	})
 
 	t.Run("no collision at all is reported as not found", func(t *testing.T) {
-		if _, _, found := findCollidingUser(h.db, "nobody", "nobody@example.com"); found {
+		if _, found := findLiveCollidingUser(h.db, "nobody", "nobody@example.com"); found {
 			t.Error("found = true with no matching row")
 		}
 	})

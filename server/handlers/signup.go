@@ -290,75 +290,62 @@ nothing about your account has changed.
 }
 
 // onSignupInsertCollision handles the insert losing to a unique index that the
-// existence check did not see, and is the only place that tells the two causes
-// apart.
+// existence check did not see.
 //
-// The existence check runs scoped, so it never sees soft-deleted rows, while
-// users_username_key and users_email_key are unconditional. That gives two
-// distinct arms:
+// Both the existence check and the unique indexes are now scoped to live rows
+// (idx_users_username_live / idx_users_email_live, #7009), so a soft-deleted
+// account can no longer reject this insert at all — that sign-up now succeeds,
+// which is the point of the change. What is left is the genuine race the
+// original comment here described: a concurrent sign-up inserted a LIVE row
+// between our check and our insert. The account is taken by someone real,
+// which is the same state the err == nil branch above handles, so it gets the
+// same treatment — the owner is told someone tried.
 //
-//  1. A LIVE row now holds the identifier. This is the genuine race the old
-//     comment here described — a concurrent sign-up inserted between our check
-//     and our insert. The account is taken by someone real, which is the same
-//     state the err == nil branch above handles, so it gets the same treatment:
-//     the owner is told someone tried. Before this, a racing sign-up got
-//     silence where one arriving a second later got a notice, purely on
-//     timing.
-//
-//  2. A SOFT-DELETED row holds it. Nothing raced; the identifier is simply
-//     unusable and will stay unusable, because a soft delete does not release
-//     the unique keys (no `WHERE deleted_at IS NULL` on either index). No mail
-//     goes out: the only address on file belongs to an account that has been
-//     deleted, and mailing it would tell a deleted user about sign-up traffic
-//     they did not ask to hear about. That leaves a visitor unable to register
-//     an address they may well own, which is a real dead end — but whether a
-//     deleted account's identifiers should be released is a moderation
-//     question (delete is the admin tool in handlers/user.go
-//     DeleteUserHandler, so releasing them would let a removed account
-//     re-register at once), not one this handler may decide. Until it is
-//     decided the honest thing is an accurate log line naming the state, which
-//     is what the operator has to act on. system_3 task #6780.
+// The read below is SCOPED, and that is a correctness requirement rather than
+// a simplification. It used to be Unscoped() with a `WHERE username = ? OR
+// email = ?` and a First(), which was right while both kinds of row could
+// collide. Under the live-scoped indexes it would be wrong: when a live row
+// holds the username and an unrelated soft-deleted row holds the email, the
+// insert fails on the LIVE one, but First() returns whichever has the lower
+// id — so half the time the real owner of a contested username would be
+// classified as a deleted-account collision and never notified.
 //
 // The response is signupAccepted either way. Every database-dependent exit in
 // this file answers identically and that is not relaxed here — the caller must
 // not learn which arm they hit, or the arms become the existence oracle the
 // whole file is built to avoid.
 func onSignupInsertCollision(c *gin.Context, db *gorm.DB, username, address string, insertErr error) {
-	colliding, deleted, found := findCollidingUser(db, username, address)
-	switch {
-	case found && !deleted:
-		log.Printf("signup: create for %q lost a race to a concurrent insert; notifying the account owner: %v",
-			username, insertErr)
-		onExistingAccountSignupAttempt(c, colliding, username)
-	case found && deleted:
-		log.Printf("signup: create for %q refused because a SOFT-DELETED account (id %d) still holds the "+
-			"username or email; no mail sent and no account created, and this will recur until the "+
-			"identifier is released or that account is restored (system_3 #6780): %v",
-			username, colliding.ID, insertErr)
-	default:
-		// Neither arm: the index that rejected us is not one we can attribute
-		// to a row, or the collision vanished between the insert and this read.
-		// Say exactly that rather than guessing a cause.
-		log.Printf("signup: create failed for %q and no colliding row could be read back, "+
+	colliding, found := findLiveCollidingUser(db, username, address)
+	if !found {
+		// No live row explains the rejection: the index that rejected us is
+		// not one we can attribute to a row, or the collision vanished between
+		// the insert and this read. Say exactly that rather than guessing a
+		// cause.
+		log.Printf("signup: create failed for %q and no live colliding row could be read back, "+
 			"so the cause is unattributed: %v", username, insertErr)
+		return
 	}
+
+	log.Printf("signup: create for %q lost a race to a concurrent insert; notifying the account owner: %v",
+		username, insertErr)
+	onExistingAccountSignupAttempt(c, colliding, username)
 }
 
-// findCollidingUser reads back the row whose unique index the insert hit,
-// including soft-deleted ones.
+// findLiveCollidingUser reads back the live row whose unique index the insert
+// hit.
 //
-// Unscoped() is the whole point: the scoped read is what missed the row in the
-// first place, so repeating it here would classify every soft-delete collision
-// as "no colliding row". The bool reports whether the row it found is
-// soft-deleted, which is the discriminator the caller branches on.
-func findCollidingUser(db *gorm.DB, username, address string) (user data_models.User, deleted bool, found bool) {
-	err := db.Unscoped().
+// Scoped deliberately — see the note on onSignupInsertCollision. Only live
+// rows can reject the insert now, so a soft-deleted row read back here would
+// be a coincidence rather than the cause, and acting on it would misdirect the
+// notice.
+func findLiveCollidingUser(db *gorm.DB, username, address string) (user data_models.User, found bool) {
+	err := db.
 		Where("username = ? OR email = ?", username, address).
 		First(&user).Error
 	if err != nil {
-		return data_models.User{}, false, false
+		return data_models.User{}, false
 	}
-	return user, user.DeletedAt != nil, true
+	return user, true
 }
 
 // verificationMailBody renders the verification message.

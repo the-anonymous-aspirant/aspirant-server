@@ -10,8 +10,17 @@ import (
 
 type User struct {
 	gorm.Model
-	Username string `json:"username" gorm:"unique;not null"`
-	Email    string `json:"email" gorm:"unique;not null"`
+	// Username and Email carry no `unique` fragment, and the omission is the
+	// change, not an oversight. In gorm v1 the fragment is emitted only in
+	// createTable's column SQL, which is what produced the unconditional
+	// users_username_key / users_email_key constraints — and unconditional is
+	// the one thing they must not be. gorm.Model soft-deletes, so an
+	// unconditional constraint keeps a removed account's identifiers held
+	// forever and a visitor who genuinely owns the address can never register
+	// it. EnsureUserIdentifierUniqueIndexes installs the live-scoped
+	// replacement; call it after AutoMigrate. Task #7009.
+	Username string `json:"username" gorm:"not null"`
+	Email    string `json:"email" gorm:"not null"`
 	Password string `json:"password,omitempty"`
 	RoleID   uint   `json:"-"`
 	// SessionEpoch is bumped to revoke every session issued before now.
@@ -318,6 +327,61 @@ func MigrateEmailVerified(db *gorm.DB) error {
 // anywhere else it is the defect described above.
 func backfillEmailVerified(db *gorm.DB) error {
 	return db.Exec("UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL").Error
+}
+
+// EnsureUserIdentifierUniqueIndexes replaces the unconditional uniqueness on
+// users.username and users.email with the same constraint scoped to live rows.
+// Call it after AutoMigrate, as server.AutoMigrate does.
+//
+// Why partial. User embeds gorm.Model, so DeleteUserHandler SOFT-deletes: the
+// row stays with deleted_at set, and an unconditional unique index therefore
+// keeps holding the identifiers of an account that no longer exists to anyone.
+// A visitor who owns gone@example.com and signs up for it gets signupAccepted,
+// no account, and no mail — a dead end with nothing on the other side of it,
+// because the only address on file belongs to a deleted account and mailing it
+// would tell a deleted user about sign-up traffic they did not ask to hear
+// about. Scoping to deleted_at IS NULL releases the identifier on delete and
+// leaves the soft-delete history alone. Same shape and same reasoning as
+// EnsurePlayerGoalUniqueIndex (task #5157).
+//
+// Why this is safe to do now, which it was not before. The hazard is that
+// releasing identifiers lets a removed abuser re-register the same email at
+// once, with verification no obstacle because it is their own mailbox. That
+// hazard assumes delete is the only way to remove an abuser's access. It is
+// not, since #5290: the Blocked tier (role.go SeedRoles, handlers.TierBlocked)
+// leaves the row LIVE with no access and revokes its sessions, so a blocked
+// account still holds its username and email under the index below, exactly as
+// today. Moderation and removal become two different verbs with two different
+// effects on the namespace, which is the whole point. system_3 #7009,
+// deciding #6783.
+//
+// Ordering is load-bearing: CREATE first, DROP second. If the create fails the
+// old constraints are still in force and the table is never unprotected, and
+// the create cannot fail on duplicate live rows while they are still in force,
+// so this is also the order that always succeeds. The drop is Postgres-only —
+// SQLite implements a column-level UNIQUE as an undroppable
+// sqlite_autoindex_users_N, and needs no drop, because a fresh table built
+// from the tag-less struct above never has one.
+func EnsureUserIdentifierUniqueIndexes(db *gorm.DB) error {
+	for _, stmt := range []string{
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_live ON users (username) WHERE deleted_at IS NULL",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live ON users (email) WHERE deleted_at IS NULL",
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+
+	if db.Dialect().GetName() != "postgres" {
+		return nil
+	}
+
+	for _, constraint := range []string{"users_username_key", "users_email_key"} {
+		if err := db.Exec("ALTER TABLE users DROP CONSTRAINT IF EXISTS " + constraint).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CreateUser creates a new user
