@@ -384,11 +384,16 @@ func TestSignupWithASoftDeletedAccountsIdentifiers(t *testing.T) {
 	}
 }
 
-// A LIVE account still holds its identifiers, and that is the half of the
-// change that must NOT move. The index is partial, not absent: scoping it to
-// live rows releases a deleted account's namespace without weakening anything
-// about an account that exists. Without this the test above would also pass
-// against a build that simply dropped uniqueness.
+// A LIVE account still holds its identifiers, over HTTP: the visitor-facing
+// half of the change that must NOT move.
+//
+// This asserts the HANDLER's behaviour, not the index's. The scoped existence
+// check finds the live row and returns before the insert, so this case never
+// reaches a unique index at all and would pass against a build with no
+// uniqueness whatsoever — measured, by deleting the harness's ensure call and
+// watching it stay green. TestLiveIdentifiersAreStillUniqueInTheDatabase below
+// is the one that pins the index; this one pins the oracle invariant on the
+// path a real visitor takes.
 func TestSignupOverALiveAccountsIdentifiersStillCreatesNothing(t *testing.T) {
 	h := newSignupHarness(t)
 
@@ -411,6 +416,59 @@ func TestSignupOverALiveAccountsIdentifiersStillCreatesNothing(t *testing.T) {
 	}
 	if got := len(h.mail.to("here@example.com")); got != 1 {
 		t.Errorf("sent %d messages to the account owner, want the 1 duplicate-signup notice", got)
+	}
+}
+
+// The index must still be UNIQUE on live rows, which nothing above proves.
+// Every HTTP-level case is answered by the handler's scoped existence check
+// before an insert is attempted, so the whole file stays green against a
+// users table with no uniqueness at all. This inserts straight at the data
+// layer, past that check, which is the only place the constraint itself
+// answers.
+//
+// It is the half of "partial" that the release tests cannot see: they prove
+// the index lets a deleted identifier through, and a dropped index would do
+// that too.
+func TestLiveIdentifiersAreStillUniqueInTheDatabase(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "here", "here@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+	held := h.user(t, "here")
+
+	for _, tc := range []struct {
+		name              string
+		username, address string
+	}{
+		{"username held by a live account", "here", "other@example.com"},
+		{"email held by a live account", "other", "here@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dup := data_models.User{
+				Username: tc.username,
+				Email:    tc.address,
+				Password: "irrelevant",
+				RoleID:   held.RoleID,
+			}
+			if err := h.db.Create(&dup).Error; err == nil {
+				t.Error("a second LIVE row took a held identifier — the index is not unique on live rows")
+			}
+		})
+	}
+
+	// Positive control for the construction above: the same insert with
+	// identifiers nobody holds must SUCCEED. Without it an err != nil from any
+	// cause at all — a missing column, a bad role FK — would read as the
+	// constraint doing its job.
+	free := data_models.User{
+		Username: "free",
+		Email:    "free@example.com",
+		Password: "irrelevant",
+		RoleID:   held.RoleID,
+	}
+	if err := h.db.Create(&free).Error; err != nil {
+		t.Fatalf("an insert with free identifiers failed, so the rejections above prove nothing: %v", err)
 	}
 }
 
