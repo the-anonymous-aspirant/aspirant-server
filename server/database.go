@@ -133,6 +133,17 @@ func AutoMigrate(db *gorm.DB) {
 	// legacy role rows. Idempotent: matches nothing once they are gone.
 	db.Exec("DELETE FROM roles WHERE role_name IN ('Trusted', 'User', 'Guest', 'Gamer', 'Deleted')")
 
+	// Step 2a: release a soft-deleted account's identifiers back into the
+	// namespace. The constraint AutoMigrate cannot express: a PARTIAL unique
+	// index on username and email, scoped to live rows because the model
+	// soft-deletes. See EnsureUserIdentifierUniqueIndexes — it also drops the
+	// unconditional users_username_key / users_email_key this replaces, which
+	// the `unique` struct tag created on every database that predates it
+	// (task #7009, deciding #6783).
+	if err := data_models.EnsureUserIdentifierUniqueIndexes(db); err != nil {
+		log.Printf("users identifier unique indexes: %v", err)
+	}
+
 	// The email-verification stamp for pre-existing accounts is applied inside
 	// MigrateEmailVerified above, guarded on the column having been absent
 	// before this boot. It is NOT an unconditional statement here: an
