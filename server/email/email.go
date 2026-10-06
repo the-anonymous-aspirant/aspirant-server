@@ -76,6 +76,41 @@ type Sender interface {
 	Send(to, subject, body string) error
 }
 
+// Delivers reports whether s puts mail on the wire, as opposed to writing it
+// to the process log and dropping it.
+//
+// Callers that must not proceed without deliverable mail — opening public
+// sign-up, which gates login on a verification link (system_3 #6764) — ask
+// this rather than re-reading the environment. SenderFromEnv has already made
+// the decision: it returns LogSender for all three non-delivering outcomes
+// (nothing configured, a partial configuration, an unparseable SMTP_FROM) and
+// an SMTPSender only when the relay is complete. The sender a process is
+// holding is therefore the evidence, and this is where that reading belongs.
+//
+// Spelled as "is it the sink?" rather than "is it an SMTPSender?" on purpose.
+// A Sender substituted by a test or by a future transport delivers somewhere a
+// caller can observe; LogSender is the one implementation whose contract is
+// that the message goes nowhere. Phrasing it the other way would report every
+// test double and every new transport as undeliverable.
+//
+// Add any future non-delivering Sender here. That obligation is the cost of
+// not threading a boolean through the request context, and it is the cheaper
+// side: a context flag needs a default for the key being absent, and both
+// defaults are defects — "delivers" makes a forgotten wiring line a silent
+// no-op guard, "does not deliver" makes it close sign-up site-wide.
+func Delivers(s Sender) bool {
+	switch s.(type) {
+	case LogSender, *LogSender:
+		return false
+	case nil:
+		// No sender at all cannot deliver. Reachable only through a caller
+		// that never built one; SenderFromEnv always returns a usable Sender.
+		return false
+	default:
+		return true
+	}
+}
+
 // ErrIncompleteConfig reports a partially configured relay: some of the SMTP
 // variables are set and some are missing.
 //

@@ -545,3 +545,85 @@ func TestSenderFromEnv_UnconfiguredSinkElidesByDefault(t *testing.T) {
 		t.Error("the unconfigured sink logs bodies verbatim by default")
 	}
 }
+
+// --- Delivers ---------------------------------------------------------------
+
+// TestDelivers_AgreesWithSenderFromEnvOnEveryPath is the test the guard in
+// site_settings.go and signup.go actually rests on (system_3 #6764).
+//
+// It drives the REAL SenderFromEnv rather than constructing senders by hand, so
+// it fails if a future configuration path returns a non-delivering sender that
+// Delivers reports as delivering. A guard keyed on a type, tested only against
+// hand-built instances of that type, cannot see that drift — it would agree
+// with itself.
+//
+// `sends`, SenderFromEnv's own second return value, is the oracle: it is what
+// main.go's boot line already reports, so this pins the two readings together
+// instead of letting the handler guard and the boot log diverge.
+func TestDelivers_AgreesWithSenderFromEnvOnEveryPath(t *testing.T) {
+	partial := fullEnv()
+	delete(partial, EnvFrom)
+
+	badFrom := fullEnv()
+	badFrom[EnvFrom] = "not an address"
+
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"nothing configured", nil},
+		{"port alone", map[string]string{EnvPort: "587"}},
+		{"fully configured", fullEnv()},
+		{"partial configuration", partial},
+		{"unparseable SMTP_FROM", badFrom},
+		{"ambient monitor SMTP_USER only", map[string]string{"SMTP_USER": "someone@gmail.com"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setSMTPEnv(t, tc.env)
+
+			sender, sends, _ := SenderFromEnv()
+			if got := Delivers(sender); got != sends {
+				t.Errorf("Delivers(%T) = %v, but SenderFromEnv reported sends = %v", sender, got, sends)
+			}
+		})
+	}
+}
+
+// TestDelivers_SinkDoesNotDeliverWhateverItsShape pins both spellings of the
+// sink, because a caller holding a *LogSender satisfies Sender just as a
+// LogSender does (the Send method has a value receiver).
+func TestDelivers_SinkDoesNotDeliverWhateverItsShape(t *testing.T) {
+	if Delivers(LogSender{}) {
+		t.Error("LogSender reported as delivering")
+	}
+	if Delivers(&LogSender{}) {
+		t.Error("*LogSender reported as delivering")
+	}
+	if Delivers(nil) {
+		t.Error("a nil Sender reported as delivering")
+	}
+}
+
+// TestDelivers_OtherSendersDeliver pins the polarity the guard depends on: the
+// predicate asks "is this the sink?", so a transport it has never heard of —
+// including a test double — counts as delivering. The opposite spelling would
+// report every new transport as undeliverable and close sign-up on a working
+// relay.
+func TestDelivers_OtherSendersDeliver(t *testing.T) {
+	if !Delivers(SMTPSender{Host: "smtp.example.net", From: "no-reply@the-aspirant.com"}) {
+		t.Error("SMTPSender reported as not delivering")
+	}
+	if !Delivers(senderFunc(func(string, string, string) error { return nil })) {
+		t.Error("a substituted Sender reported as not delivering")
+	}
+}
+
+// senderFunc adapts a function to Sender, standing in for a transport this
+// package does not know about.
+type senderFunc func(to, subject, body string) error
+
+func (f senderFunc) Send(to, subject, body string) error { return f(to, subject, body) }
+
+var _ Sender = senderFunc(nil)

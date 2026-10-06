@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"aspirant-online/server/data_models"
+	"aspirant-online/server/email"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -251,5 +253,147 @@ func TestKillSwitchDoesNotCloseVerification(t *testing.T) {
 	}
 	if !h.user(t, "inflight").IsEmailVerified() {
 		t.Fatal("the in-flight account was not verified")
+	}
+}
+
+// --- the relay precondition (system_3 #6764) --------------------------------
+
+// TestOpeningSignupIsRefusedWithoutAMailRelay is the durable half of #6742.
+//
+// Closing sign-up removed that day's armed trap; nothing stopped the same
+// toggle being flipped back before a relay existed, because the handler had no
+// reference to the mail sender at all. This is that reference.
+func TestOpeningSignupIsRefusedWithoutAMailRelay(t *testing.T) {
+	h := newKillSwitchHarness(t)
+	h.setSwitch(t, false)
+	h.sink = email.LogSender{}
+
+	w := h.put(t, "/settings/signup", gin.H{"enabled": true})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("PUT /settings/signup enabled=true on the dev sink = %d, want 409: %s", w.Code, w.Body.String())
+	}
+
+	// The refusal names the variables SenderFromEnv actually reads. An admin
+	// who has set the ambient SMTP_USER believes the relay is configured, so a
+	// message that only said "no relay" would send them back to variables they
+	// have already filled in (the #6742 reading).
+	body := w.Body.String()
+	for _, name := range []string{email.EnvHost, email.EnvUsername, email.EnvPassword, email.EnvFrom} {
+		if !strings.Contains(body, name) {
+			t.Errorf("refusal does not name %s: %s", name, body)
+		}
+	}
+
+	// A refused write must not be a partial one: the flag is still closed,
+	// read back through the endpoint the visitor uses rather than the row.
+	if !bytes.Contains(h.status(t).Body.Bytes(), []byte(`"signup_enabled":false`)) {
+		t.Fatalf("the refused open still moved the flag: %s", h.status(t).Body.String())
+	}
+}
+
+// TestOpeningSignupIsAllowedOnceMailCanBeDelivered is the other half of the
+// same predicate: the guard must not be a one-way door.
+func TestOpeningSignupIsAllowedOnceMailCanBeDelivered(t *testing.T) {
+	h := newKillSwitchHarness(t)
+	h.setSwitch(t, false)
+
+	h.sink = email.LogSender{}
+	if w := h.put(t, "/settings/signup", gin.H{"enabled": true}); w.Code != http.StatusConflict {
+		t.Fatalf("precondition: expected 409 while on the sink, got %d", w.Code)
+	}
+
+	h.sink = nil // the relay lands
+	if w := h.put(t, "/settings/signup", gin.H{"enabled": true}); w.Code != http.StatusOK {
+		t.Fatalf("PUT /settings/signup enabled=true with a relay = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(h.status(t).Body.Bytes(), []byte(`"signup_enabled":true`)) {
+		t.Fatalf("sign-up did not open once mail could be delivered: %s", h.status(t).Body.String())
+	}
+}
+
+// TestClosingSignupIsNeverGatedOnTheMailRelay pins the asymmetry. The switch
+// that REMOVES the trap has to work on a deployment in any state — gating it
+// would mean a site with no relay could not be closed.
+func TestClosingSignupIsNeverGatedOnTheMailRelay(t *testing.T) {
+	h := newKillSwitchHarness(t)
+	h.setSwitch(t, true) // opened while a relay was present
+
+	h.sink = email.LogSender{} // and then the relay went away
+
+	if w := h.put(t, "/settings/signup", gin.H{"enabled": false}); w.Code != http.StatusOK {
+		t.Fatalf("PUT /settings/signup enabled=false on the dev sink = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(h.status(t).Body.Bytes(), []byte(`"signup_enabled":false`)) {
+		t.Fatalf("closing sign-up did not take effect: %s", h.status(t).Body.String())
+	}
+}
+
+// TestSignupRefusesWhenTheFlagIsOpenButMailCannotBeDelivered is why the toggle
+// gate alone is not enough, and why the arm lives in SignupHandler too.
+//
+// The flag can be true from before the relay was removed, or from a direct row
+// write that never passed through the admin endpoint. In that state the old
+// code created an account whose verification link went to the log, and
+// LoginHandler then refused it permanently — #6742's "dead on arrival".
+func TestSignupRefusesWhenTheFlagIsOpenButMailCannotBeDelivered(t *testing.T) {
+	h := newKillSwitchHarness(t)
+	h.setSwitch(t, true)
+
+	h.sink = email.LogSender{}
+
+	w := h.signup(t, "stranded", "stranded@example.com", goodPassword)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("POST /signup with an open flag and no relay = %d, want 403: %s", w.Code, w.Body.String())
+	}
+	// The same answer a closed site gives. A distinct "our mail is broken"
+	// reply would publish the deployment's mail state to any anonymous caller;
+	// the admin-facing reason sits on the toggle, behind the admin tier.
+	if !strings.Contains(w.Body.String(), signupClosedMessage) {
+		t.Errorf("refusal should reuse the closed-site message, got: %s", w.Body.String())
+	}
+	if got := h.userCount(t); got != 0 {
+		t.Fatalf("expected no account to be created, user count = %d", got)
+	}
+	if len(h.mail.sent) != 0 {
+		t.Fatalf("expected no mail, sent %d", len(h.mail.sent))
+	}
+}
+
+// TestSignupRelayGateIsNotAnExistenceOracle applies the same reasoning the
+// kill-switch carries: the refusal must not depend on what is in the users
+// table, or a relay-less site would answer differently for a taken username.
+func TestSignupRelayGateIsNotAnExistenceOracle(t *testing.T) {
+	h := newKillSwitchHarness(t)
+
+	if w := h.signup(t, "taken", "taken@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seeding the taken account: %d %s", w.Code, w.Body.String())
+	}
+	h.sink = email.LogSender{}
+
+	taken := h.signup(t, "taken", "taken@example.com", goodPassword)
+	free := h.signup(t, "nottaken", "nottaken@example.com", goodPassword)
+
+	if taken.Code != free.Code || taken.Body.String() != free.Body.String() {
+		t.Fatalf("relay refusal distinguishes a taken account from a free one:\n taken: %d %s\n free:  %d %s",
+			taken.Code, taken.Body.String(), free.Code, free.Body.String())
+	}
+}
+
+// TestVerificationStillWorksWithoutARelay pins what the gate does NOT reach.
+// Someone who already holds a verification token — issued while the relay was
+// up — must still be able to finish, because nothing about completing an
+// existing sign-up sends mail.
+func TestVerificationStillWorksWithoutARelay(t *testing.T) {
+	h := newKillSwitchHarness(t)
+
+	if w := h.signup(t, "midflight", "midflight@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seeding the account: %d %s", w.Code, w.Body.String())
+	}
+	token := h.tokenFromMail(t, "midflight@example.com")
+
+	h.sink = email.LogSender{} // the relay goes away mid-flight
+
+	if w := h.post(t, "/verify-email", gin.H{"token": token}); w.Code != http.StatusOK {
+		t.Fatalf("POST /verify-email without a relay = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }

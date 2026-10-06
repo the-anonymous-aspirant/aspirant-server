@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"aspirant-online/server/data_models"
+	"aspirant-online/server/email"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -52,18 +53,58 @@ func GetSignupStatusHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"signup_enabled": enabled})
 }
 
+// signupNeedsRelayMessage is returned when an admin tries to OPEN sign-up on a
+// deployment whose mail sender is the dev sink.
+//
+// It names the four variables SenderFromEnv actually reads, because the names
+// are the trap: this deployment's compose gives the server `env_file: .env`,
+// which supplies SMTP_HOST, SMTP_USER and SMTP_PASSWORD — and the package reads
+// SMTP_USERNAME, not SMTP_USER, and additionally requires SMTP_FROM. A
+// plausible-looking provisioning attempt therefore yields a partial
+// configuration that logs an error and keeps the sink, so a refusal that only
+// said "no relay" would leave an admin staring at variables they believe they
+// have already set (system_3 #6764, measured on #6742).
+const signupNeedsRelayMessage = "Sign-up cannot be opened: this deployment has no mail relay, " +
+	"so a new account's verification link would be written to the server log and never delivered, " +
+	"and login refuses an unverified account. Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD and " +
+	"SMTP_FROM on this service (SMTP_USER is a different variable and is not read), restart it, " +
+	"and try again."
+
 // PutSignupSettingHandler opens or closes public sign-up site-wide.
 //
 // Admin tier, enforced by the route group. The log line is the audit record and
 // it names the admin's user id and the new value — and no client IP, which is
 // the epic's binding constraint: moderation on this service retains no
 // addresses, in a row or in a log.
+//
+// Opening is refused when the process cannot deliver mail (system_3 #6764).
+// Sign-up completes only through a verification link and login refuses an
+// unverified account, so opening sign-up on the dev sink manufactures accounts
+// that can never log in, and tells the visitor only "Invalid login
+// credentials" — the state #6742 was filed on, found by hand because nothing
+// connected the toggle to the sender. CLOSING is never gated: the switch that
+// removes the trap must work on a deployment in any state.
+//
+// Refuse rather than warn, and no override parameter. The escape hatch for
+// "open it anyway" is to configure the relay; an override would be a switch
+// whose only use is re-arming this. Adding one later is two lines, which is
+// why declining now is the reversible direction.
 func PutSignupSettingHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
 	var input signupSettingInput
 	if err := c.ShouldBindJSON(&input); err != nil || input.Enabled == nil {
 		RespondWithError(c, http.StatusBadRequest, "A boolean 'enabled' field is required")
+		return
+	}
+
+	// mailerFrom, not MustGet: an unwired sender is a main.go bug, and the
+	// right response to it here is the same refusal (nothing can be
+	// delivered), not a panic on an admin request.
+	if *input.Enabled && !email.Delivers(mailerFrom(c)) {
+		actor, _ := c.Get("user_id")
+		log.Printf("Sign-up open REFUSED for admin user %v: no SMTP relay configured", actor)
+		RespondWithError(c, http.StatusConflict, signupNeedsRelayMessage)
 		return
 	}
 

@@ -4,6 +4,49 @@
 
 ### Changed
 
+- **Public sign-up can no longer be opened on a deployment that cannot deliver
+  mail.** Sign-up completes only through an emailed verification link and
+  `LoginHandler` refuses an unverified account, so opening the `#5289`
+  kill-switch while the mail sender is the dev sink manufactured accounts that
+  could never log in — and told the visitor only "Invalid login credentials".
+  That is not hypothetical: it is the state the operator found by hand on
+  2026-09-29 after creating an account on the deployed server and receiving no
+  mail (system_3 #6742, fixed durably here as #6764).
+
+  `PUT /api/settings/signup` with `enabled=true` now answers `409` when the
+  process holds a non-delivering sender, and the refusal names the four
+  variables `email.SenderFromEnv` actually reads — `SMTP_HOST`,
+  `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`. The names are the trap worth
+  spelling out: the deployment's compose gives this service `env_file: .env`,
+  which supplies `SMTP_USER`, a variable this package deliberately does not
+  read, and supplies no `SMTP_FROM` at all, so a plausible-looking
+  provisioning attempt leaves a partial configuration that logs an error and
+  keeps the sink. CLOSING sign-up is never gated — the switch that removes the
+  trap has to work on a deployment in any state.
+
+  `SignupHandler` carries the same refusal, immediately after the kill-switch
+  and before the users table is touched, because the flag can read true from
+  before a relay was removed or from a direct row write that never passed
+  through the admin endpoint. It answers with the existing closed-site message
+  rather than one of its own: from an anonymous caller's side a site that
+  cannot complete a sign-up is closed, and a distinct "our mail is broken"
+  reply would publish the deployment's mail state to anyone who asked. The
+  admin-facing reason stays on the toggle, behind the admin tier. Verification
+  of a token already issued is unaffected — finishing an existing sign-up
+  sends no mail.
+
+  The predicate is `email.Delivers(Sender)`, a type test for the dev sink
+  rather than a second reading of the environment or a boolean threaded
+  through the request context. `SenderFromEnv` already decides this — it
+  returns a `LogSender` for all three non-delivering outcomes and an
+  `SMTPSender` only for a complete relay — so the sender the handlers already
+  hold is the evidence. A context flag would have needed a default for the key
+  being absent, and both defaults are defects: "delivers" makes a forgotten
+  wiring line a silent no-op guard, "does not deliver" closes sign-up
+  site-wide. The test drives the real `SenderFromEnv` across every
+  configuration path and asserts `Delivers` agrees with the `sends` boolean
+  the boot line already reports, so the guard cannot drift from the log.
+
 - **Constellations: a player now sees only the connections they are part of.**
   `GET .../rooms/:code/state` shipped the room's whole relationship graph to
   every member, so anyone could read who else was connected to whom — from the

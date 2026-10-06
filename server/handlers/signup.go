@@ -168,6 +168,30 @@ func SignupHandler(c *gin.Context) {
 		return
 	}
 
+	// And refuse just as early when this process cannot deliver mail, whatever
+	// the flag says (system_3 #6764). PutSignupSettingHandler will not let an
+	// admin open sign-up without a relay, but the flag can be true from before
+	// the relay was removed, or from a direct row write, and this is the
+	// enforcement point — the toggle is only the surface that explains it.
+	//
+	// Sign-up completes ONLY through the verification link, and LoginHandler
+	// refuses an unverified account, so without delivery the account created
+	// here could never be used and the person would be told only "Invalid
+	// login credentials" (#6742). Creating it and silently dropping the mail
+	// is the worse answer.
+	//
+	// It answers with signupClosedMessage rather than a message of its own.
+	// From an unauthenticated caller's side a site that cannot complete a
+	// sign-up is closed, the reply stays the same for every caller, and
+	// inventing a distinct "mail is broken here" answer would publish the
+	// deployment's mail state to anyone who asks. The admin-facing reason is
+	// on the toggle, behind the admin tier, where it belongs.
+	if !email.Delivers(mailerFrom(c)) {
+		log.Printf("ERROR: signup refused: signup_enabled is true but no SMTP relay is configured")
+		RespondWithError(c, http.StatusForbidden, signupClosedMessage)
+		return
+	}
+
 	username := strings.TrimSpace(input.Username)
 	address := strings.TrimSpace(input.Email)
 

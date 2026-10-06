@@ -53,6 +53,21 @@ type signupHarness struct {
 	router *gin.Engine
 	db     *gorm.DB
 	mail   *captureSender
+
+	// sink, when set, is handed to the handlers in place of mail for the rest
+	// of the test — the way a case exercises a deployment with no relay
+	// configured (system_3 #6764). It is read per request rather than fixed at
+	// construction so one case can flip it mid-test, which is what reproduces
+	// "sign-up was open and then the relay went away".
+	sink email.Sender
+}
+
+// sender is what the harness's middleware puts in the gin context.
+func (h *signupHarness) sender() email.Sender {
+	if h.sink != nil {
+		return h.sink
+	}
+	return email.Sender(h.mail)
 }
 
 func newSignupHarness(t *testing.T) *signupHarness {
@@ -94,15 +109,16 @@ func newSignupHarness(t *testing.T) *signupHarness {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	sender := &captureSender{}
+	h := &signupHarness{db: db, mail: &captureSender{}}
 	r := gin.New()
 	r.Use(func(c *gin.Context) { c.Set("db", db); c.Next() })
-	r.Use(func(c *gin.Context) { c.Set("mailer", email.Sender(sender)); c.Next() })
+	r.Use(func(c *gin.Context) { c.Set("mailer", h.sender()); c.Next() })
 	r.POST("/signup", SignupHandler)
 	r.POST("/verify-email", VerifyEmailHandler)
 	r.POST("/login", LoginHandler)
+	h.router = r
 
-	return &signupHarness{router: r, db: db, mail: sender}
+	return h
 }
 
 func (h *signupHarness) post(t *testing.T, path string, body any) *httptest.ResponseRecorder {
