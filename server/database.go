@@ -190,6 +190,9 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.PushupMilestone{})
 	data_models.SeedPushupMilestones(db)
 
+	// Step 5a: Pappas sit-ups challenge (#7992)
+	db.AutoMigrate(&data_models.SitupEntry{})
+
 	// Step 5b: Bootstrap marker (#5264). One row, fixed primary key, recording
 	// that this deployment has been set up — so public admin creation can never
 	// reopen because the live user count happened to reach zero. No seed: an
