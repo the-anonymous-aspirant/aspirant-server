@@ -24,6 +24,11 @@ const jobsOwnerUsername = "vinoly"
 // the log is single-user, mirroring the Jobs decision (#4196).
 const pushupsOwnerUsername = "robert"
 
+// situpsOwnerUsername owns the Pappas sit-ups log (system_3 #7992). Same
+// single-tenant decision as pushups (#4203): a route gate to this account plus
+// Admin over a Date-keyed log, not a per-user schema.
+const situpsOwnerUsername = "robert"
+
 // luddeOwnerUsername owns the Ludde meal-tracker feeding log (#4195/#4194).
 // The operator ruled it tied only to jenny ("Only Jenny needs this one"), so
 // its routes are gated to this account plus Admin — a route gate (not a
@@ -357,6 +362,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/pushups/entries", handlers.ValidateUserOrAdmin(pushupsOwnerUsername), handlers.GetPushupEntriesHandler)
 		trustedRoutes.PATCH("/pushups/entries/:date", handlers.ValidateUserOrAdmin(pushupsOwnerUsername), handlers.PatchPushupEntryHandler)
 		trustedRoutes.GET("/pushups/milestones", handlers.ValidateUserOrAdmin(pushupsOwnerUsername), handlers.GetPushupMilestonesHandler)
+
+		// Pappas sit-ups — 57-day challenge, 2026-10-18..2026-12-13 (#7992).
+		// Robert's own private log behind the same robert+Admin gate as pushups.
+		trustedRoutes.GET("/situps/entries", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.GetSitupEntriesHandler)
+		trustedRoutes.PATCH("/situps/entries/:date", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.PatchSitupEntryHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
 		// deduplicated Berlin part-time English-job feed). Owned by vinoly

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **Pappas sit-ups log** (system_3 #7992/#7993). `GET /api/situps/entries`
+  returns one row per day from 2026-10-18 to 2026-12-13 (57 days,
+  gap-filled), and `PATCH /api/situps/entries/:date` upserts a day's count
+  inside that window and inside today ± 2 days. Both routes sit behind the
+  same robert + Admin gate as the pushups log. It is robert's own log, so it
+  uses a Date-keyed `situp_entries` table and a route gate, the single-tenant
+  shape #4203 chose for pushups, not a per-user schema. There is no milestone
+  table; the client decides sit-up messages and crowns.
+
 ### Changed
 
 - **Public sign-up can no longer be opened on a deployment that cannot deliver
