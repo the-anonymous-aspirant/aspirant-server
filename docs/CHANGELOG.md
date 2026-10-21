@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Security
+
+- **Go toolchain 1.23.4 → 1.27.3, `golang.org/x/net` v0.22.0 → v0.61.0**
+  (system_3 #8386). govulncheck on main `729c387` found 54 vulnerabilities
+  the server's code reaches: 52 in the 1.23.4 standard library (net/http
+  HTTP/2 crash and exhaustion, crypto/tls, crypto/x509 among them) and 10 in
+  x/net. Go 1.23 no longer receives security fixes. The builder image and
+  the `toolchain` line move to 1.27.3; x/net's own requirement raises the
+  `go` directive to 1.26.0. `golang.org/x/crypto` (v0.21.0 → v0.58.0, not
+  reachable before) moves with them.
+
 ### Added
 
 - **Invoicing app: payments entered by hand** (system_3 #8409). An invoice no
