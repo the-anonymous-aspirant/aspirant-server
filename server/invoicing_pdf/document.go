@@ -106,7 +106,7 @@ func formatDecimalMilli(v int64) string {
 
 // FormatVatRate prints basis points as a percentage: 1900 → "19 %".
 func FormatVatRate(bp int) string {
-	return formatDecimalMilli(int64(bp)*10/100) + " %"
+	return formatDecimalMilli(int64(bp)*10) + " %"
 }
 
 // sourceName is how a payment source reads in the confirmation sentence,

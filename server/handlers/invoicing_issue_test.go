@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -608,5 +611,70 @@ func TestDraft_LineItemBoundsKeepTheProductInsideInt64(t *testing.T) {
 	}
 	if w := invoicingDo(f.r, "PUT", path, `{"line_items":[{"description":"x","quantity_milli":10000000,"unit_price_cents":10000000000}]}`); w.Code != http.StatusOK {
 		t.Errorf("the bounds themselves are allowed: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// #8367-C1: the PDF is rendered inside the issue and served from storage.
+func TestInvoicePDF_StoredAtIssueAndServedUnchanged(t *testing.T) {
+	f := newInvoiceFixture(t)
+	draft := f.draft(t, 1)
+	if w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/pdf", draft), ""); w.Code != http.StatusConflict {
+		t.Errorf("a draft's PDF: %d, want 409", w.Code)
+	}
+
+	id := f.draft(t, 0)
+	if code, _, body := f.issue(id); code != http.StatusOK {
+		t.Fatalf("issue: %d %s", code, body)
+	}
+	var stored []data_models.InvoicingInvoicePDF
+	f.db.Where("invoice_id = ?", id).Find(&stored)
+	if len(stored) != 1 || len(stored[0].Content) == 0 {
+		t.Fatalf("issue stored %d PDFs", len(stored))
+	}
+
+	get := func() *httptest.ResponseRecorder {
+		return invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/pdf", id), "")
+	}
+	w := get()
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/pdf" ||
+		w.Header().Get("Content-Disposition") != `attachment; filename="Rechnung-2026-001.pdf"` {
+		t.Fatalf("serve: %d %v", w.Code, w.Header())
+	}
+	if !bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF-")) || !bytes.Equal(w.Body.Bytes(), stored[0].Content) {
+		t.Fatalf("served bytes are not the stored PDF")
+	}
+	sum := sha256.Sum256(w.Body.Bytes())
+	if hex.EncodeToString(sum[:]) != stored[0].SHA256 || w.Header().Get("X-Content-SHA256") != stored[0].SHA256 {
+		t.Errorf("sha256 mismatch")
+	}
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, "invoice", id)
+	if !strings.Contains(events[0].Details, stored[0].SHA256) {
+		t.Errorf("issue audit does not record the PDF hash: %s", events[0].Details)
+	}
+
+	// A later profile edit never reaches an issued document.
+	invoicingDo(f.r, "PUT", "/invoicing/profile", strings.Replace(validProfileBody, "Flower Example", "Renamed", 1))
+	if again := get(); !bytes.Equal(again.Body.Bytes(), stored[0].Content) {
+		t.Errorf("the served PDF changed after a profile edit")
+	}
+
+	// Cancelled invoices keep their PDF.
+	invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/invoices/%d/cancel", id), `{"reason":"x"}`)
+	if w := get(); w.Code != http.StatusOK {
+		t.Errorf("a cancelled invoice's PDF: %d", w.Code)
+	}
+}
+
+func TestInvoicePDF_RefusedIssueStoresNoPDF(t *testing.T) {
+	f := newInvoiceFixture(t)
+	id := f.draft(t, 0)
+	f.db.Model(&data_models.InvoicingProfile{}).Where("id = 1").Update("steuernummer", "")
+	if code, _, _ := f.issue(id); code != http.StatusUnprocessableEntity {
+		t.Fatalf("issue should be refused, got %d", code)
+	}
+	var n int
+	f.db.Model(&data_models.InvoicingInvoicePDF{}).Count(&n)
+	if n != 0 {
+		t.Errorf("a refused issue stored %d PDFs", n)
 	}
 }

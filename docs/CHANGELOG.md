@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Invoicing app: German invoice PDF** (system_3 #8367/#8373). Issuing an
+  invoice now renders its A4 PDF from the snapshots frozen at issue and stores
+  it in `invoicing_invoice_pdfs`, in the same transaction. A render failure
+  rolls the issue back, so an issued invoice always has its document. The PDF
+  carries every spec §4.5 field: the heading "Rechnung", the issuer with the
+  Steuernummer, the client, the number, the Rechnungsdatum, the Leistungsdatum
+  or Leistungszeitraum, and the line items with totals. It also carries either
+  the § 19 UStG sentence or the net, VAT and gross amounts, one payment
+  confirmation per linked payment, and the retroactive-issue sentence, all
+  verbatim from the spec. `GET /api/invoicing/invoices/:id/pdf` serves the
+  stored bytes (`Rechnung-<number>.pdf`, with an `X-Content-SHA256` header);
+  a draft returns 409. Rendering uses gopdf with embedded Liberation Sans (see
+  DECISIONS.md).
 - **Invoicing app: drafts, issuing, lock and Storno** (system_3 #8367/#8371).
   `POST /api/invoicing/invoices` starts a draft from paid-work payments,
   prefilled only from data: one line per payment, the client when all payments
