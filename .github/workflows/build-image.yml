@@ -7,6 +7,10 @@ name: Build Image
 on:
   push:
     branches: [main]
+  # Lets a build of main be started by hand. On 2026-10-21 two pushes to main
+  # (#131, #132) started no run at all, and with a push-only trigger there was
+  # no way to rebuild short of pushing again (system_3 #8393).
+  workflow_dispatch:
 
 # Serialize builds per ref so two merges landing seconds apart can't push
 # :latest out of commit order (#4761: 1651e02's build finished 14s after
