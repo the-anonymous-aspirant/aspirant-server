@@ -21,6 +21,12 @@
   violations. Every free-text cell that starts with `=`, `+`, `-`, `@`, a tab
   or a CR is prefixed with `'`, so text written by an outside payer is never
   run as a spreadsheet formula. Each export writes an audit row.
+- **Invoicing app: an issue is refused when the PDF cannot print its text**
+  (system_3 #8367, security N5). The PDF library silently drops any character
+  the embedded font has no glyph for, which would print a name with letters
+  missing. Issuing now answers 422 `unprintable_characters`, naming the
+  characters, and uses no number. Line breaks and tabs in a description are
+  laid out as line breaks and spaces, not reported as missing characters.
 - **Invoicing app: German invoice PDF** (system_3 #8367/#8373). Issuing an
   invoice now renders its A4 PDF from the snapshots frozen at issue and stores
   it in `invoicing_invoice_pdfs`, in the same transaction. A render failure

@@ -246,3 +246,28 @@ func TestSpreadsheetSafe(t *testing.T) {
 		}
 	}
 }
+
+// @security N5: an issue whose printed text has a character the font lacks
+// is refused with the characters named, and uses no number.
+func TestIssue_UnprintableCharactersAreRefused(t *testing.T) {
+	f := newInvoiceFixture(t)
+	f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("name", "王小明 Studio")
+	id := f.draft(t, 0)
+	code, _, body := f.issue(id)
+	if code != http.StatusUnprocessableEntity || !strings.Contains(body, "unprintable_characters") || !strings.Contains(body, "王小明") {
+		t.Fatalf("got %d %s", code, body)
+	}
+	if f.profileNext(t) != 1 {
+		t.Errorf("a refused issue used a number")
+	}
+	var n int
+	f.db.Model(&data_models.InvoicingInvoicePDF{}).Count(&n)
+	if n != 0 {
+		t.Errorf("a refused issue stored a PDF")
+	}
+	// The same client spelt in Latin script issues fine.
+	f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("name", "Wang Xiaoming Studio")
+	if code, _, body := f.issue(id); code != http.StatusOK {
+		t.Fatalf("after the fix: %d %s", code, body)
+	}
+}

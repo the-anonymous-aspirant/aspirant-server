@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -86,4 +87,13 @@ func GetInvoicePDFHandler(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="Rechnung-%s.pdf"`, number))
 	c.Header("X-Content-SHA256", stored.SHA256)
 	c.Data(http.StatusOK, "application/pdf", stored.Content)
+}
+
+// asUnprintable unwraps a font-coverage refusal from the renderer.
+func asUnprintable(err error) *invoicing_pdf.UnprintableError {
+	var u *invoicing_pdf.UnprintableError
+	if errors.As(err, &u) {
+		return u
+	}
+	return nil
 }

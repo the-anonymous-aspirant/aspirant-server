@@ -3,6 +3,7 @@ package invoicing_pdf
 import (
 	_ "embed"
 	"fmt"
+	"strings"
 
 	"github.com/signintech/gopdf"
 )
@@ -49,14 +50,37 @@ type canvas interface {
 	NewPage()
 }
 
-// Render lays the document out on A4 and returns the PDF bytes.
+// UnprintableError reports characters the embedded font has no glyph for.
+// gopdf would silently drop them, printing a name with letters missing — an
+// altered invoice — so Render refuses instead (@security N5, c51481 on #8373).
+type UnprintableError struct {
+	Runes []rune
+}
+
+func (e *UnprintableError) Error() string {
+	return fmt.Sprintf("the invoice font cannot print %q", string(e.Runes))
+}
+
+// Render lays the document out on A4 and returns the PDF bytes. It fails
+// with *UnprintableError when any printed text uses a character the font
+// lacks.
 func Render(doc Document) ([]byte, error) {
+	var missing []rune
+	seen := map[rune]bool{}
+	onMissing := func(r rune) {
+		// Line breaks and tabs are layout, not glyphs; the layout splits on them.
+		if r < 0x20 || seen[r] {
+			return
+		}
+		seen[r] = true
+		missing = append(missing, r)
+	}
 	pdf := &gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
-	if err := pdf.AddTTFFontData("regular", fontRegular); err != nil {
+	if err := pdf.AddTTFFontDataWithOption("regular", fontRegular, gopdf.TtfOption{OnGlyphNotFound: onMissing}); err != nil {
 		return nil, fmt.Errorf("load regular font: %w", err)
 	}
-	if err := pdf.AddTTFFontData("bold", fontBold); err != nil {
+	if err := pdf.AddTTFFontDataWithOption("bold", fontBold, gopdf.TtfOption{OnGlyphNotFound: onMissing}); err != nil {
 		return nil, fmt.Errorf("load bold font: %w", err)
 	}
 	pdf.SetInfo(gopdf.PdfInfo{Title: doc.Title + " " + metaValue(doc, labelRechnungsnummer), Author: first(doc.Issuer)})
@@ -64,6 +88,9 @@ func Render(doc Document) ([]byte, error) {
 	c.NewPage()
 	if err := layout(c, doc); err != nil {
 		return nil, err
+	}
+	if len(missing) > 0 {
+		return nil, &UnprintableError{Runes: missing}
 	}
 	return pdf.GetBytesPdf(), nil
 }
@@ -185,7 +212,7 @@ func layout(c canvas, doc Document) error {
 		if err := c.SetFont(false, bodySize); err != nil {
 			return err
 		}
-		desc, err := c.Wrap(it.Description, colDescW-8)
+		desc, err := wrapLines(c, it.Description, colDescW-8)
 		if err != nil {
 			return err
 		}
@@ -236,7 +263,7 @@ func layout(c canvas, doc Document) error {
 		if err := c.SetFont(false, bodySize); err != nil {
 			return err
 		}
-		lines, err := c.Wrap(n, notesWrapWidth)
+		lines, err := wrapLines(c, n, notesWrapWidth)
 		if err != nil {
 			return err
 		}
@@ -250,6 +277,19 @@ func layout(c canvas, doc Document) error {
 		k.y += 4
 	}
 	return nil
+}
+
+// wrapLines keeps the author's own line breaks and wraps each line to width.
+func wrapLines(c canvas, s string, width float64) ([]string, error) {
+	var out []string
+	for _, line := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		wrapped, err := c.Wrap(strings.ReplaceAll(line, "\t", " "), width)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, wrapped...)
+	}
+	return out, nil
 }
 
 // gopdfCanvas draws on a gopdf document.
