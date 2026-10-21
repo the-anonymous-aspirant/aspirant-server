@@ -29,6 +29,12 @@ const pushupsOwnerUsername = "robert"
 // Admin over a Date-keyed log, not a per-user schema.
 const situpsOwnerUsername = "robert"
 
+// invoicesOwnerUsername owns the retroactive invoicing app (system_3 #8367):
+// a third party's personal and financial data, which the operator ruled is
+// for this one user plus Admin, nobody else (decision 2, c51421). The gate sits
+// on the whole /invoicing group, so a route added under it cannot skip it.
+const invoicesOwnerUsername = "flowah"
+
 // luddeOwnerUsername owns the Ludde meal-tracker feeding log (#4195/#4194).
 // The operator ruled it tied only to jenny ("Only Jenny needs this one"), so
 // its routes are gated to this account plus Admin — a route gate (not a
@@ -367,6 +373,15 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// Robert's own private log behind the same robert+Admin gate as pushups.
 		trustedRoutes.GET("/situps/entries", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.GetSitupEntriesHandler)
 		trustedRoutes.PATCH("/situps/entries/:date", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.PatchSitupEntryHandler)
+
+		// Invoicing (#8367) — flowah + Admin only, gated once at the group.
+		invoicing := trustedRoutes.Group("/invoicing", handlers.ValidateUserOrAdmin(invoicesOwnerUsername))
+		invoicing.GET("/profile", handlers.GetInvoicingProfileHandler)
+		invoicing.PUT("/profile", handlers.PutInvoicingProfileHandler)
+		invoicing.GET("/clients", handlers.ListInvoicingClientsHandler)
+		invoicing.POST("/clients", handlers.CreateInvoicingClientHandler)
+		invoicing.PUT("/clients/:id", handlers.UpdateInvoicingClientHandler)
+		invoicing.GET("/audit-events", handlers.ListInvoicingAuditEventsHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
 		// deduplicated Berlin part-time English-job feed). Owned by vinoly
