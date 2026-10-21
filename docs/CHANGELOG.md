@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Invoicing app: drafts, issuing, lock and Storno** (system_3 #8367/#8371).
+  `POST /api/invoicing/invoices` starts a draft from paid-work payments,
+  prefilled only from data: one line per payment, the client when all payments
+  share it, and the payment dates as the service period. Fields the data does
+  not supply stay empty. Drafts are edited with `PUT` and removed with
+  `DELETE`. `POST /api/invoicing/invoices/:id/issue` is the only place a number
+  and a date are set, and both come from the server: the next number under the
+  profile's prefix (`2026-001`), drawn from a counter row updated inside the
+  issuing transaction so numbers stay unique and gap-free, and today's date in
+  Europe/Berlin. Issuing also freezes snapshots of the profile and the client.
+  It refuses, with a reason code, an incomplete profile (including an empty
+  Steuernummer), an incomplete client, incomplete line items, a missing or
+  future service date, a payment that is not paid work, a payment already on
+  another issued invoice, and a clock behind the previous issue date. A body
+  naming `issue_date`, `invoice_number` or any other server-owned field is
+  refused by name. Issued invoices refuse every edit and are never deleted;
+  `POST /api/invoicing/invoices/:id/cancel` (Storno) keeps them on record as
+  cancelled and frees their payments for a corrected invoice. Once a number
+  has been issued under a prefix, the profile can no longer change that
+  prefix's next number, and an invoiced payment's category is locked.
+  `GET /api/invoicing/invoices` lists invoices, filtered by status, issue
+  date, client and client-name search.
 - **Invoicing app: PayPal import and payment categorisation** (system_3
   #8367/#8370). `POST /api/invoicing/payments/import` takes a PayPal activity
   CSV (English or German headers, comma/semicolon/tab, UTF-8 or

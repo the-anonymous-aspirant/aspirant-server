@@ -194,12 +194,15 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.SitupEntry{})
 
 	// Step 5a2: Invoicing app (#8367) — issuer profile, clients, audit trail,
-	// imported payments.
+	// imported payments, invoices with their line items and payment links.
 	// invoicing_* tables, nothing shared with the retired finance service.
 	db.AutoMigrate(&data_models.InvoicingProfile{})
 	db.AutoMigrate(&data_models.InvoicingClient{})
 	db.AutoMigrate(&data_models.InvoicingAuditEvent{})
 	db.AutoMigrate(&data_models.InvoicingPayment{})
+	db.AutoMigrate(&data_models.InvoicingInvoice{})
+	db.AutoMigrate(&data_models.InvoicingLineItem{})
+	db.AutoMigrate(&data_models.InvoicingInvoicePayment{})
 
 	// Step 5b: Bootstrap marker (#5264). One row, fixed primary key, recording
 	// that this deployment has been set up — so public admin creation can never
