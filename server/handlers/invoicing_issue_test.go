@@ -41,6 +41,9 @@ func setupInvoiceRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r.POST("/invoicing/invoices/:id/issue", IssueInvoiceHandler)
 	r.POST("/invoicing/invoices/:id/cancel", CancelInvoiceHandler)
 	r.GET("/invoicing/invoices/:id/pdf", GetInvoicePDFHandler)
+	r.GET("/invoicing/invoices/:id/export.csv", ExportInvoiceCSVHandler)
+	r.GET("/invoicing/export/invoices.csv", ExportAllInvoicesCSVHandler)
+	r.GET("/invoicing/validation", GetInvoicingValidationHandler)
 	return r
 }
 

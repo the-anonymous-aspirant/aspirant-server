@@ -100,8 +100,8 @@ func TestInvoicingRoutes_OnlyFlowahAndAdminPassTheGate(t *testing.T) {
 
 	routes := invoicingRoutes(r)
 	// Positive control: an empty enumeration would pass every assertion below.
-	if len(routes) < 17 {
-		t.Fatalf("found %d /invoicing/ routes, want at least the 17 A1..C1 register — the enumeration is not seeing the shipped table", len(routes))
+	if len(routes) < 20 {
+		t.Fatalf("found %d /invoicing/ routes, want at least the 20 A1..C2 register — the enumeration is not seeing the shipped table", len(routes))
 	}
 
 	owner := mustToken(t, invoicingOwnerID, "Member")
