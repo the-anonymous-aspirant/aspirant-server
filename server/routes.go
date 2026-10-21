@@ -392,6 +392,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.DELETE("/invoices/:id", handlers.DeleteInvoiceDraftHandler)
 		invoicing.POST("/invoices/:id/issue", handlers.IssueInvoiceHandler)
 		invoicing.POST("/invoices/:id/cancel", handlers.CancelInvoiceHandler)
+		invoicing.GET("/invoices/:id/pdf", handlers.GetInvoicePDFHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
 		// deduplicated Berlin part-time English-job feed). Owned by vinoly

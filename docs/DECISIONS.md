@@ -53,3 +53,14 @@ Key architectural and design decisions for aspirant-server.
 **Decision:** The server starts even if the database connection fails.
 
 **Rationale:** This allows the server to serve S3 assets, health checks, and static content even when PostgreSQL is unavailable. DB-dependent routes will return errors, but the server remains accessible for debugging and asset delivery.
+
+## Invoice PDFs: gopdf with embedded Liberation Sans, rendered once at issue
+
+**Decision:** The invoicing app (system_3 #8367) renders invoice PDFs in the server with `github.com/signintech/gopdf` (MIT), using Liberation Sans Regular and Bold embedded through `go:embed` (SIL OFL 1.1, licence in `server/invoicing_pdf/fonts/`). A PDF is rendered once, inside the issuing transaction, and stored. It is served from storage and never re-rendered.
+
+**Rationale:**
+- **Server, not browser.** An invoice carries legal text that must not change, so it is rendered where the client cannot edit it. That rules out the client's `pdfmake`.
+- **Not LibreOffice.** Commander's LibreOffice route adds roughly 350 MB to an image for one A4 page.
+- **gopdf over `go-pdf/fpdf`.** fpdf was the usual Go choice, but its repository is archived (read 2026-10-21). gopdf is maintained and pure Go.
+- **Embedded TTF over core fonts.** Core fonts are limited to Latin-1, so a client name like "Łukasz" could only be printed by changing it. The embedded TTF prints every name exactly, on any runtime image, with nothing to install.
+- **Stored, not regenerated.** Storing the issued bytes means a later profile or client edit, a font update or a library upgrade can never alter a document that has already been issued.

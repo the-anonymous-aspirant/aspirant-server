@@ -37,7 +37,7 @@ func invoicingGateRouter(t *testing.T) *gin.Engine {
 	db.AutoMigrate(&data_models.User{}, &data_models.SiteSetting{},
 		&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{},
 		&data_models.InvoicingPayment{}, &data_models.InvoicingInvoice{}, &data_models.InvoicingLineItem{},
-		&data_models.InvoicingInvoicePayment{})
+		&data_models.InvoicingInvoicePayment{}, &data_models.InvoicingInvoicePDF{})
 	for id, name := range map[uint]string{
 		invoicingOwnerID: invoicesOwnerUsername,
 		invoicingOtherID: "someone_else",
@@ -100,8 +100,8 @@ func TestInvoicingRoutes_OnlyFlowahAndAdminPassTheGate(t *testing.T) {
 
 	routes := invoicingRoutes(r)
 	// Positive control: an empty enumeration would pass every assertion below.
-	if len(routes) < 16 {
-		t.Fatalf("found %d /invoicing/ routes, want at least the 16 A1+B1+B2 register — the enumeration is not seeing the shipped table", len(routes))
+	if len(routes) < 17 {
+		t.Fatalf("found %d /invoicing/ routes, want at least the 17 A1..C1 register — the enumeration is not seeing the shipped table", len(routes))
 	}
 
 	owner := mustToken(t, invoicingOwnerID, "Member")

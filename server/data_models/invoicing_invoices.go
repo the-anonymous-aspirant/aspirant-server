@@ -156,3 +156,30 @@ func MaxInvoiceNumberWithPrefix(db *gorm.DB, prefix string) (int, error) {
 	}
 	return *rows[0].N, nil
 }
+
+// InvoicingInvoicePDF is the PDF rendered when the invoice was issued. It is
+// stored once and served as-is, so a later profile or client edit can never
+// change an issued document. Kept apart from invoicing_invoices so listing
+// invoices never loads the bytes.
+type InvoicingInvoicePDF struct {
+	ID        uint      `json:"-" gorm:"primary_key"`
+	InvoiceID uint      `json:"invoice_id" gorm:"not null;unique_index:idx_invoicing_invoice_pdfs_invoice"`
+	Content   []byte    `json:"-" gorm:"not null"`
+	SHA256    string    `json:"sha256" gorm:"column:sha256;type:text;not null"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (InvoicingInvoicePDF) TableName() string { return "invoicing_invoice_pdfs" }
+
+// GetInvoicePDF returns the stored PDF, or nil when there is none.
+func GetInvoicePDF(db *gorm.DB, invoiceID uint) (*InvoicingInvoicePDF, error) {
+	var p InvoicingInvoicePDF
+	err := db.Where("invoice_id = ?", invoiceID).First(&p).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
