@@ -323,3 +323,82 @@ func TestExport_WorkbookHasFourSheetsAndIsGatedOnValidation(t *testing.T) {
 		t.Errorf("workbook with a violation: %d", w.Code)
 	}
 }
+
+// #8367-E2: the Jobcenter bundle.
+func TestExport_JobcenterBundle(t *testing.T) {
+	f, ids := issuedFixture(t)
+	f.r.GET("/invoicing/export/jobcenter-bundle.zip", ExportJobcenterBundleHandler)
+
+	// A bank deposit, two paid-work payments under it, a gift outside it,
+	// and paid work not invoiced yet.
+	dep := data_models.InvoicingPayment{Source: "paypal", TransactionID: "W1", Kind: "withdrawal", PaidOn: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Currency: "EUR", GrossCents: 30000, Category: "uncategorised"}
+	f.db.Create(&dep)
+	f.db.Model(&data_models.InvoicingPayment{}).Where("id IN (?)", []uint{f.payments[0].ID, f.payments[2].ID}).Update("bank_deposit_id", dep.ID)
+	f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[3].ID).Update("note", `=HYPERLINK("http://x","y")`)
+	late := data_models.InvoicingPayment{Source: "paypal", TransactionID: "TX9", Kind: "incoming", PaidOn: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), Currency: "EUR", GrossCents: 700, Category: "paid_work", SenderName: "+cmd"}
+	f.db.Create(&late)
+
+	w := invoicingDo(f.r, "GET", "/invoicing/export/jobcenter-bundle.zip", "")
+	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Jobcenter-Nachweise.zip"` {
+		t.Fatalf("bundle: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	files := unzipXLSX(t, w.Body.Bytes())
+
+	// Issued invoices 1 and 3 (2 was cancelled), byte for byte as stored.
+	for i, id := range []uint{ids[0], ids[2]} {
+		inv, _ := data_models.GetInvoicingInvoice(f.db, id)
+		stored, _ := data_models.GetInvoicePDF(f.db, id)
+		got, ok := files["Rechnung-"+*inv.InvoiceNumber+".pdf"]
+		if !ok || !bytes.Equal(got, stored.Content) {
+			t.Errorf("PDF %d (%s) missing or altered", i, *inv.InvoiceNumber)
+		}
+	}
+	if _, ok := files["Rechnung-2026-002.pdf"]; ok {
+		t.Errorf("the cancelled invoice's PDF is in the bundle")
+	}
+	if len(files) != 3 {
+		t.Errorf("bundle holds %d files, want 2 PDFs + summary", len(files))
+	}
+
+	rows := readCSV(t, files["Zusammenfassung.csv"])
+	if strings.Join(rows[0], ";") != strings.Join(bundleSummaryHeader, ";") {
+		t.Fatalf("summary header: %v", rows[0])
+	}
+	body := rows[1:]
+	if len(body) != 5 {
+		t.Fatalf("summary rows: %d, want 5 incoming payments: %v", len(body), body)
+	}
+	// Under the deposit first: TX1 (2026-001) and TX3 (2026-003).
+	if body[0][0] != "2026-08-01" || body[0][1] != "300,00" || body[0][6] != "TX1" || body[0][8] != "2026-001" || body[0][7] != "Bezahlte Arbeit" {
+		t.Errorf("first grouped row: %v", body[0])
+	}
+	if body[1][6] != "TX3" || body[1][8] != "2026-003" {
+		t.Errorf("second grouped row: %v", body[1])
+	}
+	byTxn := map[string][]string{}
+	for _, r := range body[2:] {
+		if r[0] != "Ohne Bankeinzahlung" {
+			t.Errorf("an unassigned payment is not marked: %v", r)
+		}
+		byTxn[r[6]] = r
+	}
+	// TX2's invoice was cancelled, so it is paid work without an issued invoice.
+	if byTxn["TX2"][8] != bundleNoInvoiceYet || byTxn["TX9"][8] != bundleNoInvoiceYet {
+		t.Errorf("uninvoiced paid work: %v / %v", byTxn["TX2"], byTxn["TX9"])
+	}
+	if byTxn["TX4"][7] != "Geschenk" || byTxn["TX4"][8] != "" {
+		t.Errorf("gift row: %v", byTxn["TX4"])
+	}
+	if byTxn["TX9"][5] != "'+cmd" {
+		t.Errorf("sender not neutralised: %q", byTxn["TX9"][5])
+	}
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, "export", 0)
+	if len(events) != 1 || !strings.Contains(events[0].Details, "jobcenter_bundle") {
+		t.Errorf("audit: %+v", events)
+	}
+
+	f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("total_cents", 1)
+	if w := invoicingDo(f.r, "GET", "/invoicing/export/jobcenter-bundle.zip", ""); w.Code != http.StatusConflict {
+		t.Errorf("bundle with a violation: %d", w.Code)
+	}
+}
