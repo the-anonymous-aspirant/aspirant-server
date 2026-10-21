@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Invoicing app: issuer profile, clients and audit trail** (system_3
+  #8367/#8369). The first slice of the retroactive-invoice app for flowah.
+  `GET/PUT /api/invoicing/profile` holds the issuer header (name, address,
+  Steuernummer, email, § 19 UStG status, number prefix and next number);
+  `GET/POST /api/invoicing/clients` and `PUT /api/invoicing/clients/:id`
+  manage clients, who need a name and an address; and
+  `GET /api/invoicing/audit-events` reads the append-only trail. Every write
+  records its audit row in the same transaction. The whole `/invoicing` group
+  sits behind a flowah + Admin gate, and a test walks every route registered
+  under it, so a route added later cannot skip the gate. The tables are
+  `invoicing_*` and share nothing with the retired finance service.
 - **Pappas sit-ups log** (system_3 #7992/#7993). `GET /api/situps/entries`
   returns one row per day from 2026-10-18 to 2026-12-13 (57 days,
   gap-filled), and `PATCH /api/situps/entries/:date` upserts a day's count
