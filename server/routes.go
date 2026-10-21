@@ -395,6 +395,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.GET("/invoices/:id/pdf", handlers.GetInvoicePDFHandler)
 		invoicing.GET("/invoices/:id/export.csv", handlers.ExportInvoiceCSVHandler)
 		invoicing.GET("/export/invoices.csv", handlers.ExportAllInvoicesCSVHandler)
+		invoicing.GET("/export/workbook.xlsx", handlers.ExportWorkbookHandler)
 		invoicing.GET("/validation", handlers.GetInvoicingValidationHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the

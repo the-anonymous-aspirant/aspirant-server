@@ -179,7 +179,7 @@ func invoiceCSVRow(db *gorm.DB, inv data_models.InvoicingInvoice) ([]string, err
 	return []string{
 		spreadsheetSafe(number), inv.Status, csvDate(inv.IssueDate), csvDate(inv.ServiceDateFrom), csvDate(inv.ServiceDateTo),
 		spreadsheetSafe(name), spreadsheetSafe(strings.ReplaceAll(address, "\n", ", ")),
-		csvMoney(inv.NetCents), csvMoney(inv.VatCents), csvMoney(inv.TotalCents), inv.Currency,
+		csvMoney(inv.NetCents), csvMoney(inv.VatCents), csvMoney(inv.TotalCents), spreadsheetSafe(inv.Currency),
 		spreadsheetSafe(strings.Join(ids, " ")), csvDate(inv.CancelledAt), spreadsheetSafe(inv.CancelReason),
 	}, nil
 }

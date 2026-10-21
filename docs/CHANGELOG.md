@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Invoicing app: Excel workbook export** (system_3 #8367/#8377).
+  `GET /api/invoicing/export/workbook.xlsx` returns one `Rechnungen.xlsx`
+  with four sheets: Invoices, Line items, Payments (with category, client and
+  bank deposit) and Clients. Amounts are numeric cells. Every text cell is an
+  inline string, which Excel and LibreOffice never evaluate as a formula, and
+  also gets the `'` guard. Like the CSV exports, it runs the §5 validation
+  first and answers 409 with the report while there are violations. The file
+  is written with the Go standard library (`archive/zip`): four plain tables
+  need no spreadsheet dependency. An imported PayPal row whose currency is not
+  a three-letter ISO code now fails the import, naming its line (security N6).
 - **Invoicing app: §5 validation and CSV exports** (system_3 #8367/#8374).
   `GET /api/invoicing/validation` re-checks the stored history and reports
   each finding with a code:

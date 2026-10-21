@@ -199,3 +199,22 @@ func TestParsePayPalDate_RejectsNonCalendarDates(t *testing.T) {
 		}
 	}
 }
+
+// @security N6 (c51502 on #8374): the currency is printed and exported, so a
+// row must carry a real ISO code.
+func TestParsePayPal_CurrencyMustBeAnISOCode(t *testing.T) {
+	for _, bad := range []string{"=1+1", "eur1", "EURO", ""} {
+		csv := "Date,Name,Type,Status,Currency,Gross,Transaction ID\n14.07.2026,A,Payment,Completed," + bad + ",10.00,T1\n"
+		_, err := ParsePayPalActivityCSV([]byte(csv), "")
+		if err == nil || !strings.Contains(err.Error(), "line 2") {
+			t.Errorf("currency %q: got %v", bad, err)
+		}
+	}
+	for _, good := range []string{"EUR", "usd"} {
+		csv := "Date,Name,Type,Status,Currency,Gross,Transaction ID\n14.07.2026,A,Payment,Completed," + good + ",10.00,T1\n"
+		res, err := ParsePayPalActivityCSV([]byte(csv), "")
+		if err != nil || res.Rows[0].Currency != strings.ToUpper(good) {
+			t.Errorf("currency %q: %v %+v", good, err, res)
+		}
+	}
+}
