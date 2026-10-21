@@ -120,7 +120,10 @@ func containsAny(s string, needles []string) bool {
 	return false
 }
 
-var spaceRun = regexp.MustCompile(`\s+`)
+var (
+	spaceRun    = regexp.MustCompile(`\s+`)
+	isoCurrency = regexp.MustCompile(`^[A-Z]{3}$`)
+)
 
 func normaliseHeader(h string) string {
 	h = strings.TrimPrefix(h, "\ufeff")
@@ -441,6 +444,12 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
+		// The currency is printed and exported, so it must be a real ISO
+		// code, not free text from the file (@security N6, c51502 on #8374).
+		currency := strings.ToUpper(get(rec, "currency"))
+		if !isoCurrency.MatchString(currency) {
+			return nil, fmt.Errorf("line %d: currency %q is not a three-letter ISO code", line, get(rec, "currency"))
+		}
 
 		var notes []string
 		for _, f := range []string{"item_title", "subject", "note"} {
@@ -453,7 +462,7 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 			TransactionID:  txnID,
 			ReferenceTxnID: get(rec, "reference_id"),
 			PaidOn:         paidOn,
-			Currency:       strings.ToUpper(get(rec, "currency")),
+			Currency:       currency,
 			GrossCents:     gross,
 			FeeCents:       fee,
 			NetCents:       net,
