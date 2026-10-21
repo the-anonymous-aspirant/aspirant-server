@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Invoicing app: PayPal import and payment categorisation** (system_3
+  #8367/#8370). `POST /api/invoicing/payments/import` takes a PayPal activity
+  CSV (English or German headers, comma/semicolon/tab, UTF-8 or
+  Windows-1252, localised amounts parsed to integer cents) and stores the
+  incoming payments plus withdrawals to the bank as deposit references. The
+  `(source, transaction id)` pair is unique, so re-uploading a file imports
+  nothing new. Fees, currency conversions, bank top-ups, holds, pending and
+  outgoing rows are skipped, and the summary counts each skip by reason. A file
+  whose `NN/NN/YYYY` dates read both ways is refused unless `date_order` says
+  which order applies; the import never guesses. A new payment whose sender
+  matches a client's PayPal email is linked to that client.
+  `GET /api/invoicing/payments` lists payments, and
+  `PATCH /api/invoicing/payments/:id` sets the category (uncategorised,
+  paid_work, gift, loan, refund or other), the client and the bank deposit, with
+  an audit row for each change.
 - **Invoicing app: issuer profile, clients and audit trail** (system_3
   #8367/#8369). The first slice of the retroactive-invoice app for flowah.
   `GET/PUT /api/invoicing/profile` holds the issuer header (name, address,

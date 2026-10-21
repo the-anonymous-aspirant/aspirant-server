@@ -382,6 +382,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.POST("/clients", handlers.CreateInvoicingClientHandler)
 		invoicing.PUT("/clients/:id", handlers.UpdateInvoicingClientHandler)
 		invoicing.GET("/audit-events", handlers.ListInvoicingAuditEventsHandler)
+		invoicing.POST("/payments/import", handlers.ImportPayPalPaymentsHandler)
+		invoicing.GET("/payments", handlers.ListInvoicingPaymentsHandler)
+		invoicing.PATCH("/payments/:id", handlers.PatchInvoicingPaymentHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
 		// deduplicated Berlin part-time English-job feed). Owned by vinoly
