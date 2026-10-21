@@ -80,7 +80,7 @@ func buildBundleSummary(db *gorm.DB) ([][]string, error) {
 		}
 		return []string{
 			depDate, depAmount, spreadsheetSafe(depID),
-			p.PaidOn.Format(invoicingDateLayout), csvMoney(p.GrossCents), spreadsheetSafe(p.SenderName), spreadsheetSafe(p.TransactionID),
+			p.PaidOn.Format(invoicingDateLayout), csvMoney(p.GrossCents), spreadsheetSafe(p.SenderName), spreadsheetSafe(p.PrintedReference()),
 			label, spreadsheetSafe(nachweis),
 		}, nil
 	}

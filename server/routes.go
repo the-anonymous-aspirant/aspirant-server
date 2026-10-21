@@ -385,6 +385,8 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.POST("/payments/import", handlers.ImportPayPalPaymentsHandler)
 		invoicing.GET("/payments", handlers.ListInvoicingPaymentsHandler)
 		invoicing.PATCH("/payments/:id", handlers.PatchInvoicingPaymentHandler)
+		invoicing.POST("/payments/manual", handlers.CreateManualPaymentHandler)
+		invoicing.DELETE("/payments/:id", handlers.DeleteManualPaymentHandler)
 		invoicing.GET("/invoices", handlers.ListInvoicesHandler)
 		invoicing.POST("/invoices", handlers.CreateInvoiceDraftHandler)
 		invoicing.GET("/invoices/:id", handlers.GetInvoiceHandler)

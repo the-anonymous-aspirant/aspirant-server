@@ -149,3 +149,30 @@ func TestFormatters(t *testing.T) {
 		}
 	}
 }
+
+// #8409: a hand-entered payment prints its method in German, and its own
+// reference; without a reference the sentence ends at the method. Its
+// internal id is never printed.
+func TestBuild_ManualPaymentLines(t *testing.T) {
+	in := issuedInput(true)
+	in.Payments = []data_models.InvoicingPayment{
+		{Source: "manual", Entry: "manual", TransactionID: "M-0011223344556677", Method: "bank_transfer", Reference: "RE-2026-17", PaidOn: time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)},
+		{Source: "manual", Entry: "manual", TransactionID: "M-8899aabbccddeeff", Method: "cash", PaidOn: time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)},
+	}
+	d, err := Build(in)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	got := notes(d)
+	for _, want := range []string{
+		"Zahlung erhalten am 14.07.2026 per Banküberweisung (Transaktions-ID: RE-2026-17)",
+		"Zahlung erhalten am 20.07.2026 per Bar\n",
+	} {
+		if !strings.Contains(got+"\n", want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "M-") || strings.Contains(got, "per Bar (") {
+		t.Errorf("internal id or an empty reference printed: %q", got)
+	}
+}

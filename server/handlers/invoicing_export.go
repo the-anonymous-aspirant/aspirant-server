@@ -170,7 +170,11 @@ func invoiceCSVRow(db *gorm.DB, inv data_models.InvoicingInvoice) ([]string, err
 	}
 	ids := make([]string, 0, len(payments))
 	for _, p := range payments {
-		ids = append(ids, p.TransactionID)
+		// The printed reference: a hand-entered payment's internal id is
+		// never shown, and one entered without a reference adds nothing.
+		if ref := p.PrintedReference(); ref != "" {
+			ids = append(ids, ref)
+		}
 	}
 	number := ""
 	if inv.InvoiceNumber != nil {

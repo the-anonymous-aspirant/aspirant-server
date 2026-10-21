@@ -31,6 +31,8 @@ func setupPaymentsRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r.POST("/invoicing/payments/import", ImportPayPalPaymentsHandler)
 	r.GET("/invoicing/payments", ListInvoicingPaymentsHandler)
 	r.PATCH("/invoicing/payments/:id", PatchInvoicingPaymentHandler)
+	r.POST("/invoicing/payments/manual", CreateManualPaymentHandler)
+	r.DELETE("/invoicing/payments/:id", DeleteManualPaymentHandler)
 	return r
 }
 
