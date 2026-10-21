@@ -57,6 +57,40 @@ func hasControlChars(s string) bool {
 	return false
 }
 
+// hasFormatChars reports invisible format characters (Unicode Cf: the
+// right-to-left override, zero-width spaces, …), which would print into the
+// exports and could make a reference read differently from what is stored
+// (#8409 security F3). A reference cannot be edited, so refuse them up front.
+func hasFormatChars(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// lockPaymentRow takes the payment row's lock with a no-op UPDATE. A delete
+// and a draft that links the payment both take it, so they run one at a
+// time (#8409 security F1).
+func lockPaymentRow(tx *gorm.DB, id uint) error {
+	return tx.Model(&data_models.InvoicingPayment{}).Where("id = ?", id).
+		UpdateColumn("category", gorm.Expr("category")).Error
+}
+
+// paymentLabel names a payment in a message: its printed reference, or its
+// id when it has none (a hand-entered payment's internal key is not shown).
+func paymentLabel(p data_models.InvoicingPayment) string {
+	if ref := p.PrintedReference(); ref != "" {
+		return ref
+	}
+	return fmt.Sprintf("#%d", p.ID)
+}
+
+// earliestPaymentDate bounds paid_on from below, to catch a mistyped year
+// (#8409 security F4).
+var earliestPaymentDate = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // CreateManualPaymentHandler stores a payment the owner received and enters
 // by hand: POST /invoicing/payments/manual with paid_on (YYYY-MM-DD, not after
 // today in Berlin), gross_cents (> 0), method (bank_transfer, paypal, stripe,
@@ -109,6 +143,10 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		bad("paid_on", "cannot be in the future: enter the day the money was received")
 		return
 	}
+	if paidOn.Before(earliestPaymentDate) {
+		bad("paid_on", "must be 2000-01-01 or later")
+		return
+	}
 	var gross int64
 	if err := json.Unmarshal(body["gross_cents"], &gross); err != nil || gross <= 0 || gross > maxUnitPriceCents {
 		bad("gross_cents", "must be a whole number of cents above zero")
@@ -137,7 +175,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(reference) > maxManualReferenceRunes || strings.Contains(reference, "\n") || hasControlChars(reference) {
+	if utf8.RuneCountInString(reference) > maxManualReferenceRunes || strings.Contains(reference, "\n") || hasControlChars(reference) || hasFormatChars(reference) {
 		bad("reference", fmt.Sprintf("must be one line of at most %d characters", maxManualReferenceRunes))
 		return
 	}
@@ -145,7 +183,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(sender) > maxManualSenderRunes || strings.Contains(sender, "\n") || hasControlChars(sender) {
+	if utf8.RuneCountInString(sender) > maxManualSenderRunes || strings.Contains(sender, "\n") || hasControlChars(sender) || hasFormatChars(sender) {
 		bad("sender_name", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
 		return
 	}
@@ -158,7 +196,22 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		return
 	}
 
+	// PayPal transaction ids are upper-case letters and digits; store a
+	// PayPal reference that way so "tx1" and an imported "TX1" are one id
+	// (#8409 security F2).
+	if method == "paypal" {
+		reference = strings.ToUpper(reference)
+	}
+
 	tx := db.Begin()
+	// The duplicate check and the insert run under the issuing lock, so two
+	// hand entries of the same PayPal id cannot both pass the check.
+	if _, err := lockIssuing(tx); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking for a manual payment: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
+		return
+	}
 	var clientID *uint
 	if raw, present := body["client_id"]; present {
 		cid, err := optionalID(raw)
@@ -261,11 +314,18 @@ func DeleteManualPaymentHandler(c *gin.Context) {
 		return
 	}
 	tx := db.Begin()
-	// The issuing lock orders this against a draft or issue that would link
-	// the payment while it is being deleted.
+	// The issuing lock orders this against a draft create or a payment_ids
+	// edit that would link the payment while it is deleted: both take the
+	// same lock before reading the payment (#8409 security F1).
 	if _, err := lockIssuing(tx); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for payment %d: %v", id, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
+		return
+	}
+	if err := lockPaymentRow(tx, uint(id)); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking payment %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
 		return
 	}

@@ -86,6 +86,14 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	// The import's duplicate checks against hand-entered PayPal payments run
+	// under the issuing lock, like a hand entry's (#8409 security F2).
+	if _, err := lockIssuing(tx); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking for a payment import: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
+	}
 	seen := map[string]bool{}
 	for _, row := range parsed.Rows {
 		if seen[row.TransactionID] {

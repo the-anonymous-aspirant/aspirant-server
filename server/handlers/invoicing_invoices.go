@@ -81,6 +81,18 @@ func checkInvoiceablePayments(tx *gorm.DB, ids []uint, invoiceID uint) ([]data_m
 	if len(ids) == 0 {
 		return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work", "an invoice needs at least one paid-work payment"), nil
 	}
+	// Lock every listed payment row before reading it, in ascending id order
+	// so two drafts cannot deadlock: a concurrent delete of a hand-entered
+	// payment then either waits for this link or has already removed the
+	// row, which this check then refuses (#8409 security F1). This holds
+	// even before the issuer profile, whose row the issuing lock uses, exists.
+	ordered := append([]uint(nil), ids...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	for _, id := range ordered {
+		if err := lockPaymentRow(tx, id); err != nil {
+			return nil, nil, err
+		}
+	}
 	seen := map[uint]bool{}
 	var out []data_models.InvoicingPayment
 	for _, id := range ids {
@@ -97,7 +109,7 @@ func checkInvoiceablePayments(tx *gorm.DB, ids []uint, invoiceID uint) ([]data_m
 		}
 		if p.Kind != data_models.PaymentKindIncoming || p.Category != data_models.PaymentCategoryPaidWork {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work",
-				"payment %s is %q, not paid work; only paid-work payments can be invoiced", p.TransactionID, p.Category), nil
+				"payment %s is %q, not paid work; only paid-work payments can be invoiced", paymentLabel(*p), p.Category), nil
 		}
 		other, err := data_models.IssuedInvoiceForPayment(tx, p.ID, invoiceID)
 		if err != nil {
@@ -105,7 +117,7 @@ func checkInvoiceablePayments(tx *gorm.DB, ids []uint, invoiceID uint) ([]data_m
 		}
 		if other != 0 {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_already_invoiced",
-				"payment %s is already on issued invoice %d", p.TransactionID, other), nil
+				"payment %s is already on issued invoice %d", paymentLabel(*p), other), nil
 		}
 		out = append(out, *p)
 	}
@@ -259,6 +271,13 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	// Linking payments takes the issuing lock, the same one a payment delete
+	// takes (#8409 security F1): a delete and a draft that links the same
+	// payment run one at a time, so no link can outlive its payment.
+	if _, err := lockIssuing(tx); err != nil {
+		respondInvoicingInternal(c, tx, "creating invoice", err)
+		return
+	}
 	payments, g, err := checkInvoiceablePayments(tx, req.PaymentIDs, 0)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
@@ -377,6 +396,15 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	// A payment_ids edit links payments, so it takes the issuing lock like a
+	// draft create (#8409 security F1), and before the row lock, in the same
+	// order the issue handler takes them.
+	if _, linksPayments := body["payment_ids"]; linksPayments {
+		if _, err := lockIssuing(tx); err != nil {
+			respondInvoicingInternal(c, tx, "updating invoice", err)
+			return
+		}
+	}
 	// Wait for any issue of this invoice in flight, then read its
 	// committed status: a draft check must not race the issue.
 	if _, err := lockInvoiceRow(tx, id); err != nil {

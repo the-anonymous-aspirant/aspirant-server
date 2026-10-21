@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"aspirant-online/server/data_models"
@@ -123,6 +124,11 @@ func TestManualPayment_Refusals(t *testing.T) {
 		{"category is server-owned", `{` + ok + `,"category":"gift"}`, "unknown_field"},
 		{"issue date is not a payment field", `{` + ok + `,"issue_date":"2026-01-01"}`, "unknown_field"},
 		{"transaction id is server-owned", `{` + ok + `,"transaction_id":"X"}`, "unknown_field"},
+		// Security F3/F4 (#8409): invisible format characters and a
+		// mistyped year are refused at entry.
+		{"right-to-left override in the reference", `{` + ok + `,"reference":"RE\u202e71"}`, "invalid_field"},
+		{"zero-width space in the payer", `{` + ok + `,"sender_name":"Galerie\u200bNord"}`, "invalid_field"},
+		{"before 2000", `{"paid_on":"1999-12-31","gross_cents":1000,"method":"cash"}`, "invalid_field"},
 	}
 	for _, tc := range cases {
 		w := invoicingDo(f.r, "POST", "/invoicing/payments/manual", tc.body)
@@ -143,7 +149,14 @@ func TestManualPayment_PayPalReferenceDeduplicatesBothWays(t *testing.T) {
 	if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"paypal","reference":"TX1"}`); code != http.StatusConflict || !strings.Contains(body, "duplicate_payment") {
 		t.Errorf("manual copy of an imported PayPal payment: %d %s", code, body)
 	}
-	if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"paypal","reference":"9AB12345CD6789012"}`); code != http.StatusCreated {
+	// PayPal ids are upper-case, so case does not make a second payment
+	// (security F2): "tx1" is the imported TX1, and a lower-case entry is
+	// stored upper-case.
+	if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"paypal","reference":"tx1"}`); code != http.StatusConflict {
+		t.Errorf("lower-case copy of an imported PayPal id: %d %s", code, body)
+	}
+	code, stored, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"paypal","reference":"9ab12345cd6789012"}`)
+	if code != http.StatusCreated || stored.Reference != "9AB12345CD6789012" {
 		t.Fatalf("manual PayPal payment: %d %s", code, body)
 	}
 	if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"paypal","reference":"9AB12345CD6789012"}`); code != http.StatusConflict {
@@ -198,5 +211,60 @@ func TestManualPayment_DeleteOnlyWhenManualAndOnNoInvoice(t *testing.T) {
 	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", loose.ID)
 	if len(events) != 2 || events[0].Action != "delete" {
 		t.Errorf("delete audit: %+v", events)
+	}
+}
+
+// Security F1 (#8409): a delete and a draft that links the same payment must
+// not interleave into a link whose payment is gone, which issuing would then
+// silently drop. Both orders, then both at once.
+func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing.T) {
+	f := newInvoiceFixture(t)
+	orphanLinks := func() int {
+		var n int
+		f.db.Table("invoicing_invoice_payments").
+			Joins("LEFT JOIN invoicing_payments p ON p.id = invoicing_invoice_payments.payment_id").
+			Where("p.id IS NULL").Count(&n)
+		return n
+	}
+
+	_, gone, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
+	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", gone.ID), ""); w.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d", w.Code)
+	}
+	if w := invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, gone.ID)); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "payment_not_found") {
+		t.Errorf("draft after delete: %d %s", w.Code, w.Body.String())
+	}
+
+	_, kept, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
+	invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, kept.ID))
+	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", kept.ID), ""); w.Code != http.StatusConflict {
+		t.Errorf("delete after draft: %d", w.Code)
+	}
+
+	// Both at once, repeatedly. sqlite :memory: needs one shared connection,
+	// so this serialises on it; on Postgres the payment-row and issuing
+	// locks do the ordering. Either way exactly one side may win.
+	f.db.DB().SetMaxOpenConns(1)
+	for i := 0; i < 20; i++ {
+		_, p, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
+		var wg sync.WaitGroup
+		codes := make([]int, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			codes[0] = invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", p.ID), "").Code
+		}()
+		go func() {
+			defer wg.Done()
+			codes[1] = invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, p.ID)).Code
+		}()
+		wg.Wait()
+		deleted, drafted := codes[0] == http.StatusNoContent, codes[1] == http.StatusCreated
+		if deleted == drafted {
+			t.Errorf("round %d: delete %d, draft %d; exactly one must win", i, codes[0], codes[1])
+		}
+	}
+	if n := orphanLinks(); n != 0 {
+		t.Errorf("%d invoice links point at a deleted payment", n)
 	}
 }
