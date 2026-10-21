@@ -113,6 +113,29 @@ func checkIssuable(tx *gorm.DB, inv *data_models.InvoicingInvoice, items []data_
 	return profile, client, nil, nil
 }
 
+// lockIssuing takes the issuer-profile row's lock with a no-op UPDATE, so
+// every issue — and every write that could change what an issue checks —
+// runs one at a time. Postgres runs at READ COMMITTED: without this lock two
+// concurrent issues each read their checks before either commits, so one
+// draft could be issued twice or one payment land on two invoices
+// (@security F1, c51467 on #8371). The reads after the lock see every
+// committed issue. It reports whether the profile row exists.
+func lockIssuing(tx *gorm.DB) (bool, error) {
+	res := tx.Model(&data_models.InvoicingProfile{}).Where("id = ?", 1).
+		UpdateColumn("next_invoice_number", gorm.Expr("next_invoice_number"))
+	return res.RowsAffected == 1, res.Error
+}
+
+// lockInvoiceRow takes the invoice row's lock with a no-op UPDATE, so an
+// edit, delete, issue or cancel of the same invoice waits for any other in
+// flight and then reads its committed status. It reports whether the row
+// exists.
+func lockInvoiceRow(tx *gorm.DB, id uint) (bool, error) {
+	res := tx.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).
+		UpdateColumn("status", gorm.Expr("status"))
+	return res.RowsAffected == 1, res.Error
+}
+
 // nextInvoiceNumber draws the next number from the profile's counter inside
 // the caller's transaction. The UPDATE takes the profile row's lock on
 // Postgres, so a concurrent issue waits for this transaction and then reads
@@ -145,7 +168,8 @@ func IssueInvoiceHandler(c *gin.Context) {
 	}
 	// Issuing takes no input: a body naming a date or a number is refused
 	// rather than ignored, so nobody believes they set one.
-	if c.Request.ContentLength > 0 {
+	// ContentLength is -1 for a chunked body, so test != 0, not > 0.
+	if c.Request.ContentLength != 0 {
 		var body map[string]json.RawMessage
 		if err := c.ShouldBindJSON(&body); err != nil {
 			RespondWithError(c, http.StatusBadRequest, "Issuing takes no request body")
@@ -159,14 +183,31 @@ func IssueInvoiceHandler(c *gin.Context) {
 
 	issueDate := berlinToday()
 	tx := db.Begin()
-	inv, err := data_models.GetInvoicingInvoice(tx, id)
+	// Locks first, reads after: profile row (serialises all issues), then
+	// this invoice's row. Every check below reads committed state.
+	hasProfile, err := lockIssuing(tx)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
 	}
-	if inv == nil {
+	exists, err := lockInvoiceRow(tx, id)
+	if err != nil {
+		respondInvoicingInternal(c, tx, "issuing invoice", err)
+		return
+	}
+	if !exists {
 		tx.Rollback()
 		RespondWithError(c, http.StatusNotFound, "Invoice not found")
+		return
+	}
+	if !hasProfile {
+		respondGuard(c, tx, guard(http.StatusUnprocessableEntity, "profile_incomplete",
+			"the issuer profile needs a name, an address and a Steuernummer before an invoice can be issued"))
+		return
+	}
+	inv, err := data_models.GetInvoicingInvoice(tx, id)
+	if err != nil {
+		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
 	}
 	items, err := data_models.ListInvoiceLineItems(tx, inv.ID)
@@ -203,8 +244,23 @@ func IssueInvoiceHandler(c *gin.Context) {
 	inv.ClientSnapshot = auditDetails(client)
 	inv.IssuedAt = &now
 	inv.IssuedBy = userID
-	if err := tx.Save(inv).Error; err != nil {
-		respondInvoicingInternal(c, tx, "issuing invoice", err)
+	inv.UpdatedAt = now
+	// The transition is conditional on the row still being a draft, so even
+	// a path that skipped the locks above could not issue an invoice twice.
+	res := tx.Model(&data_models.InvoicingInvoice{}).
+		Where("id = ? AND status = ?", inv.ID, data_models.InvoiceStatusDraft).
+		Updates(map[string]interface{}{
+			"status": inv.Status, "prefix": inv.Prefix, "number": number, "invoice_number": invoiceNumber,
+			"issue_date": issueDate, "net_cents": inv.NetCents, "vat_cents": inv.VatCents, "total_cents": inv.TotalCents,
+			"profile_snapshot": inv.ProfileSnapshot, "client_snapshot": inv.ClientSnapshot,
+			"issued_at": now, "issued_by": userID, "updated_at": now,
+		})
+	if res.Error != nil {
+		respondInvoicingInternal(c, tx, "issuing invoice", res.Error)
+		return
+	}
+	if res.RowsAffected != 1 {
+		respondGuard(c, tx, guard(http.StatusConflict, "not_a_draft", "invoice %d is no longer a draft", inv.ID))
 		return
 	}
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionIssue, invoicingEntityInvoice, inv.ID,
@@ -242,6 +298,10 @@ func CancelInvoiceHandler(c *gin.Context) {
 		return
 	}
 	tx := db.Begin()
+	if _, err := lockInvoiceRow(tx, id); err != nil {
+		respondInvoicingInternal(c, tx, "cancelling invoice", err)
+		return
+	}
 	inv, err := data_models.GetInvoicingInvoice(tx, id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "cancelling invoice", err)
@@ -262,8 +322,15 @@ func CancelInvoiceHandler(c *gin.Context) {
 	inv.CancelledAt = &now
 	inv.CancelledBy = userID
 	inv.CancelReason = strings.TrimSpace(req.Reason)
-	if err := tx.Save(inv).Error; err != nil {
-		respondInvoicingInternal(c, tx, "cancelling invoice", err)
+	res := tx.Model(&data_models.InvoicingInvoice{}).
+		Where("id = ? AND status = ?", inv.ID, data_models.InvoiceStatusIssued).
+		Updates(map[string]interface{}{"status": inv.Status, "cancelled_at": now, "cancelled_by": userID, "cancel_reason": inv.CancelReason, "updated_at": now})
+	if res.Error != nil {
+		respondInvoicingInternal(c, tx, "cancelling invoice", res.Error)
+		return
+	}
+	if res.RowsAffected != 1 {
+		respondGuard(c, tx, guard(http.StatusConflict, "not_issued", "invoice %d is no longer issued", inv.ID))
 		return
 	}
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionCancel, invoicingEntityInvoice, inv.ID,

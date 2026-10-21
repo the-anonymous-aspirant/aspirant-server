@@ -25,6 +25,9 @@ const (
 	invoicingActionDelete  = "delete"
 
 	invoicingDateLayout = "2006-01-02"
+
+	maxQuantityMilli  = 10_000 * 1000
+	maxUnitPriceCents = 100_000_000 * 100
 )
 
 // serverOwnedInvoiceFields can never come from a request: the number and the
@@ -346,6 +349,12 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	// Wait for any issue of this invoice in flight, then read its
+	// committed status: a draft check must not race the issue.
+	if _, err := lockInvoiceRow(tx, id); err != nil {
+		respondInvoicingInternal(c, tx, "updating invoice", err)
+		return
+	}
 	inv, err := data_models.GetInvoicingInvoice(tx, id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "updating invoice", err)
@@ -423,6 +432,12 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 		for i, li := range in {
 			if li.QuantityMilli < 0 || li.UnitPriceCents < 0 {
 				bad("line_items", fmt.Errorf("item %d has a negative quantity or price", i+1))
+				return
+			}
+			// Bounded so quantity × price stays far inside int64
+			// (@security N1, c51467): 10,000 units, 100 million euros.
+			if li.QuantityMilli > maxQuantityMilli || li.UnitPriceCents > maxUnitPriceCents {
+				bad("line_items", fmt.Errorf("item %d exceeds 10000 units or 100000000 euros", i+1))
 				return
 			}
 			items = append(items, data_models.InvoicingLineItem{
@@ -512,6 +527,12 @@ func DeleteInvoiceDraftHandler(c *gin.Context) {
 		return
 	}
 	tx := db.Begin()
+	// Wait for any issue of this invoice in flight, then read its
+	// committed status: a draft check must not race the issue.
+	if _, err := lockInvoiceRow(tx, id); err != nil {
+		respondInvoicingInternal(c, tx, "deleting invoice", err)
+		return
+	}
 	inv, err := data_models.GetInvoicingInvoice(tx, id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "deleting invoice", err)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
@@ -521,5 +522,90 @@ func TestListInvoices_Filters(t *testing.T) {
 	}
 	if w := invoicingDo(f.r, "GET", "/invoicing/invoices?status=paid", ""); w.Code != http.StatusBadRequest {
 		t.Errorf("bad status: %d", w.Code)
+	}
+}
+
+// @security F1 (c51467 on #8371): a second issue of the same invoice is
+// refused and leaves the counter alone. On Postgres the profile- and
+// invoice-row locks taken before any read serialise concurrent issues; this
+// pins the sequential half of that contract.
+func TestIssue_SecondIssueOfTheSameInvoiceIs409AndKeepsTheCounter(t *testing.T) {
+	f := newInvoiceFixture(t)
+	id := f.draft(t, 0)
+	if code, _, body := f.issue(id); code != http.StatusOK {
+		t.Fatalf("first issue: %d %s", code, body)
+	}
+	next := f.profileNext(t)
+	code, _, body := f.issue(id)
+	if code != http.StatusConflict || !strings.Contains(body, "not_a_draft") {
+		t.Fatalf("second issue: %d %s", code, body)
+	}
+	if f.profileNext(t) != next {
+		t.Errorf("a refused second issue moved the counter %d → %d", next, f.profileNext(t))
+	}
+	inv, _ := data_models.GetInvoicingInvoice(f.db, id)
+	if *inv.InvoiceNumber != "2026-001" {
+		t.Errorf("the second issue renumbered the invoice: %s", *inv.InvoiceNumber)
+	}
+}
+
+// Two drafts sharing one payment: whichever issues first wins, the other is
+// refused, and the payment ends up on exactly one issued invoice.
+func TestIssue_TwoDraftsSharingAPaymentIssueOnlyOnce(t *testing.T) {
+	f := newInvoiceFixture(t)
+	f.db.DB().SetMaxOpenConns(1)
+	a, b := f.draft(t, 0), f.draft(t, 0)
+	var wg sync.WaitGroup
+	codes := make(chan int, 2)
+	for _, id := range []uint{a, b} {
+		wg.Add(1)
+		go func(id uint) { defer wg.Done(); c, _, _ := f.issue(id); codes <- c }(id)
+	}
+	wg.Wait()
+	close(codes)
+	ok, refused := 0, 0
+	for c := range codes {
+		switch c {
+		case http.StatusOK:
+			ok++
+		case http.StatusUnprocessableEntity:
+			refused++
+		}
+	}
+	if ok != 1 || refused != 1 {
+		t.Fatalf("issued %d, refused %d; want exactly one of each", ok, refused)
+	}
+	if f.profileNext(t) != 2 {
+		t.Errorf("counter: %d, want 2 (one number used, no gap)", f.profileNext(t))
+	}
+}
+
+func TestIssue_ChunkedBodyIsRefused(t *testing.T) {
+	f := newInvoiceFixture(t)
+	id := f.draft(t, 0)
+	req, _ := http.NewRequest("POST", fmt.Sprintf("/invoicing/invoices/%d/issue", id), strings.NewReader(`{"issue_date":"2026-07-01"}`))
+	req.ContentLength = -1 // what net/http sets for a chunked request body
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	f.r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "issue_date") {
+		t.Fatalf("chunked body naming issue_date: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDraft_LineItemBoundsKeepTheProductInsideInt64(t *testing.T) {
+	f := newInvoiceFixture(t)
+	path := fmt.Sprintf("/invoicing/invoices/%d", f.draft(t, 0))
+	for _, body := range []string{
+		`{"line_items":[{"description":"x","quantity_milli":10000001,"unit_price_cents":1}]}`,
+		`{"line_items":[{"description":"x","quantity_milli":1000,"unit_price_cents":10000000001}]}`,
+		`{"line_items":[{"description":"x","quantity_milli":9223372036854775807,"unit_price_cents":9223372036854775807}]}`,
+	} {
+		if w := invoicingDo(f.r, "PUT", path, body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if w := invoicingDo(f.r, "PUT", path, `{"line_items":[{"description":"x","quantity_milli":10000000,"unit_price_cents":10000000000}]}`); w.Code != http.StatusOK {
+		t.Errorf("the bounds themselves are allowed: %d %s", w.Code, w.Body.String())
 	}
 }

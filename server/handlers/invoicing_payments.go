@@ -244,7 +244,16 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		}
 		if cat != p.Category {
 			// An issued invoice is immutable (spec §10), and so is the
-			// paid-work fact it rests on. Cancel the invoice first.
+			// paid-work fact it rests on. Cancel the invoice first. The
+			// issuing lock makes this check and an issue run one at a
+			// time, so a payment cannot change category while an issue
+			// that covers it is in flight.
+			if _, err := lockIssuing(tx); err != nil {
+				tx.Rollback()
+				log.Printf("Error locking for payment %d: %v", id, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error updating payment")
+				return
+			}
 			onInvoice, err := data_models.IssuedInvoiceForPayment(tx, p.ID, 0)
 			if err != nil {
 				tx.Rollback()
