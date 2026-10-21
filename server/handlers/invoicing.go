@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/mail"
@@ -148,6 +149,32 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	action := invoicingActionUpdate
 	if existing == nil {
 		action = invoicingActionCreate
+	}
+	// Once a number has been issued under a prefix, the counter belongs to
+	// the server: it must read one past the highest number issued, so the
+	// sequence stays gap-free and unique (spec §5). A new prefix may start
+	// wherever an earlier, outside sequence left off (spec §8 Q3).
+	issuedUnderPrefix, err := data_models.CountInvoicesWithPrefix(tx, p.InvoiceNumberPrefix)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error counting invoices for prefix %q: %v", p.InvoiceNumberPrefix, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
+		return
+	}
+	if issuedUnderPrefix > 0 {
+		maxNumber, err := data_models.MaxInvoiceNumberWithPrefix(tx, p.InvoiceNumberPrefix)
+		if err != nil {
+			tx.Rollback()
+			log.Printf("Error reading max invoice number for prefix %q: %v", p.InvoiceNumberPrefix, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
+			return
+		}
+		if p.NextInvoiceNumber != maxNumber+1 {
+			tx.Rollback()
+			respondError(c, http.StatusConflict, "next_number_server_owned",
+				fmt.Sprintf("invoices have been issued under %q, so the next number is %d and is set by the server", p.InvoiceNumberPrefix, maxNumber+1))
+			return
+		}
 	}
 	if err := data_models.SaveInvoicingProfile(tx, &p, userID); err != nil {
 		tx.Rollback()

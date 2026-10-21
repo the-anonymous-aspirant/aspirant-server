@@ -25,7 +25,8 @@ func setupInvoicingDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
-	db.AutoMigrate(&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{})
+	db.AutoMigrate(&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{},
+		&data_models.InvoicingInvoice{}, &data_models.InvoicingLineItem{}, &data_models.InvoicingInvoicePayment{})
 	t.Cleanup(func() { db.Close() })
 	return db
 }
