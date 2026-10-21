@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Invoicing app: §5 validation and CSV exports** (system_3 #8367/#8374).
+  `GET /api/invoicing/validation` re-checks the stored history and reports
+  each finding with a code:
+  - violations: gaps, duplicates or out-of-order numbers under a prefix
+    (a sequence may start above 1); future issue dates; a service date after
+    the issue date; totals that differ from the line items; a payment that is
+    not paid work, or that sits on two issued invoices; an issued invoice
+    without its PDF;
+  - warning only: an invoice total that differs from its linked payments.
+
+  `GET /api/invoicing/invoices/:id/export.csv` (one row per line item) and
+  `GET /api/invoicing/export/invoices.csv` (one row per invoice) produce
+  German-Excel CSVs: UTF-8 BOM, `;` as the separator, decimal comma. Both run
+  the validation first and answer 409 with the report while it has
+  violations. Every free-text cell that starts with `=`, `+`, `-`, `@`, a tab
+  or a CR is prefixed with `'`, so text written by an outside payer is never
+  run as a spreadsheet formula. Each export writes an audit row.
+- **Invoicing app: an issue is refused when the PDF cannot print its text**
+  (system_3 #8367, security N5). The PDF library silently drops any character
+  the embedded font has no glyph for, which would print a name with letters
+  missing. Issuing now answers 422 `unprintable_characters`, naming the
+  characters, and uses no number. Line breaks and tabs in a description are
+  laid out as line breaks and spaces, not reported as missing characters.
 - **Invoicing app: German invoice PDF** (system_3 #8367/#8373). Issuing an
   invoice now renders its A4 PDF from the snapshots frozen at issue and stores
   it in `invoicing_invoice_pdfs`, in the same transaction. A render failure

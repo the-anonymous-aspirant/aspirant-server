@@ -139,6 +139,15 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	// Wait for any issue in flight before reading the profile and the issued numbers, so a
+	// save cannot write back a next number an issue has just moved past
+	// (@security N4, c51472 on #8371).
+	if _, err := lockIssuing(tx); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking the issuer profile: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
+		return
+	}
 	existing, err := data_models.GetInvoicingProfile(tx)
 	if err != nil {
 		tx.Rollback()
