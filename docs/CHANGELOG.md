@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Invoicing app: Jobcenter bundle** (system_3 #8367/#8378).
+  `GET /api/invoicing/export/jobcenter-bundle.zip` returns
+  `Jobcenter-Nachweise.zip`, containing the stored PDF of every issued
+  invoice plus `Zusammenfassung.csv`. The summary lists each incoming payment
+  under the bank deposit it was assigned to (unassigned payments last, under
+  "Ohne Bankeinzahlung"), with its category in German and its proof: the
+  invoice number for invoiced paid work, a note for paid work not yet
+  invoiced, and nothing for gifts, loans and refunds. Cancelled invoices are
+  left out. The bundle runs the §5 validation first, like every export.
 - **Invoicing app: Excel workbook export** (system_3 #8367/#8377).
   `GET /api/invoicing/export/workbook.xlsx` returns one `Rechnungen.xlsx`
   with four sheets: Invoices, Line items, Payments (with category, client and
