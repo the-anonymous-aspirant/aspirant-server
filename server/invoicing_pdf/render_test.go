@@ -2,6 +2,7 @@ package invoicing_pdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -130,5 +131,37 @@ func TestRender_ProducesARealA4PDF(t *testing.T) {
 	// (a caseworker can search and copy it).
 	if !bytes.Contains(pdf, []byte("/FontFile2")) || !bytes.Contains(pdf, []byte("/ToUnicode")) {
 		t.Errorf("the font is not embedded with a ToUnicode map")
+	}
+}
+
+// @security N5 (c51481 on #8373): gopdf drops a character the font lacks, so
+// Render must refuse rather than print a name with letters missing.
+func TestRender_RefusesCharactersTheFontCannotPrint(t *testing.T) {
+	in := issuedInput(true)
+	in.Client.Name = "王小明 Studio"
+	d, _ := Build(in)
+	_, err := Render(d)
+	var u *UnprintableError
+	if !errors.As(err, &u) {
+		t.Fatalf("got %v, want *UnprintableError", err)
+	}
+	if string(u.Runes) != "王小明" {
+		t.Errorf("reported runes %q, want the three missing ones once each", string(u.Runes))
+	}
+}
+
+func TestRender_LineBreaksAndTabsAreLayoutNotMissingGlyphs(t *testing.T) {
+	in := issuedInput(true)
+	in.Items[0].Description = "Wandbild\r\nzweite Zeile\tmit Tab"
+	d, _ := Build(in)
+	if _, err := Render(d); err != nil {
+		t.Fatalf("a description with line breaks and a tab: %v", err)
+	}
+	rc := &recordingCanvas{}
+	rc.NewPage()
+	layout(rc, d)
+	joined := strings.Join(rc.texts, "|")
+	if !strings.Contains(joined, "Wandbild|") || !strings.Contains(joined, "zweite Zeile mit Tab") {
+		t.Errorf("the author's line break was not kept: %q", joined)
 	}
 }
