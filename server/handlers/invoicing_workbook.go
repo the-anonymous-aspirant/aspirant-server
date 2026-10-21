@@ -66,7 +66,9 @@ func buildInvoicingWorkbook(db *gorm.DB) ([]xlsxSheet, error) {
 		}
 		ids := make([]string, 0, len(payments))
 		for _, p := range payments {
-			ids = append(ids, p.TransactionID)
+			if ref := p.PrintedReference(); ref != "" {
+				ids = append(ids, ref)
+			}
 		}
 		number := ""
 		if inv.InvoiceNumber != nil {
@@ -116,7 +118,7 @@ func buildInvoicingWorkbook(db *gorm.DB) ([]xlsxSheet, error) {
 	}
 	payments := xlsxSheet{Name: "Payments", Header: []string{
 		"Datum", "Art", "Quelle", "Transaktions-ID", "Name", "E-Mail", "Hinweis", "Brutto", "Gebühr", "Netto",
-		"Währung", "Kategorie", "Kunde", "Bankeinzahlung",
+		"Währung", "Kategorie", "Kunde", "Bankeinzahlung", "Zahlungsart",
 	}}
 	for _, p := range paymentRows {
 		client, deposit := "", ""
@@ -126,11 +128,17 @@ func buildInvoicingWorkbook(db *gorm.DB) ([]xlsxSheet, error) {
 		if p.BankDepositID != nil {
 			deposit = depositLabel[*p.BankDepositID]
 		}
+		// A hand-entered payment (#8409) reads "manuell", with the owner's
+		// reference rather than its internal id.
+		source := p.Source
+		if p.IsManual() {
+			source = "manuell"
+		}
 		payments.Rows = append(payments.Rows, []xlsxCell{
-			xlsxText(p.PaidOn.Format(invoicingDateLayout)), xlsxText(p.Kind), xlsxText(p.Source), xlsxText(p.TransactionID),
+			xlsxText(p.PaidOn.Format(invoicingDateLayout)), xlsxText(p.Kind), xlsxText(source), xlsxText(p.PrintedReference()),
 			xlsxText(p.SenderName), xlsxText(p.SenderEmail), xlsxText(p.Note),
 			xlsxMoney(p.GrossCents), xlsxMoney(p.FeeCents), xlsxMoney(p.NetCents), xlsxText(p.Currency),
-			xlsxText(p.Category), xlsxText(client), xlsxText(deposit),
+			xlsxText(p.Category), xlsxText(client), xlsxText(deposit), xlsxText(p.MethodLabel()),
 		})
 	}
 	return []xlsxSheet{invoices, items, payments, clients}, nil

@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Invoicing app: payments entered by hand** (system_3 #8409). An invoice no
+  longer needs a PayPal import. `POST /api/invoicing/payments/manual` stores a
+  received payment with `paid_on` (not after today in Berlin), `gross_cents`,
+  `method` (`bank_transfer`, `paypal`, `stripe`, `cash`, `other`, printed as
+  Banküberweisung, PayPal, Stripe, Bar, Sonstige), an optional `reference`,
+  payer, note and client, always as incoming paid work, and audited
+  (`create_manual`). `DELETE /api/invoicing/payments/:id` removes a hand-entered
+  payment that is on no invoice; an imported payment is never deleted. New
+  columns `entry`, `method` and `reference` on `invoicing_payments` (added with
+  defaults; existing rows read as imported). A hand-entered payment's
+  `transaction_id` is an internal `M-…` key and is never printed: the PDF says
+  "Zahlung erhalten am … per <Methode> (Transaktions-ID: <reference>)", or ends
+  at the method when there is no reference, and the CSV, workbook (new
+  "Zahlungsart" column) and bundle print the reference. A PayPal payment cannot
+  be stored twice: a hand entry whose reference is an imported PayPal id is
+  refused (409 `duplicate_payment`), and an import row matching a hand-entered
+  PayPal reference counts as a duplicate. `GET /api/invoicing/payments` rows
+  carry a computed `on_invoice` (some invoice, draft or issued, covers the
+  payment), so the client offers Delete only where the server allows it.
+
 - **Invoicing app: Jobcenter bundle** (system_3 #8367/#8378).
   `GET /api/invoicing/export/jobcenter-bundle.zip` returns
   `Jobcenter-Nachweise.zip`, containing the stored PDF of every issued
