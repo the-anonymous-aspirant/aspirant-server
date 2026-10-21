@@ -18,10 +18,13 @@ import (
 // Legal text, verbatim from spec §4.5. The %s slots are the spec's
 // [Datum]/[PayPal/Stripe]/… and [Ausstellungsdatum] placeholders.
 const (
-	TitleRechnung        = "Rechnung"
-	Paragraph19UStGLine  = "Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."
-	paymentReceivedLine  = "Zahlung erhalten am %s per %s (Transaktions-ID: %s)"
-	retroactiveIssueLine = "Diese Rechnung wurde am %s nachträglich für die bereits erbrachte und bezahlte Leistung ausgestellt."
+	TitleRechnung       = "Rechnung"
+	Paragraph19UStGLine = "Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."
+	paymentReceivedLine = "Zahlung erhalten am %s per %s (Transaktions-ID: %s)"
+	// A hand-entered payment without a reference ends at the method
+	// (system_3 #8409): the parenthesis is printed only for a real id.
+	paymentReceivedLineNoReference = "Zahlung erhalten am %s per %s"
+	retroactiveIssueLine           = "Diese Rechnung wurde am %s nachträglich für die bereits erbrachte und bezahlte Leistung ausgestellt."
 )
 
 // Field labels. These name the §14 UStG fields; they carry no legal claim.
@@ -109,19 +112,6 @@ func FormatVatRate(bp int) string {
 	return formatDecimalMilli(int64(bp)*10) + " %"
 }
 
-// sourceName is how a payment source reads in the confirmation sentence,
-// matching the spec's [PayPal/Stripe] placeholder.
-func sourceName(source string) string {
-	switch strings.ToLower(source) {
-	case "paypal":
-		return "PayPal"
-	case "stripe":
-		return "Stripe"
-	default:
-		return source
-	}
-}
-
 func nonEmptyLines(s string) []string {
 	var out []string
 	for _, l := range strings.Split(s, "\n") {
@@ -183,7 +173,11 @@ func Build(in Input) (Document, error) {
 	}
 
 	for _, p := range in.Payments {
-		doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLine, FormatDate(p.PaidOn), sourceName(p.Source), p.TransactionID))
+		if ref := p.PrintedReference(); ref != "" {
+			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLine, FormatDate(p.PaidOn), p.MethodLabel(), ref))
+		} else {
+			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLineNoReference, FormatDate(p.PaidOn), p.MethodLabel()))
+		}
 	}
 	doc.Notes = append(doc.Notes, fmt.Sprintf(retroactiveIssueLine, issueDate))
 	return doc, nil

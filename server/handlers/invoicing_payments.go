@@ -86,6 +86,14 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	// The import's duplicate checks against hand-entered PayPal payments run
+	// under the issuing lock, like a hand entry's (#8409 security F2).
+	if _, err := lockIssuing(tx); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking for a payment import: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
+	}
 	seen := map[string]bool{}
 	for _, row := range parsed.Rows {
 		if seen[row.TransactionID] {
@@ -99,6 +107,17 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			log.Printf("Error checking payment %s: %v", row.TransactionID, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
 			return
+		}
+		if !exists {
+			// The same PayPal payment may already have been entered by hand
+			// with its transaction id as the reference (#8409).
+			exists, err = data_models.ManualPayPalPaymentWithReference(tx, row.TransactionID)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error checking manual payments for %s: %v", row.TransactionID, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+				return
+			}
 		}
 		if exists {
 			summary.Duplicates++
@@ -175,6 +194,15 @@ func ListInvoicingPaymentsHandler(c *gin.Context) {
 		log.Printf("Error listing payments: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
 		return
+	}
+	linked, err := data_models.PaymentIDsOnInvoices(db)
+	if err != nil {
+		log.Printf("Error listing invoice links: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
+		return
+	}
+	for i := range payments {
+		payments[i].OnInvoice = linked[payments[i].ID]
 	}
 	c.JSON(http.StatusOK, gin.H{"payments": payments, "categories": data_models.PaymentCategories})
 }
