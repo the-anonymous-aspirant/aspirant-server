@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -240,6 +241,23 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		if p.Kind != data_models.PaymentKindIncoming {
 			refuse("Only incoming payments are categorised; this row is a bank withdrawal")
 			return
+		}
+		if cat != p.Category {
+			// An issued invoice is immutable (spec §10), and so is the
+			// paid-work fact it rests on. Cancel the invoice first.
+			onInvoice, err := data_models.IssuedInvoiceForPayment(tx, p.ID, 0)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error checking invoices for payment %d: %v", id, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error updating payment")
+				return
+			}
+			if onInvoice != 0 {
+				tx.Rollback()
+				respondError(c, http.StatusConflict, "payment_on_issued_invoice",
+					fmt.Sprintf("payment is on issued invoice %d; cancel that invoice before changing its category", onInvoice))
+				return
+			}
 		}
 		p.Category = cat
 	}
