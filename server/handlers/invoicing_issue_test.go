@@ -532,6 +532,68 @@ func TestListInvoices_Filters(t *testing.T) {
 	}
 }
 
+// #8396: once issued, the list, the search, the detail and the CSV all show
+// the client as frozen at issue, so a later rename of the client cannot make
+// the screen disagree with the PDF. A draft follows the rename.
+func TestIssued_ShowsTheClientNameFrozenAtIssue(t *testing.T) {
+	f := newInvoiceFixture(t)
+	issued := f.draft(t, 0)
+	if code, _, body := f.issue(issued); code != http.StatusOK {
+		t.Fatalf("issue: %d %s", code, body)
+	}
+	cancelled := f.draft(t, 1)
+	f.issue(cancelled)
+	if w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/invoices/%d/cancel", cancelled), `{"reason":"Doppelt ausgestellt"}`); w.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+	}
+	draft := f.draft(t, 2)
+	if w := invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/clients/%d", f.clientID), `{"name":"Galerie Nord GmbH","address":"Nordweg 2\n13353 Berlin","paypal_email":"pay@galerie.test"}`); w.Code != http.StatusOK {
+		t.Fatalf("rename client: %d %s", w.Code, w.Body.String())
+	}
+
+	list := func(q string) map[uint]string {
+		w := invoicingDo(f.r, "GET", "/invoicing/invoices"+q, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("list %s: %d %s", q, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Invoices []invoiceListRow `json:"invoices"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		names := map[uint]string{}
+		for _, row := range resp.Invoices {
+			names[row.ID] = row.ClientName
+		}
+		return names
+	}
+	want := map[uint]string{issued: "Galerie Nord", cancelled: "Galerie Nord", draft: "Galerie Nord GmbH"}
+	if got := list(""); len(got) != 3 || got[issued] != want[issued] || got[cancelled] != want[cancelled] || got[draft] != want[draft] {
+		t.Errorf("list names: %v, want %v", got, want)
+	}
+	// "gmbh" is only in the live name, so only the draft matches it.
+	if got := list("?q=gmbh"); len(got) != 1 || got[draft] == "" {
+		t.Errorf("search on the live name: %v", got)
+	}
+	if got := list("?q=GALERIE"); len(got) != 3 {
+		t.Errorf("search on the shared part: %v", got)
+	}
+
+	for id, name := range want {
+		w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d", id), "")
+		if d := decodeDetail(t, w.Body.Bytes()); d.ClientName != name {
+			t.Errorf("detail %d client_name: %q, want %q", id, d.ClientName, name)
+		}
+	}
+
+	w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/export.csv", issued), "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("csv: %d %s", w.Code, w.Body.String())
+	}
+	if csv := w.Body.String(); !strings.Contains(csv, "Galerie Nord;") || strings.Contains(csv, "GmbH") {
+		t.Errorf("csv client: %s", csv)
+	}
+}
+
 // @security F1 (c51467 on #8371): a second issue of the same invoice is
 // refused and leaves the counter alone. On Postgres the profile- and
 // invoice-row locks taken before any read serialise concurrent issues; this

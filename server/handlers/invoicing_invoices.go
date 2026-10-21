@@ -158,6 +158,23 @@ type invoiceDetail struct {
 	LineItems []data_models.InvoicingLineItem `json:"line_items"`
 	Payments  []data_models.InvoicingPayment  `json:"payments"`
 	Warnings  []string                        `json:"warnings"`
+	// ClientName is the name to show: frozen at issue once the invoice has
+	// left draft, the live client for a draft (see invoiceClientName).
+	ClientName string `json:"client_name"`
+}
+
+// invoiceClientName is the client name to show for an invoice. Once issued
+// (or cancelled) it is the client as frozen at issue, which is what the PDF
+// and the exports print; a later rename of the client must not change what
+// the screen says the legal invoice was addressed to. A draft shows the live
+// client.
+func invoiceClientName(inv data_models.InvoicingInvoice, live string) string {
+	if inv.Status != data_models.InvoiceStatusDraft {
+		if snap, ok := decodeClientSnapshot(inv.ClientSnapshot); ok {
+			return snap.Name
+		}
+	}
+	return live
 }
 
 func loadInvoiceDetail(db *gorm.DB, inv data_models.InvoicingInvoice) (*invoiceDetail, error) {
@@ -175,7 +192,18 @@ func loadInvoiceDetail(db *gorm.DB, inv data_models.InvoicingInvoice) (*invoiceD
 	if payments == nil {
 		payments = []data_models.InvoicingPayment{}
 	}
-	return &invoiceDetail{Invoice: inv, LineItems: items, Payments: payments, Warnings: invoiceWarnings(inv, payments)}, nil
+	live := ""
+	if inv.ClientID != nil {
+		cl, err := data_models.GetInvoicingClient(db, *inv.ClientID)
+		if err != nil {
+			return nil, err
+		}
+		if cl != nil {
+			live = cl.Name
+		}
+	}
+	return &invoiceDetail{Invoice: inv, LineItems: items, Payments: payments, Warnings: invoiceWarnings(inv, payments),
+		ClientName: invoiceClientName(inv, live)}, nil
 }
 
 func respondGuard(c *gin.Context, tx *gorm.DB, g *invoicingGuardError) {
@@ -600,7 +628,9 @@ type invoiceListRow struct {
 
 // ListInvoicesHandler lists invoices newest first, filtered by ?status=,
 // ?issued_from= / ?issued_to= (issue date, inclusive), ?client_id= and ?q=
-// (client name contains, case-insensitive).
+// (the shown client name contains, case-insensitive). The shown name is the
+// one frozen at issue for a non-draft invoice, so ?q= is matched after it is
+// chosen rather than against the live client row.
 func ListInvoicesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	q := db.Table("invoicing_invoices").
@@ -632,16 +662,19 @@ func ListInvoicesHandler(c *gin.Context) {
 		}
 		q = q.Where("invoicing_invoices.client_id = ?", cid)
 	}
-	if v := strings.TrimSpace(c.Query("q")); v != "" {
-		q = q.Where("LOWER(invoicing_clients.name) LIKE ?", "%"+strings.ToLower(v)+"%")
-	}
-	var rows []invoiceListRow
-	if err := q.Scan(&rows).Error; err != nil {
+	var scanned []invoiceListRow
+	if err := q.Scan(&scanned).Error; err != nil {
 		respondInvoicingInternal(c, nil, "listing invoices", err)
 		return
 	}
-	if rows == nil {
-		rows = []invoiceListRow{}
+	search := strings.ToLower(strings.TrimSpace(c.Query("q")))
+	rows := []invoiceListRow{}
+	for _, row := range scanned {
+		row.ClientName = invoiceClientName(row.InvoicingInvoice, row.ClientName)
+		if search != "" && !strings.Contains(strings.ToLower(row.ClientName), search) {
+			continue
+		}
+		rows = append(rows, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"invoices": rows})
 }

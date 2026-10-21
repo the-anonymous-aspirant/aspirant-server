@@ -199,6 +199,13 @@
 
 ### Fixed
 
+- **Invoicing app: issued invoices show the client frozen at issue** (system_3
+  #8396). For an issued or cancelled invoice, `GET /api/invoicing/invoices`
+  rows and the invoice detail's new `client_name` now give the client name
+  from `client_snapshot`, which is what the PDF and the exports print. Before
+  this, a later rename of the client changed the name shown on screen. `?q=`
+  matches that shown name. A draft still shows the live client.
+
 - **Constellations: the already-in-a-game refusal now names the room.** Create
   and join answered `ErrAlreadyInGame` with a bare `"You are already in an
   active game"`, which told the user nothing they could act on — they could not
