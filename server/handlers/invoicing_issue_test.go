@@ -37,6 +37,7 @@ func setupInvoiceRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r.DELETE("/invoicing/invoices/:id", DeleteInvoiceDraftHandler)
 	r.POST("/invoicing/invoices/:id/issue", IssueInvoiceHandler)
 	r.POST("/invoicing/invoices/:id/cancel", CancelInvoiceHandler)
+	r.GET("/invoicing/invoices/:id/pdf", GetInvoicePDFHandler)
 	return r
 }
 

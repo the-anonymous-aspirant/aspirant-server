@@ -203,6 +203,7 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.InvoicingInvoice{})
 	db.AutoMigrate(&data_models.InvoicingLineItem{})
 	db.AutoMigrate(&data_models.InvoicingInvoicePayment{})
+	db.AutoMigrate(&data_models.InvoicingInvoicePDF{})
 
 	// Step 5b: Bootstrap marker (#5264). One row, fixed primary key, recording
 	// that this deployment has been set up — so public admin creation can never

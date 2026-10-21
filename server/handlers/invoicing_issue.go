@@ -263,8 +263,16 @@ func IssueInvoiceHandler(c *gin.Context) {
 		respondGuard(c, tx, guard(http.StatusConflict, "not_a_draft", "invoice %d is no longer a draft", inv.ID))
 		return
 	}
+	// The PDF is rendered from the snapshots just frozen and stored in the
+	// same transaction: an issued invoice always has its document, and a
+	// render failure leaves the draft (and the number) untouched.
+	pdfSHA, err := storeInvoicePDF(tx, inv, profile, client, items)
+	if err != nil {
+		respondInvoicingInternal(c, tx, "rendering the invoice PDF", err)
+		return
+	}
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionIssue, invoicingEntityInvoice, inv.ID,
-		auditDetails(gin.H{"invoice_number": invoiceNumber, "issue_date": issueDate.Format(invoicingDateLayout), "total_cents": inv.TotalCents})); err != nil {
+		auditDetails(gin.H{"invoice_number": invoiceNumber, "issue_date": issueDate.Format(invoicingDateLayout), "total_cents": inv.TotalCents, "pdf_sha256": pdfSHA})); err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
 	}
