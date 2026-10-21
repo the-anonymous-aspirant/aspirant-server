@@ -123,7 +123,7 @@ func containsAny(s string, needles []string) bool {
 var spaceRun = regexp.MustCompile(`\s+`)
 
 func normaliseHeader(h string) string {
-	h = strings.TrimPrefix(h, "﻿")
+	h = strings.TrimPrefix(h, "\ufeff")
 	h = strings.Trim(h, "\" ")
 	return strings.ToLower(spaceRun.ReplaceAllString(strings.TrimSpace(h), " "))
 }
