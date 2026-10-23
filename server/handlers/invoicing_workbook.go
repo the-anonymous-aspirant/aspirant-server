@@ -134,9 +134,17 @@ func buildInvoicingWorkbook(db *gorm.DB) ([]xlsxSheet, error) {
 		if p.IsManual() {
 			source = "manuell"
 		}
+		// Payer identity is personal data of a private individual, not
+		// needed for anything that is not invoiced (system_3 #8561,
+		// #8368 item 9 default b): blank it on every row that is not
+		// paid work, including uncategorised ones.
+		senderName, senderEmail, note := p.SenderName, p.SenderEmail, p.Note
+		if p.Category != data_models.PaymentCategoryPaidWork {
+			senderName, senderEmail, note = "", "", ""
+		}
 		payments.Rows = append(payments.Rows, []xlsxCell{
 			xlsxText(p.PaidOn.Format(invoicingDateLayout)), xlsxText(p.Kind), xlsxText(source), xlsxText(p.PrintedReference()),
-			xlsxText(p.SenderName), xlsxText(p.SenderEmail), xlsxText(p.Note),
+			xlsxText(senderName), xlsxText(senderEmail), xlsxText(note),
 			xlsxMoney(p.GrossCents), xlsxMoney(p.FeeCents), xlsxMoney(p.NetCents), xlsxText(p.Currency),
 			xlsxText(p.Category), xlsxText(client), xlsxText(deposit), xlsxText(p.MethodLabel()),
 		})
