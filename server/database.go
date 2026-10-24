@@ -301,6 +301,12 @@ func AutoMigrate(db *gorm.DB) {
 	// LocalStorage keys cardgen/<sha256>; no seed. Later subtasks add the
 	// template, card and export-profile tables under the same app.
 	db.AutoMigrate(&data_models.CardAsset{})
+	// Step 19: Constellations card editor, export profiles (system_3 #8634,
+	// subtask #8644): the print configuration (card size, bleed, DPI, crop
+	// marks, sheet grid, backs). Three presets are seeded once; a deleted or
+	// edited preset is left alone on re-run.
+	db.AutoMigrate(&data_models.CardExportProfile{})
+	data_models.SeedCardExportProfiles(db)
 
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
