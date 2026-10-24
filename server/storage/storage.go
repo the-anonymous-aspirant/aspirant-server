@@ -105,6 +105,23 @@ func (ls *LocalStorage) Get(key string) ([]byte, error) {
 	return data, nil
 }
 
+// CardgenKeyPrefix is the key space of the card editor's content-addressed
+// store (system_3 #8634, data_models/cardgen_asset.go). Those bytes are
+// Admin-only and served solely by GET /cardgen/assets/:id/content, so they
+// are never entered in the MD5 index that the Member-tier
+// GET /fetch-object/:etag resolves (security finding #8727, F1 of #8653),
+// and the legacy DELETE /assets cannot remove them from under a live row.
+const CardgenKeyPrefix = "cardgen/"
+
+// ErrKeyReserved is returned for a legacy operation on a key the card editor
+// owns.
+var ErrKeyReserved = errors.New("storage: key is managed by the card editor")
+
+// isReservedKey reports whether key lives in the card editor's key space.
+func isReservedKey(key string) bool {
+	return strings.HasPrefix(filepath.ToSlash(key), CardgenKeyPrefix)
+}
+
 func (ls *LocalStorage) GetByETag(etag string) ([]byte, *ObjectInfo, error) {
 	etag = normalizeETag(etag)
 
@@ -152,6 +169,11 @@ func (ls *LocalStorage) Put(key string, data io.Reader) error {
 		return err
 	}
 
+	if isReservedKey(key) {
+		// Card editor bytes are reachable only through their own gated route.
+		return nil
+	}
+
 	etag := fmt.Sprintf("%x", h.Sum(nil))
 
 	ls.mu.Lock()
@@ -162,6 +184,9 @@ func (ls *LocalStorage) Put(key string, data io.Reader) error {
 }
 
 func (ls *LocalStorage) Delete(key string) error {
+	if isReservedKey(key) {
+		return ErrKeyReserved
+	}
 	path, err := ls.resolve(key)
 	if err != nil {
 		return err
@@ -256,6 +281,9 @@ func (ls *LocalStorage) buildIndex() error {
 
 		rel, err := filepath.Rel(ls.basePath, path)
 		if err != nil {
+			return nil
+		}
+		if isReservedKey(rel) {
 			return nil
 		}
 
