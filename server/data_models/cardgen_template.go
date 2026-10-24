@@ -118,8 +118,9 @@ func TemplateVersions(db *gorm.DB, templateID uint) ([]CardTemplateVersion, erro
 	return out, err
 }
 
-// TemplateIsReferenced reports whether a type uses the template as a face or
-// another live template extends it; such a template cannot be deleted.
+// TemplateIsReferenced reports whether a type uses the template as a face,
+// another live template extends it, or a live card overrides its front with
+// it; such a template cannot be deleted.
 func TemplateIsReferenced(db *gorm.DB, id uint) (bool, error) {
 	var n int
 	if err := db.Model(&CardType{}).Where("front_template_id = ? OR back_template_id = ?", id, id).Count(&n).Error; err != nil {
@@ -130,6 +131,17 @@ func TemplateIsReferenced(db *gorm.DB, id uint) (bool, error) {
 	}
 	if err := db.Model(&CardTemplate{}).Where("parent_template_id = ?", id).Count(&n).Error; err != nil {
 		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	// A card that overrides its type's front with this template (#8646). The
+	// cards table may not exist on a database that has not migrated Step 20
+	// yet; HasTable keeps this read safe either way.
+	if db.HasTable("cards") {
+		if err := db.Table("cards").Where("template_id = ? AND deleted_at IS NULL", id).Count(&n).Error; err != nil {
+			return false, err
+		}
 	}
 	return n > 0, nil
 }
