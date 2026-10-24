@@ -308,6 +308,13 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.CardExportProfile{})
 	data_models.SeedCardExportProfiles(db)
 
+	// Step 20: Constellations card editor, cards and card versions (system_3
+	// #8634, subtask #8646). The bootstrap creates the 16 relationship cards
+	// from goal_cards and the 6 connection cards from relationship_types once,
+	// keyed by slug, and never resets them; it reads those two tables only.
+	db.AutoMigrate(&data_models.Card{}, &data_models.CardVersion{})
+	data_models.BootstrapCardgenCards(db)
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
