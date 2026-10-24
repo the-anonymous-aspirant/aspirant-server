@@ -526,6 +526,15 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 			cardgen.GET("/export-profiles/:id", handlers.GetCardExportProfileHandler)
 			cardgen.PUT("/export-profiles/:id", handlers.UpdateCardExportProfileHandler)
 			cardgen.DELETE("/export-profiles/:id", handlers.DeleteCardExportProfileHandler)
+			cardgen.GET("/cards", handlers.ListCardsHandler)
+			cardgen.POST("/cards", handlers.CreateCardHandler)
+			cardgen.GET("/cards/:id", handlers.GetCardHandler)
+			cardgen.PUT("/cards/:id", handlers.UpdateCardHandler)
+			cardgen.DELETE("/cards/:id", handlers.DeleteCardHandler)
+			cardgen.GET("/cards/:id/versions", handlers.ListCardVersionsHandler)
+			cardgen.POST("/cards/:id/versions", handlers.CreateCardVersionHandler)
+			cardgen.POST("/cards/:id/versions/:n/restore", handlers.RestoreCardVersionHandler)
+			cardgen.GET("/cards/:id/resolved", handlers.ResolveCardHandler)
 		}
 	}
 

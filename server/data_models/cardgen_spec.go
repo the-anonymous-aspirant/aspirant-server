@@ -236,20 +236,8 @@ func ParseTemplateSpec(raw []byte, db *gorm.DB) (*TemplateSpec, error) {
 		return nil, &SpecError{Msg: fmt.Sprintf("at most %d elements", maxSpecElements)}
 	}
 	for name, props := range elements {
-		if !elementNamePattern.MatchString(name) {
-			return nil, &SpecError{Element: name, Msg: "element names are lowercase letters, digits and underscores, starting with a letter"}
-		}
-		if props == nil {
-			return nil, &SpecError{Element: name, Msg: "must be an object"}
-		}
-		for prop, v := range props {
-			rule, known := elementPropRules[prop]
-			if !known {
-				return nil, &SpecError{Element: name, Prop: prop, Msg: "unknown prop (allowed: " + strings.Join(AllowedElementProps(), ", ") + ")"}
-			}
-			if err := rule(v); err != nil {
-				return nil, &SpecError{Element: name, Prop: prop, Msg: err.Error()}
-			}
+		if err := validateElementProps(name, props); err != nil {
+			return nil, err
 		}
 		spec.Elements[name] = props
 	}
@@ -260,6 +248,71 @@ func ParseTemplateSpec(raw []byte, db *gorm.DB) (*TemplateSpec, error) {
 		}
 	}
 	return spec, nil
+}
+
+// validateElementProps checks one element's name and every prop against the
+// closed rule table. Shared by the template spec and the card data (#8646).
+func validateElementProps(name string, props map[string]any) error {
+	if !elementNamePattern.MatchString(name) {
+		return &SpecError{Element: name, Msg: "element names are lowercase letters, digits and underscores, starting with a letter"}
+	}
+	if props == nil {
+		return &SpecError{Element: name, Msg: "must be an object"}
+	}
+	for prop, v := range props {
+		rule, known := elementPropRules[prop]
+		if !known {
+			return &SpecError{Element: name, Prop: prop, Msg: "unknown prop (allowed: " + strings.Join(AllowedElementProps(), ", ") + ")"}
+		}
+		if err := rule(v); err != nil {
+			return &SpecError{Element: name, Prop: prop, Msg: err.Error()}
+		}
+	}
+	return nil
+}
+
+// CardData is a parsed, validated card version body: per-element prop values
+// overlaid on the resolved template chain (#8646).
+type CardData struct {
+	Values map[string]map[string]any `json:"values"`
+}
+
+// ParseCardData decodes and validates card values with the same closed shape
+// as a template spec's elements: `{"values": {"<element>": {<prop>: value}}}`.
+func ParseCardData(raw []byte, db *gorm.DB) (*CardData, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return nil, &SpecError{Msg: "must be a JSON object"}
+	}
+	for k := range top {
+		if k != "values" {
+			return nil, &SpecError{Msg: fmt.Sprintf("unknown key %q (allowed: values)", k)}
+		}
+	}
+	data := &CardData{Values: map[string]map[string]any{}}
+	rawValues, ok := top["values"]
+	if !ok || string(rawValues) == "null" {
+		return data, nil
+	}
+	var values map[string]map[string]any
+	if err := json.Unmarshal(rawValues, &values); err != nil {
+		return nil, &SpecError{Msg: "values must be an object of element objects"}
+	}
+	if len(values) > maxSpecElements {
+		return nil, &SpecError{Msg: fmt.Sprintf("at most %d elements", maxSpecElements)}
+	}
+	for name, props := range values {
+		if err := validateElementProps(name, props); err != nil {
+			return nil, err
+		}
+		data.Values[name] = props
+	}
+	if db != nil {
+		if err := checkSpecAssets(db, &TemplateSpec{Elements: data.Values}); err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
 }
 
 // checkSpecAssets refuses an asset reference that is not a live row. When the

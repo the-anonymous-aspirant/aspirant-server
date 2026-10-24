@@ -37,6 +37,19 @@
 
 ### Added
 
+- **Card editor: cards, versions and the game bootstrap** (system_3 #8634,
+  subtask #8646). Admin-only under `/api/cardgen/cards`: list (`?type_id=`),
+  create, get, update (name, type, front-template override, order), delete,
+  `GET/POST .../versions`, `POST .../versions/:n/restore` and `GET .../resolved`,
+  which returns the card's front (the type's front template or its override,
+  resolved through the `extends` chain with the card's own values overlaid and
+  marked `card` in the provenance) and the type's back. Card values are the
+  same closed, validated element shape as a template spec. Every save is a new
+  version. On start, 16 relationship cards are created from the game's goal
+  cards and 6 connection cards from its relationship types, once, keyed by
+  slug and linked back by id; the game's own tables are not written. New
+  tables `cards`, `card_versions`.
+
 - **Card editor: card types, templates, versions and the inheritance
   resolver** (system_3 #8634, subtask #8643). Admin-only under
   `/api/cardgen/`: `GET/POST /types` and `PUT /types/:id` (relationship,
