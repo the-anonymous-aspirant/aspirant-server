@@ -336,14 +336,44 @@ func GetCardAssetContentHandler(c *gin.Context) {
 	c.Data(http.StatusOK, a.MediaType, data)
 }
 
+// GetCardAssetUsageHandler handles GET /cardgen/assets/:id/usage — the
+// templates and cards whose current version references the asset (#8647).
+func GetCardAssetUsageHandler(c *gin.Context) {
+	db := c.MustGet("db").(*gorm.DB)
+	a, ok := cardAssetByID(c, db)
+	if !ok {
+		return
+	}
+	usage, err := data_models.AssetUsage(db, a.ID)
+	if err != nil {
+		log.Printf("Cardgen: usage of asset %d failed: %v", a.ID, err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read asset usage")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"usage": usage})
+}
+
 // DeleteCardAssetHandler handles DELETE /cardgen/assets/:id — soft-delete the
 // row. The bytes stay: the store is content-addressed and an upload of the
-// same content restores the row. (#8647 adds the refusal while a template or
-// card still references the asset.)
+// same content restores the row. Refused with 409 and the usage while a
+// template or card still references the asset (#8647).
 func DeleteCardAssetHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	a, ok := cardAssetByID(c, db)
 	if !ok {
+		return
+	}
+	usage, err := data_models.AssetUsage(db, a.ID)
+	if err != nil {
+		log.Printf("Cardgen: usage of asset %d failed: %v", a.ID, err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read asset usage")
+		return
+	}
+	if usage.InUse() {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": gin.H{"code": "conflict", "message": "Asset is used by a template or card; remove the reference first"},
+			"usage": usage,
+		})
 		return
 	}
 	if err := db.Delete(a).Error; err != nil {
