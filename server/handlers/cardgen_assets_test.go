@@ -417,6 +417,10 @@ func TestCardAssetUpload_RefusesActiveSVG(t *testing.T) {
 		"animate-href":           `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><animate attributeName="href" values="javascript:alert(1)"/><text>x</text></a></svg>`,
 		"set-href":               `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><set attributeName="xlink:href" to="javascript:alert(1)"/><text>x</text></a></svg>`,
 		"xhtml-namespace-only":   `<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="HTTP://WWW.W3.ORG/1999/XHTML"><rect/></svg>`,
+		// Security re-review (c53403): character references inside attribute values.
+		"charref-animate-href": `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><animate attributeName="&#104;ref" values="&#106;avascript:alert(1)"/><text>x</text></a></svg>`,
+		"charref-set-href-hex": `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><set attributeName="h&#x72;ef" to="&#x6a;avascript:alert(1)"/><text>x</text></a></svg>`,
+		"charref-xhtml-iframe": `<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/&#120;html"><h:iframe src="&#106;avascript:alert(1)"/></svg>`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

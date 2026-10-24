@@ -2,6 +2,7 @@ package data_models
 
 import (
 	"bytes"
+	"html"
 	"image"
 	_ "image/gif"  // DecodeConfig for the pixel size of an uploaded GIF
 	_ "image/jpeg" // DecodeConfig for the pixel size of an uploaded JPEG
@@ -120,6 +121,22 @@ var (
 // enough to refuse, because the cost of a false refusal is one re-export from
 // the drawing tool and the cost of a miss is script running as the admin.
 func ValidateSVGContent(content []byte) string {
+	// XML decodes `&#NNN;`, `&#xHH;` and named references inside attribute
+	// values before the browser sees them, so `&#106;avascript:` is a
+	// javascript: URL and `h&#x72;ef` is href. Every check therefore runs on
+	// the raw bytes and on the reference-decoded text (security re-review of
+	// PR 139, #8642 c53403). A false refusal from decoded text content
+	// (`&lt;script&gt;` inside <text>) costs a re-export, the same trade the
+	// doc comment above makes.
+	for _, doc := range [][]byte{content, []byte(html.UnescapeString(string(content)))} {
+		if why := validateSVGBytes(doc); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+func validateSVGBytes(content []byte) string {
 	switch {
 	case svgScript.Match(content):
 		return "SVG carries a <script> element"
