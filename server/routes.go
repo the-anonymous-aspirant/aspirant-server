@@ -520,6 +520,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 			cardgen.GET("/assets", handlers.ListCardAssetsHandler)
 			cardgen.GET("/assets/:id", handlers.GetCardAssetHandler)
 			cardgen.GET("/assets/:id/content", handlers.GetCardAssetContentHandler)
+			cardgen.GET("/assets/:id/usage", handlers.GetCardAssetUsageHandler)
 			cardgen.DELETE("/assets/:id", handlers.DeleteCardAssetHandler)
 			cardgen.GET("/export-profiles", handlers.ListCardExportProfilesHandler)
 			cardgen.POST("/export-profiles", handlers.CreateCardExportProfileHandler)

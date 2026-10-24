@@ -37,6 +37,12 @@
 
 ### Added
 
+- **Card editor: asset usage** (system_3 #8634, subtask #8647).
+  `GET /api/cardgen/assets/:id/usage` lists the templates and cards whose
+  current version references the asset (by element), and
+  `DELETE /api/cardgen/assets/:id` now answers 409 with that list while
+  anything references it.
+
 - **Card editor: cards, versions and the game bootstrap** (system_3 #8634,
   subtask #8646). Admin-only under `/api/cardgen/cards`: list (`?type_id=`),
   create, get, update (name, type, front-template override, order), delete,
