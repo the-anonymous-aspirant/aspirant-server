@@ -250,6 +250,9 @@ func TestCardAssetContent_SVGIsAttachmentWithNosniff(t *testing.T) {
 	if got := w.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") || !strings.Contains(got, "icon.svg") {
 		t.Errorf("Content-Disposition = %q, want attachment with the filename", got)
 	}
+	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'none'") || !strings.Contains(got, "sandbox") {
+		t.Errorf("Content-Security-Policy = %q", got)
+	}
 	if w.Body.String() != svgDoc {
 		t.Errorf("body differs from the upload")
 	}
@@ -407,6 +410,13 @@ func TestCardAssetUpload_RefusesActiveSVG(t *testing.T) {
 		"href-http":      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="http://evil.test/x.svg#a"/></svg>`,
 		"href-js":        `<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><text>x</text></a></svg>`,
 		"href-data-html": `<svg xmlns="http://www.w3.org/2000/svg"><a href="data:text/html,<script>1</script>"><text>x</text></a></svg>`,
+		// Security review of PR 139 (c53387): the five bypasses of the first cut.
+		"prefixed-script":        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg"><s:script>alert(1)</s:script></svg>`,
+		"xhtml-script":           `<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml"><h:script>alert(1)</h:script></svg>`,
+		"prefixed-foreignObject": `<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg"><s:foreignObject><div>x</div></s:foreignObject></svg>`,
+		"animate-href":           `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><animate attributeName="href" values="javascript:alert(1)"/><text>x</text></a></svg>`,
+		"set-href":               `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><set attributeName="xlink:href" to="javascript:alert(1)"/><text>x</text></a></svg>`,
+		"xhtml-namespace-only":   `<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="HTTP://WWW.W3.ORG/1999/XHTML"><rect/></svg>`,
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -420,7 +430,7 @@ func TestCardAssetUpload_RefusesActiveSVG(t *testing.T) {
 		})
 	}
 	// Positive control: fragment and data:image hrefs are fine.
-	ok := `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><defs><g id="s"><rect width="1" height="1"/></g></defs><use xlink:href="#s"/><image href="data:image/png;base64,iVBORw0KGgo="/></svg>`
+	ok := `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><defs><g id="s"><path d="M0 0h1v1H0z"/></g></defs><use xlink:href="#s"/><image href="data:image/png;base64,iVBORw0KGgo="/><animate attributeName="opacity" values="0;1"/></svg>`
 	if w := f.upload(t, "fine.svg", []byte(ok)); w.Code != http.StatusCreated {
 		t.Errorf("benign svg: want 201, got %d body=%s", w.Code, w.Body.String())
 	}

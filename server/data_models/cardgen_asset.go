@@ -93,13 +93,24 @@ var svgRootPattern = regexp.MustCompile(`(?is)^\xEF?\xBB?\xBF?\s*(<\?xml[^>]*\?>
 // run as the admin; refusing at upload keeps the store free of such files
 // rather than relying on every future consumer (security review, #8634
 // c53354 item 1). Refuse, never sanitise-and-store.
+// Element patterns tolerate a namespace prefix (`<s:script>` with xmlns:s
+// bound to SVG is a script element: the namespace decides, not the prefix),
+// and the XHTML namespace is refused outright, since an SVG asset has no use
+// for it and it is the other way to spell a script element. An animation that
+// targets a link (`<animate attributeName="href" values="javascript:...">`)
+// rewrites a static `#fragment` at run time, so any animated href is refused,
+// and `javascript:` anywhere is a blunt second net (security review of PR 139,
+// #8642 c53387).
 var (
-	svgScript        = regexp.MustCompile(`(?i)<\s*script[\s>/]`)
-	svgForeignObject = regexp.MustCompile(`(?i)<\s*foreignObject[\s>/]`)
-	svgEventAttr     = regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`)
+	svgScript         = regexp.MustCompile(`(?i)<\s*(?:[a-z_][\w.-]*:)?script[\s>/]`)
+	svgForeignObject  = regexp.MustCompile(`(?i)<\s*(?:[a-z_][\w.-]*:)?foreignObject[\s>/]`)
+	svgEventAttr      = regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`)
+	svgXHTMLNamespace = regexp.MustCompile(`(?i)http://www\.w3\.org/1999/xhtml`)
+	svgAnimatedHref   = regexp.MustCompile(`(?i)attributeName\s*=\s*["']\s*(?:[\w.-]+:)?href\s*["']`)
+	svgJavascriptURL  = regexp.MustCompile(`(?i)javascript\s*:`)
 	// Every href / xlink:href value; each must be a same-document #fragment
 	// or a data:image/ URI.
-	svgHref = regexp.MustCompile(`(?i)(?:xlink:)?href\s*=\s*["']([^"']*)["']`)
+	svgHref = regexp.MustCompile(`(?i)(?:[\w.-]+:)?href\s*=\s*["']([^"']*)["']`)
 )
 
 // ValidateSVGContent reports why an SVG upload is refused, or "" when it is
@@ -116,6 +127,12 @@ func ValidateSVGContent(content []byte) string {
 		return "SVG carries a <foreignObject> element"
 	case svgEventAttr.Match(content):
 		return "SVG carries an on* event attribute"
+	case svgXHTMLNamespace.Match(content):
+		return "SVG names the XHTML namespace"
+	case svgAnimatedHref.Match(content):
+		return "SVG animates an href"
+	case svgJavascriptURL.Match(content):
+		return "SVG carries a javascript: URL"
 	}
 	for _, m := range svgHref.FindAllSubmatch(content, -1) {
 		v := strings.ToLower(strings.TrimSpace(string(m[1])))

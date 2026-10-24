@@ -320,8 +320,18 @@ func GetCardAssetContentHandler(c *gin.Context) {
 	if data_models.CardAssetServesInline(a.MediaType) {
 		disposition = "inline"
 	}
+	header := mime.FormatMediaType(disposition, map[string]string{"filename": a.OriginalFilename})
+	if header == "" {
+		// A filename FormatMediaType cannot encode must not leave the
+		// response without a disposition: a bare attachment is always safe.
+		header = "attachment"
+	}
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": a.OriginalFilename}))
+	c.Header("Content-Disposition", header)
+	// A direct navigation to this URL runs no script whatever the file holds.
+	// blob: URLs made from a fetch take the page's policy instead, which is
+	// why the upload gate in data_models.ValidateSVGContent still matters.
+	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
 	c.Header("Cache-Control", "private, max-age=86400")
 	c.Data(http.StatusOK, a.MediaType, data)
 }
