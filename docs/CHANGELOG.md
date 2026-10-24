@@ -53,6 +53,20 @@
   so nothing is ever rewritten. New tables `card_types`, `card_templates`,
   `card_template_versions`; a `base` template and eight type faces are seeded
   once and never reset.
+- **Card editor: asset store** (system_3 #8634, subtask #8642). The first
+  piece of the admin-only Constellations card editor. `POST /api/cardgen/assets`
+  stores one file (multipart field `file`, at most 25 MiB) for templates and
+  cards to reference: the type is sniffed from the bytes (PNG, JPEG, WebP, GIF,
+  SVG, PDF, TTF, OTF, WOFF, WOFF2; anything else is refused), the identity is
+  the content's sha256 (the same bytes twice return the same asset, nothing is
+  ever overwritten), and the row records who uploaded it, when, the type, the
+  size and the pixel size of a raster. `GET /api/cardgen/assets` (optional
+  `?kind=image|svg|pdf|font`), `GET /api/cardgen/assets/:id`,
+  `GET /api/cardgen/assets/:id/content` (served with `nosniff`; raster images
+  inline, SVG, PDF and fonts as attachments) and `DELETE /api/cardgen/assets/:id`
+  (soft; the bytes stay). All routes are Admin-only; a gate test walks every
+  `/cardgen/` route. New table `card_assets`; bytes live in the existing local
+  asset storage under `cardgen/<sha256>`.
 
 - **Invoicing app: payments entered by hand** (system_3 #8409). An invoice no
   longer needs a PayPal import. `POST /api/invoicing/payments/manual` stores a

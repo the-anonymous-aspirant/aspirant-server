@@ -296,6 +296,11 @@ func AutoMigrate(db *gorm.DB) {
 	// edited row (these are the operator's editable starting points).
 	db.AutoMigrate(&data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{})
 	data_models.SeedCardgenTemplates(db)
+	// Step 17: Constellations card editor, asset store (system_3 #8634,
+	// subtask #8642). Content-addressed rows (sha256) pointing at
+	// LocalStorage keys cardgen/<sha256>; no seed. Later subtasks add the
+	// template, card and export-profile tables under the same app.
+	db.AutoMigrate(&data_models.CardAsset{})
 
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
