@@ -67,6 +67,16 @@
   (soft; the bytes stay). All routes are Admin-only; a gate test walks every
   `/cardgen/` route. New table `card_assets`; bytes live in the existing local
   asset storage under `cardgen/<sha256>`.
+- **Card editor: export profiles** (system_3 #8634, subtask #8644). Admin-only
+  CRUD under `/api/cardgen/export-profiles`: a named print configuration with
+  the card size and corner radius in mm, bleed, DPI, crop marks, the sheet
+  (A4, A3, Letter or a custom size; columns, rows, gap, margin, orientation)
+  and whether back pages are generated mirrored for duplex. The body is a
+  closed, validated shape; anything outside it is refused naming the key.
+  Three presets are seeded once (the A4 2x4 prototype sheet with
+  105 x 74.25 mm cards, and the Friedmann and Pinguin 75 x 105 mm quotes, all
+  with 3 mm bleed at 300 DPI); a deleted or edited preset is left alone on
+  restart. New table `card_export_profiles`.
 
 - **Invoicing app: payments entered by hand** (system_3 #8409). An invoice no
   longer needs a PayPal import. `POST /api/invoicing/payments/manual` stores a
