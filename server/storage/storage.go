@@ -119,7 +119,9 @@ var ErrKeyReserved = errors.New("storage: key is managed by the card editor")
 
 // isReservedKey reports whether key lives in the card editor's key space.
 func isReservedKey(key string) bool {
-	return strings.HasPrefix(filepath.ToSlash(key), CardgenKeyPrefix)
+	// Checked on the CLEANED key, the same form resolve() uses, so "./cardgen/x"
+	// and "images/../cardgen/x" are reserved too (security review of PR 145, R1).
+	return strings.HasPrefix(filepath.ToSlash(filepath.Clean(key)), CardgenKeyPrefix)
 }
 
 func (ls *LocalStorage) GetByETag(etag string) ([]byte, *ObjectInfo, error) {

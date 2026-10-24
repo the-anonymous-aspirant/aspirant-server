@@ -19,17 +19,18 @@ func TestCardgenPutIsNotIndexedByETag(t *testing.T) {
 	ls := setupTestStorage(t)
 
 	content := "admin-only artwork bytes"
-	if err := ls.Put("cardgen/"+fmt.Sprintf("%064x", 1), bytes.NewReader([]byte(content))); err != nil {
-		t.Fatalf("Put cardgen: %v", err)
-	}
 	etag := fmt.Sprintf("%x", md5.Sum([]byte(content)))
-
-	data, info, err := ls.GetByETag(etag)
-	if err != nil {
-		t.Fatalf("GetByETag: %v", err)
-	}
-	if data != nil || info != nil {
-		t.Fatalf("cardgen bytes resolved by MD5: got %d bytes, info %+v", len(data), info)
+	for _, spelling := range cardgenSpellings(fmt.Sprintf("%064x", 1)) {
+		if err := ls.Put(spelling, bytes.NewReader([]byte(content))); err != nil {
+			t.Fatalf("Put %q: %v", spelling, err)
+		}
+		data, info, err := ls.GetByETag(etag)
+		if err != nil {
+			t.Fatalf("GetByETag after Put %q: %v", spelling, err)
+		}
+		if data != nil || info != nil {
+			t.Fatalf("cardgen bytes resolved by MD5 after Put %q: got %d bytes, info %+v", spelling, len(data), info)
+		}
 	}
 	// The bytes are still stored and readable by key (the gated route's path).
 	stored, err := ls.Get("cardgen/" + fmt.Sprintf("%064x", 1))
@@ -41,7 +42,7 @@ func TestCardgenPutIsNotIndexedByETag(t *testing.T) {
 	if err := ls.Put("images/control.bin", bytes.NewReader([]byte(content))); err != nil {
 		t.Fatalf("Put images: %v", err)
 	}
-	data, info, err = ls.GetByETag(etag)
+	data, info, err := ls.GetByETag(etag)
 	if err != nil || data == nil || info == nil {
 		t.Fatalf("control: legacy key did not resolve by MD5: %v, %v", err, info)
 	}
@@ -89,18 +90,27 @@ func TestBuildIndexSkipsCardgenFiles(t *testing.T) {
 	}
 }
 
+// cardgenSpellings are the key forms that resolve inside cardgen/: the
+// canonical key and two spellings filepath.Clean folds onto it (R1 of the PR
+// 145 review).
+func cardgenSpellings(sha string) []string {
+	return []string{"cardgen/" + sha, "./cardgen/" + sha, "images/../cardgen/" + sha}
+}
+
 func TestDeleteRefusesCardgenKeys(t *testing.T) {
 	ls := setupTestStorage(t)
 	key := "cardgen/" + fmt.Sprintf("%064x", 3)
 	if err := ls.Put(key, bytes.NewReader([]byte("keep me"))); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	err := ls.Delete(key)
-	if !errors.Is(err, ErrKeyReserved) {
-		t.Fatalf("Delete cardgen key: err %v, want ErrKeyReserved", err)
-	}
-	if data, err := ls.Get(key); err != nil || string(data) != "keep me" {
-		t.Fatalf("bytes gone after refused delete: %v, %q", err, string(data))
+	for _, spelling := range cardgenSpellings(fmt.Sprintf("%064x", 3)) {
+		err := ls.Delete(spelling)
+		if !errors.Is(err, ErrKeyReserved) {
+			t.Fatalf("Delete %q: err %v, want ErrKeyReserved", spelling, err)
+		}
+		if data, err := ls.Get(key); err != nil || string(data) != "keep me" {
+			t.Fatalf("bytes gone after refused delete of %q: %v, %q", spelling, err, string(data))
+		}
 	}
 	// Positive control: a legacy key still deletes.
 	if err := ls.Put("images/gone.png", bytes.NewReader([]byte("x"))); err != nil {
