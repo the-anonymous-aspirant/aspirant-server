@@ -8,6 +8,7 @@ import (
 	_ "image/png"  // DecodeConfig for the pixel size of an uploaded PNG
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/jinzhu/gorm"
 )
@@ -92,14 +93,14 @@ var svgRootPattern = regexp.MustCompile(`(?is)^\xEF?\xBB?\xBF?\s*(<\?xml[^>]*\?>
 // run as the admin; refusing at upload keeps the store free of such files
 // rather than relying on every future consumer (security review, #8634
 // c53354 item 1). Refuse, never sanitise-and-store.
-var svgForbidden = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)<\s*script[\s>/]`),
-	regexp.MustCompile(`(?i)<\s*foreignObject[\s>/]`),
-	regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`),
-	// href / xlink:href whose value is neither a same-document #fragment nor a
-	// data:image/ URI.
-	regexp.MustCompile(`(?i)(?:xlink:)?href\s*=\s*["']\s*(?:[^#d"'\s]|d(?:[^a"']|a(?:[^t"']|t(?:[^a"']|a(?:[^:"']|:(?:[^i"']|i(?:[^m"']|m(?:[^a"']|a(?:[^g"']|g(?:[^e"']|e[^/"'])))))))))`),
-}
+var (
+	svgScript        = regexp.MustCompile(`(?i)<\s*script[\s>/]`)
+	svgForeignObject = regexp.MustCompile(`(?i)<\s*foreignObject[\s>/]`)
+	svgEventAttr     = regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`)
+	// Every href / xlink:href value; each must be a same-document #fragment
+	// or a data:image/ URI.
+	svgHref = regexp.MustCompile(`(?i)(?:xlink:)?href\s*=\s*["']([^"']*)["']`)
+)
 
 // ValidateSVGContent reports why an SVG upload is refused, or "" when it is
 // acceptable. It is a textual check over the whole document (an SVG in this
@@ -108,19 +109,20 @@ var svgForbidden = []*regexp.Regexp{
 // enough to refuse, because the cost of a false refusal is one re-export from
 // the drawing tool and the cost of a miss is script running as the admin.
 func ValidateSVGContent(content []byte) string {
-	for i, re := range svgForbidden {
-		if re.Match(content) {
-			switch i {
-			case 0:
-				return "SVG carries a <script> element"
-			case 1:
-				return "SVG carries a <foreignObject> element"
-			case 2:
-				return "SVG carries an on* event attribute"
-			default:
-				return "SVG carries an href that is not a #fragment or a data:image/ URI"
-			}
+	switch {
+	case svgScript.Match(content):
+		return "SVG carries a <script> element"
+	case svgForeignObject.Match(content):
+		return "SVG carries a <foreignObject> element"
+	case svgEventAttr.Match(content):
+		return "SVG carries an on* event attribute"
+	}
+	for _, m := range svgHref.FindAllSubmatch(content, -1) {
+		v := strings.ToLower(strings.TrimSpace(string(m[1])))
+		if strings.HasPrefix(v, "#") || strings.HasPrefix(v, "data:image/") {
+			continue
 		}
+		return "SVG carries an href that is not a #fragment or a data:image/ URI"
 	}
 	return ""
 }
@@ -156,15 +158,18 @@ func DetectCardAssetType(head []byte) (mediaType, kind string, ok bool) {
 }
 
 // CardAssetPixelSize returns the pixel dimensions of a raster upload from its
-// header alone (image.DecodeConfig never decodes pixels), or 0, 0 when the
-// format has no standard-library decoder (WebP) or the header does not parse.
-// A 0 never blocks an upload; the size is what the viewer shows and the export
-// checks against the profile DPI. The caller refuses a side over
-// MaxCardAssetPixels.
-func CardAssetPixelSize(content []byte) (w, h int) {
+// header alone (image.DecodeConfig never decodes pixels). WebP has no
+// standard-library decoder, so it reports 0, 0 with no error; for PNG, JPEG
+// and GIF a header that does not parse is an error, and the caller refuses
+// the upload rather than store a picture it cannot measure. The caller also
+// refuses a side over MaxCardAssetPixels.
+func CardAssetPixelSize(mediaType string, content []byte) (w, h int, err error) {
+	if mediaType == "image/webp" {
+		return 0, 0, nil
+	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(content))
 	if err != nil {
-		return 0, 0
+		return 0, 0, err
 	}
-	return cfg.Width, cfg.Height
+	return cfg.Width, cfg.Height, nil
 }

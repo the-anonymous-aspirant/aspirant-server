@@ -197,7 +197,12 @@ func UploadCardAssetHandler(c *gin.Context) {
 	}
 	w, h := 0, 0
 	if kind == data_models.CardAssetKindImage {
-		w, h = data_models.CardAssetPixelSize(content)
+		var perr error
+		w, h, perr = data_models.CardAssetPixelSize(mediaType, content)
+		if perr != nil {
+			RespondWithError(c, http.StatusBadRequest, "Image header could not be read: "+perr.Error())
+			return
+		}
 		if w > data_models.MaxCardAssetPixels || h > data_models.MaxCardAssetPixels {
 			RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("Image is %dx%d px; the limit is %d px per side", w, h, data_models.MaxCardAssetPixels))
 			return

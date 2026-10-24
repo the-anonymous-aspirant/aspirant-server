@@ -3,8 +3,10 @@ package handlers
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -114,7 +116,7 @@ func decodeUpload(t *testing.T, w *httptest.ResponseRecorder) uploadBody {
 }
 
 // pngBytes encodes a 2x3 opaque PNG.
-func pngBytes(t *testing.T) []byte {
+func cardPNGBytes(t *testing.T) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 2, 3))
 	for y := 0; y < 3; y++ {
@@ -133,7 +135,7 @@ const svgDoc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- icon -->\n<svg 
 
 func TestCardAssetUpload_PNGIsStoredContentAddressed(t *testing.T) {
 	f := newCardAssetFixture(t)
-	content := pngBytes(t)
+	content := cardPNGBytes(t)
 
 	w := f.upload(t, "art/orion.png", content)
 	if w.Code != http.StatusCreated {
@@ -178,7 +180,7 @@ func TestCardAssetUpload_PNGIsStoredContentAddressed(t *testing.T) {
 
 func TestCardAssetUpload_SameBytesTwiceIsOneRow(t *testing.T) {
 	f := newCardAssetFixture(t)
-	content := pngBytes(t)
+	content := cardPNGBytes(t)
 
 	first := decodeUpload(t, f.upload(t, "a.png", content))
 	w := f.upload(t, "copy-of-a.png", content)
@@ -211,7 +213,7 @@ func TestCardAssetUpload_SniffRejectsTextNamedPNG(t *testing.T) {
 func TestCardAssetUpload_OverCapIsRejectedBeforeStoring(t *testing.T) {
 	f := newCardAssetFixture(t)
 	big := make([]byte, data_models.MaxCardAssetBytes+1)
-	copy(big, pngBytes(t)) // a real PNG header, so only the size can refuse it
+	copy(big, cardPNGBytes(t)) // a real PNG header, so only the size can refuse it
 	w := f.upload(t, "huge.png", big)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d body=%s", w.Code, w.Body.String())
@@ -255,7 +257,7 @@ func TestCardAssetContent_SVGIsAttachmentWithNosniff(t *testing.T) {
 
 func TestCardAssetContent_PNGIsInline(t *testing.T) {
 	f := newCardAssetFixture(t)
-	content := pngBytes(t)
+	content := cardPNGBytes(t)
 	f.upload(t, "bg.png", content)
 	w := f.call(t, http.MethodGet, "/cardgen/assets/1/content")
 	if w.Code != http.StatusOK {
@@ -305,7 +307,7 @@ func TestCardAssetUpload_FontsAndPDFAreTypedByMagic(t *testing.T) {
 			if b.Asset.PixelWidth != 0 || b.Asset.PixelHeight != 0 {
 				t.Errorf("non-raster carries a pixel size %dx%d", b.Asset.PixelWidth, b.Asset.PixelHeight)
 			}
-			c := f.call(t, http.MethodGet, "/cardgen/assets/"+itoa(b.Asset.ID)+"/content")
+			c := f.call(t, http.MethodGet, "/cardgen/assets/"+cardAssetID(b.Asset.ID)+"/content")
 			if got := c.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
 				t.Errorf("Content-Disposition = %q, want attachment", got)
 			}
@@ -315,7 +317,7 @@ func TestCardAssetUpload_FontsAndPDFAreTypedByMagic(t *testing.T) {
 
 func TestCardAssetList_FiltersByKindNewestFirst(t *testing.T) {
 	f := newCardAssetFixture(t)
-	f.upload(t, "bg.png", pngBytes(t))
+	f.upload(t, "bg.png", cardPNGBytes(t))
 	f.upload(t, "display.ttf", append([]byte{0x00, 0x01, 0x00, 0x00}, bytes.Repeat([]byte{1}, 32)...))
 	f.upload(t, "icon.svg", []byte(svgDoc))
 
@@ -341,7 +343,7 @@ func TestCardAssetList_FiltersByKindNewestFirst(t *testing.T) {
 
 func TestCardAssetDelete_SoftDeletesAndKeepsBytes(t *testing.T) {
 	f := newCardAssetFixture(t)
-	content := pngBytes(t)
+	content := cardPNGBytes(t)
 	b := decodeUpload(t, f.upload(t, "bg.png", content))
 
 	w := f.call(t, http.MethodDelete, "/cardgen/assets/1")
@@ -399,11 +401,11 @@ func TestCardAssetGet_BadIDs(t *testing.T) {
 func TestCardAssetUpload_RefusesActiveSVG(t *testing.T) {
 	f := newCardAssetFixture(t)
 	cases := map[string]string{
-		"script":        `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
-		"foreignObject": `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div>x</div></foreignObject></svg>`,
-		"onload":        `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>`,
-		"href-http":     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="http://evil.test/x.svg#a"/></svg>`,
-		"href-js":       `<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><text>x</text></a></svg>`,
+		"script":         `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+		"foreignObject":  `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div>x</div></foreignObject></svg>`,
+		"onload":         `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>`,
+		"href-http":      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="http://evil.test/x.svg#a"/></svg>`,
+		"href-js":        `<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><text>x</text></a></svg>`,
 		"href-data-html": `<svg xmlns="http://www.w3.org/2000/svg"><a href="data:text/html,<script>1</script>"><text>x</text></a></svg>`,
 	}
 	for name, doc := range cases {
@@ -434,15 +436,33 @@ func TestCardAssetUpload_RefusesOversizedRasterFromHeader(t *testing.T) {
 	// the size, a full Decode would fail or allocate 1.6 GB.
 	var buf bytes.Buffer
 	buf.Write([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
-	buf.Write([]byte{0, 0, 0, 13, 'I', 'H', 'D', 'R'})
-	buf.Write([]byte{0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20, 8, 6, 0, 0, 0}) // 20000 x 20000, 8-bit RGBA
-	buf.Write([]byte{0x3a, 0x8b, 0x1a, 0x75})                          // IHDR CRC, whatever: DecodeConfig does not verify it
+	ihdr := append([]byte("IHDR"), 0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20, 8, 6, 0, 0, 0) // 20000 x 20000, 8-bit RGBA
+	buf.Write([]byte{0, 0, 0, 13})
+	buf.Write(ihdr)
+	crc := make([]byte, 4)
+	binary.BigEndian.PutUint32(crc, crc32.ChecksumIEEE(ihdr)) // the png decoder verifies chunk CRCs
+	buf.Write(crc)
 	w := f.upload(t, "bomb.png", buf.Bytes())
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d body=%s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "12000") {
 		t.Errorf("refusal does not name the cap: %s", w.Body.String())
+	}
+}
+
+func TestCardAssetUpload_RefusesUnreadableRasterHeader(t *testing.T) {
+	f := newCardAssetFixture(t)
+	// PNG signature with a zeroed, CRC-less IHDR: sniffed as image/png, but
+	// DecodeConfig cannot read a size from it, so the store refuses it rather
+	// than record a picture it cannot measure.
+	broken := append([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, bytes.Repeat([]byte{0}, 40)...)
+	w := f.upload(t, "broken.png", broken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "header could not be read") {
+		t.Errorf("refusal reason: %s", w.Body.String())
 	}
 }
 
@@ -473,4 +493,4 @@ func TestDetectCardAssetType_RejectsOutsideAllowlist(t *testing.T) {
 	}
 }
 
-func itoa(v uint) string { return strconv.FormatUint(uint64(v), 10) }
+func cardAssetID(v uint) string { return strconv.FormatUint(uint64(v), 10) }
