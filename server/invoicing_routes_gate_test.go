@@ -14,10 +14,11 @@ import (
 )
 
 // #8367: the invoicing app holds a third party's personal and financial data,
-// and the operator ruled it is for flowah plus Admin, nobody else (decision 2,
-// c51421). These tests walk every route the shipped router registers under
-// /invoicing/ — including routes later subtasks add — so a route that misses
-// the group gate reds here rather than in production.
+// and the operator ruled it is for its one owner plus Admin, nobody else
+// (decision 2, c51421; the owner is vinoly since #8633). These tests walk
+// every route the shipped router registers under /invoicing/ — including
+// routes later subtasks add — so a route that misses the group gate reds here
+// rather than in production.
 
 const (
 	invoicingOwnerID uint = 1
@@ -94,7 +95,7 @@ func invoicingCall(r *gin.Engine, method, path, token string) int {
 	return w.Code
 }
 
-func TestInvoicingRoutes_OnlyFlowahAndAdminPassTheGate(t *testing.T) {
+func TestInvoicingRoutes_OnlyOwnerAndAdminPassTheGate(t *testing.T) {
 	loadTestJWTSecret(t)
 	r := invoicingGateRouter(t)
 
@@ -115,10 +116,10 @@ func TestInvoicingRoutes_OnlyFlowahAndAdminPassTheGate(t *testing.T) {
 				t.Errorf("unauthenticated: got %d, want 401", code)
 			}
 			if code := invoicingCall(r, ri.Method, ri.Path, other); code != http.StatusForbidden {
-				t.Errorf("another Member: got %d, want 403 — this route is not behind the flowah gate", code)
+				t.Errorf("another Member: got %d, want 403 — this route is not behind the owner gate", code)
 			}
 			if code := invoicingCall(r, ri.Method, ri.Path, owner); code == http.StatusUnauthorized || code == http.StatusForbidden {
-				t.Errorf("owner flowah: got %d, want the gate to let the owner through", code)
+				t.Errorf("owner %s: got %d, want the gate to let the owner through", invoicesOwnerUsername, code)
 			}
 			if code := invoicingCall(r, ri.Method, ri.Path, admin); code == http.StatusUnauthorized || code == http.StatusForbidden {
 				t.Errorf("Admin: got %d, want the gate to let Admin through", code)
@@ -127,10 +128,11 @@ func TestInvoicingRoutes_OnlyFlowahAndAdminPassTheGate(t *testing.T) {
 	}
 }
 
-func TestInvoicingOwnerIsFlowah(t *testing.T) {
-	// The operator named the account (decision 2, c51421); a rename here is a
-	// change of who can read a third party's financial data.
-	if invoicesOwnerUsername != "flowah" {
-		t.Fatalf("invoicesOwnerUsername = %q, want %q", invoicesOwnerUsername, "flowah")
+func TestInvoicingOwnerIsVinoly(t *testing.T) {
+	// The operator named the account (decision 2, c51421; vinoly confirmed in
+	// c53249, #8633); a rename here is a change of who can read a third
+	// party's financial data.
+	if invoicesOwnerUsername != "vinoly" {
+		t.Fatalf("invoicesOwnerUsername = %q, want %q", invoicesOwnerUsername, "vinoly")
 	}
 }
