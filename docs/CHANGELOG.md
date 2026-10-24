@@ -12,6 +12,20 @@
 
 ### Security
 
+- **Asset storage keys are confined to `ASSET_BASE_PATH`; the Member
+  `POST /api/upload` route is removed** (system_3 #8657, reported from the
+  card-editor design review in #8634). `storage.LocalStorage` joined a client
+  supplied key to the base path after `filepath.Clean`, which keeps a leading
+  `..` on a relative key, so `path=../files/x` from any Member session wrote a
+  sibling of the store (on the deployed container, into every member's
+  personal files, as root). `Put`, `Get`, `Delete`, `Stat` and `List` now
+  refuse an empty key, a NUL byte, an absolute path, the store root and any
+  key that resolves outside the store (`storage.ErrKeyOutsideStore`), and
+  `POST /api/assets/upload` and `DELETE /api/assets` answer 400 for one.
+  `POST /api/upload` (Member tier, no caller in aspirant-client) is gone; the
+  Admin `POST /api/assets/upload` is unchanged. Follow-up, not in this
+  change: run the server container as a non-root user.
+
 - **Go toolchain 1.23.4 → 1.27.3, `golang.org/x/net` v0.22.0 → v0.61.0**
   (system_3 #8386). govulncheck on main `729c387` found 54 vulnerabilities
   the server's code reaches: 52 in the 1.23.4 standard library (net/http

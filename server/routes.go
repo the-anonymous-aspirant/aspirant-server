@@ -322,9 +322,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.PATCH("/commander/valuation-statement/processed/:id", handlers.UpdateCommanderValuationProcessedHandler)
 		trustedRoutes.DELETE("/commander/valuation-statement/processed/:id", handlers.DeleteCommanderValuationProcessedHandler)
 
-		// Shared image upload (used by several apps + admin assets) — stays
-		// all-Trusted, not tied to any single app owner.
-		trustedRoutes.POST("/upload", handlers.UploadImageHandler)
+		// (The all-Trusted POST /upload was removed in system_3 #8657: it had
+		// no client caller and let any Member name the storage key. Uploads
+		// into the asset store are Admin-only via POST /assets/upload below.)
 
 		// Ludde meal tracker — feeding times. Owned by jenny (#4195/#4194): the
 		// operator ruled it a single-user app ("Only Jenny needs this one"), so
