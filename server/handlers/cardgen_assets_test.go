@@ -47,7 +47,7 @@ func newCardAssetFixture(t *testing.T) *cardAssetFixture {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	db.AutoMigrate(&data_models.CardAsset{})
+	db.AutoMigrate(&data_models.CardAsset{}, &data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{}, &data_models.Card{}, &data_models.CardVersion{})
 	t.Cleanup(func() { db.Close() })
 
 	dir := t.TempDir()
@@ -69,6 +69,7 @@ func newCardAssetFixture(t *testing.T) *cardAssetFixture {
 	g.GET("/assets", ListCardAssetsHandler)
 	g.GET("/assets/:id", GetCardAssetHandler)
 	g.GET("/assets/:id/content", GetCardAssetContentHandler)
+	g.GET("/assets/:id/usage", GetCardAssetUsageHandler)
 	g.DELETE("/assets/:id", DeleteCardAssetHandler)
 	return &cardAssetFixture{db: db, store: store, dir: dir, r: r}
 }
@@ -508,3 +509,47 @@ func TestDetectCardAssetType_RejectsOutsideAllowlist(t *testing.T) {
 }
 
 func cardAssetID(v uint) string { return strconv.FormatUint(uint64(v), 10) }
+
+// #8647: usage lookup and the delete refusal while referenced.
+func TestCardAssetUsage_AndDeleteRefusalWhileReferenced(t *testing.T) {
+	f := newCardAssetFixture(t)
+	b := decodeUpload(t, f.upload(t, "bg.png", cardPNGBytes(t)))
+	id := b.Asset.ID
+
+	w := f.call(t, http.MethodGet, "/cardgen/assets/"+cardAssetID(id)+"/usage")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"templates":[]`) || !strings.Contains(w.Body.String(), `"cards":[]`) {
+		t.Fatalf("unused: %d %s", w.Code, w.Body.String())
+	}
+
+	tmpl := &data_models.CardTemplate{Slug: "t", Name: "T"}
+	f.db.Create(tmpl)
+	data_models.AddTemplateVersion(f.db, tmpl, json.RawMessage(`{"elements": {"art": {"kind": "image", "asset_id": `+cardAssetID(id)+`}}}`), "v1", 7)
+	ct := data_models.CardType{Slug: "x", Name: "X"}
+	f.db.Create(&ct)
+	card := data_models.Card{CardTypeID: ct.ID, Slug: "c", Name: "C"}
+	f.db.Create(&card)
+	data_models.AddCardVersion(f.db, &card, json.RawMessage(`{"values": {"title": {"font_asset_id": `+cardAssetID(id)+`}}}`), "v1", 7)
+
+	w = f.call(t, http.MethodGet, "/cardgen/assets/"+cardAssetID(id)+"/usage")
+	var out struct {
+		Usage data_models.AssetUsageReport `json:"usage"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &out)
+	if len(out.Usage.Templates) != 1 || out.Usage.Templates[0].Slug != "t" || out.Usage.Templates[0].Elements[0] != "art" || len(out.Usage.Cards) != 1 || out.Usage.Cards[0].Elements[0] != "title" {
+		t.Errorf("usage = %+v", out.Usage)
+	}
+	w = f.call(t, http.MethodDelete, "/cardgen/assets/"+cardAssetID(id))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"usage"`) {
+		t.Errorf("delete while used: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.call(t, http.MethodGet, "/cardgen/assets/"+cardAssetID(id)); w.Code != http.StatusOK {
+		t.Errorf("asset gone after refused delete: %d", w.Code)
+	}
+
+	// Drop both references with new versions; delete goes through.
+	data_models.AddTemplateVersion(f.db, tmpl, json.RawMessage(`{"elements": {"art": {"kind": "image"}}}`), "v2", 7)
+	data_models.AddCardVersion(f.db, &card, json.RawMessage(`{"values": {}}`), "v2", 7)
+	if w := f.call(t, http.MethodDelete, "/cardgen/assets/"+cardAssetID(id)); w.Code != http.StatusOK {
+		t.Errorf("delete after references dropped: %d %s", w.Code, w.Body.String())
+	}
+}
