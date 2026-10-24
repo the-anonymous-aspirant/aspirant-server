@@ -496,6 +496,27 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		// Easter Egg Hunt admin
 		adminRoutes.POST("/games/easter-hunt/admin/reset", handlers.PostEasterHuntResetHandler)
 		adminRoutes.GET("/games/easter-hunt/admin/reveal", handlers.GetEasterHuntRevealHandler)
+
+		// Constellations card editor (system_3 #8634): an admin-only app
+		// (operator decision 1), so every /cardgen/* route sits in this group
+		// and the cardgen gate tests walk the whole prefix. #8643 is the
+		// types, templates and versions API; #8642 adds the asset store under
+		// the same prefix.
+		cardgen := adminRoutes.Group("/cardgen")
+		{
+			cardgen.GET("/types", handlers.ListCardTypesHandler)
+			cardgen.POST("/types", handlers.CreateCardTypeHandler)
+			cardgen.PUT("/types/:id", handlers.UpdateCardTypeHandler)
+			cardgen.GET("/templates", handlers.ListCardTemplatesHandler)
+			cardgen.POST("/templates", handlers.CreateCardTemplateHandler)
+			cardgen.GET("/templates/:id", handlers.GetCardTemplateHandler)
+			cardgen.PUT("/templates/:id", handlers.UpdateCardTemplateHandler)
+			cardgen.DELETE("/templates/:id", handlers.DeleteCardTemplateHandler)
+			cardgen.GET("/templates/:id/versions", handlers.ListCardTemplateVersionsHandler)
+			cardgen.POST("/templates/:id/versions", handlers.CreateCardTemplateVersionHandler)
+			cardgen.POST("/templates/:id/versions/:n/restore", handlers.RestoreCardTemplateVersionHandler)
+			cardgen.GET("/templates/:id/resolved", handlers.ResolveCardTemplateHandler)
+		}
 	}
 
 	log.Println("Routes registered successfully")

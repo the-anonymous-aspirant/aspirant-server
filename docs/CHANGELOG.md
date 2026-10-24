@@ -37,6 +37,23 @@
 
 ### Added
 
+- **Card editor: card types, templates, versions and the inheritance
+  resolver** (system_3 #8634, subtask #8643). Admin-only under
+  `/api/cardgen/`: `GET/POST /types` and `PUT /types/:id` (relationship,
+  action, life, connection seeded, each with a front and a back template);
+  `GET/POST /templates`, `GET/PUT/DELETE /templates/:id`,
+  `GET/POST /templates/:id/versions`, `POST /templates/:id/versions/:n/restore`
+  and `GET /templates/:id/resolved`. A template's spec is a closed, validated
+  shape (card size in mm plus named elements with a fixed prop set: positions
+  and sizes in mm, text, fonts and assets by id, hex colours, alignment,
+  opacity, `hidden`); anything outside it is refused naming the element and
+  prop. A template may extend another; the server resolves the chain root to
+  leaf and returns the flat element list with per-prop provenance, refusing
+  cycles. Every save is a new version and restore copies an old one forward,
+  so nothing is ever rewritten. New tables `card_types`, `card_templates`,
+  `card_template_versions`; a `base` template and eight type faces are seeded
+  once and never reset.
+
 - **Invoicing app: payments entered by hand** (system_3 #8409). An invoice no
   longer needs a PayPal import. `POST /api/invoicing/payments/manual` stores a
   received payment with `paid_on` (not after today in Berlin), `gross_cents`,
