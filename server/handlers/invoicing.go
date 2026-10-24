@@ -17,7 +17,7 @@ import (
 )
 
 // Invoicing app (system_3 #8367): issuer profile, clients and the audit trail.
-// Every route here sits behind the flowah+Admin group gate in routes.go; these
+// Every route here sits behind the owner+Admin group gate in routes.go; these
 // handlers assume the caller already passed it.
 
 // Audit vocabulary. Entity types name the table a row is about; actions are

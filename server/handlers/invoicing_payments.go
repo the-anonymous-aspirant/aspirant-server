@@ -16,7 +16,7 @@ import (
 )
 
 // Payments for the invoicing app (system_3 #8367-B1): PayPal import and
-// categorisation. Behind the flowah+Admin gate on the /invoicing group.
+// categorisation. Behind the owner+Admin gate on the /invoicing group.
 
 const (
 	invoicingEntityPayment = "payment"

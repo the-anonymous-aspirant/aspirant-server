@@ -18,7 +18,7 @@ import (
 
 // Invoice drafts for the invoicing app (system_3 #8367-B2). A draft is built
 // only from paid-work payments and is freely editable until it is issued
-// (invoicing_issue.go). Behind the flowah+Admin gate on the /invoicing group.
+// (invoicing_issue.go). Behind the owner+Admin gate on the /invoicing group.
 
 const (
 	invoicingEntityInvoice = "invoice"

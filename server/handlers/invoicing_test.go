@@ -15,7 +15,7 @@ import (
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 )
 
-// #8367-A1: the invoicing profile, clients and audit trail. The flowah+Admin
+// #8367-A1: the invoicing profile, clients and audit trail. The owner+Admin
 // gate is asserted on the shipped router in server/invoicing_routes_gate_test.go;
 // these tests drive the handlers directly.
 

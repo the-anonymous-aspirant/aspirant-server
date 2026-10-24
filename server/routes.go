@@ -33,7 +33,10 @@ const situpsOwnerUsername = "robert"
 // a third party's personal and financial data, which the operator ruled is
 // for this one user plus Admin, nobody else (decision 2, c51421). The gate sits
 // on the whole /invoicing group, so a route added under it cannot skip it.
-const invoicesOwnerUsername = "flowah"
+// The user's existing login is vinoly, which also owns Jobs; the operator
+// confirmed it on 2026-10-24 (system_3 #8633, c53249) in place of a separate
+// account, which was planned and never created.
+const invoicesOwnerUsername = "vinoly"
 
 // luddeOwnerUsername owns the Ludde meal-tracker feeding log (#4195/#4194).
 // The operator ruled it tied only to jenny ("Only Jenny needs this one"), so
@@ -374,7 +377,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.GET("/situps/entries", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.GetSitupEntriesHandler)
 		trustedRoutes.PATCH("/situps/entries/:date", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.PatchSitupEntryHandler)
 
-		// Invoicing (#8367) — flowah + Admin only, gated once at the group.
+		// Invoicing (#8367) — owner + Admin only, gated once at the group.
 		invoicing := trustedRoutes.Group("/invoicing", handlers.ValidateUserOrAdmin(invoicesOwnerUsername))
 		invoicing.GET("/profile", handlers.GetInvoicingProfileHandler)
 		invoicing.PUT("/profile", handlers.PutInvoicingProfileHandler)

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- **Invoicing app owner: `flowah` → `vinoly`** (system_3 #8633). The user
+  already had a login, `vinoly`, which also owns Jobs, and the operator
+  confirmed it is hers (c53249). `invoicesOwnerUsername` moves to it, so the
+  `/invoicing` group's owner+Admin gate now lets `vinoly` through. No account
+  was ever created under the old name. The Jobs gate is unchanged.
+
 ### Security
 
 - **Go toolchain 1.23.4 → 1.27.3, `golang.org/x/net` v0.22.0 → v0.61.0**
