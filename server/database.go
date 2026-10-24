@@ -290,6 +290,13 @@ func AutoMigrate(db *gorm.DB) {
 	// timeout ceiling.
 	db.AutoMigrate(&data_models.ProxyRequestLog{})
 
+	// Step 18: Constellations card editor, types and templates (system_3
+	// #8634, subtask #8643). Versioned, append-only template specs with an
+	// `extends` parent; the seed is insert-if-absent and never resets an
+	// edited row (these are the operator's editable starting points).
+	db.AutoMigrate(&data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{})
+	data_models.SeedCardgenTemplates(db)
+
 	// Clean up legacy table
 	db.Exec("DROP TABLE IF EXISTS word_weaver_scores")
 }
