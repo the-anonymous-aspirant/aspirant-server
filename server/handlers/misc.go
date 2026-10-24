@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
@@ -146,6 +147,12 @@ func UploadImageHandler(c *gin.Context) {
 	defer fileContent.Close()
 
 	err = assets.Put(path, fileContent)
+	if errors.Is(err, storage.ErrKeyOutsideStore) {
+		// system_3 #8657: the key is the client's; the store refuses one that
+		// would leave ASSET_BASE_PATH, and that is the caller's error.
+		RespondWithError(c, http.StatusBadRequest, "Path must be a relative key inside the asset store")
+		return
+	}
 	if err != nil {
 		log.Printf("Failed to store asset at %s: %v", path, err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to upload file")
@@ -171,6 +178,10 @@ func DeleteAssetHandler(c *gin.Context) {
 	assets := store.(*storage.LocalStorage)
 
 	if err := assets.Delete(key); err != nil {
+		if errors.Is(err, storage.ErrKeyOutsideStore) {
+			RespondWithError(c, http.StatusBadRequest, "Key must be a relative key inside the asset store")
+			return
+		}
 		log.Printf("Failed to delete asset %s: %v", key, err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to delete asset")
 		return

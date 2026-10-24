@@ -2,6 +2,7 @@ package storage
 
 import (
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -11,6 +12,16 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrKeyOutsideStore is returned by every LocalStorage method that turns a key
+// into a path when the key is empty, carries a NUL byte, is absolute, or
+// resolves to the store root or outside it. Handlers map it to 400.
+//
+// Before this (system_3 #8657) a key was joined to basePath after
+// filepath.Clean, and Clean keeps a leading ".." on a relative key, so
+// "../files/x" resolved to a sibling of the store. The Member upload route
+// passed its key verbatim from the client.
+var ErrKeyOutsideStore = errors.New("storage: key resolves outside the store")
 
 // ObjectInfo holds metadata about a stored object.
 type ObjectInfo struct {
@@ -45,8 +56,14 @@ func NewLocalStorage(basePath string) (*LocalStorage, error) {
 		return nil, fmt.Errorf("create base path: %w", err)
 	}
 
+	// Absolute so the confinement check in resolve compares like with like.
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve base path: %w", err)
+	}
+
 	ls := &LocalStorage{
-		basePath: basePath,
+		basePath: absBase,
 		index:    make(map[string]string),
 	}
 
@@ -57,8 +74,30 @@ func NewLocalStorage(basePath string) (*LocalStorage, error) {
 	return ls, nil
 }
 
+// resolve turns a storage key into an absolute path inside basePath, or
+// returns ErrKeyOutsideStore. The check is lexical: the cleaned key must be
+// relative and the joined path must sit strictly below basePath.
+func (ls *LocalStorage) resolve(key string) (string, error) {
+	if key == "" || strings.IndexByte(key, 0) >= 0 {
+		return "", ErrKeyOutsideStore
+	}
+	cleaned := filepath.Clean(key)
+	if filepath.IsAbs(cleaned) {
+		return "", ErrKeyOutsideStore
+	}
+	full := filepath.Join(ls.basePath, cleaned)
+	rel, err := filepath.Rel(ls.basePath, full)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrKeyOutsideStore
+	}
+	return full, nil
+}
+
 func (ls *LocalStorage) Get(key string) ([]byte, error) {
-	path := filepath.Join(ls.basePath, filepath.Clean(key))
+	path, err := ls.resolve(key)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -91,7 +130,10 @@ func (ls *LocalStorage) GetByETag(etag string) ([]byte, *ObjectInfo, error) {
 }
 
 func (ls *LocalStorage) Put(key string, data io.Reader) error {
-	path := filepath.Join(ls.basePath, filepath.Clean(key))
+	path, err := ls.resolve(key)
+	if err != nil {
+		return err
+	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("create parent dirs: %w", err)
@@ -120,7 +162,10 @@ func (ls *LocalStorage) Put(key string, data io.Reader) error {
 }
 
 func (ls *LocalStorage) Delete(key string) error {
-	path := filepath.Join(ls.basePath, filepath.Clean(key))
+	path, err := ls.resolve(key)
+	if err != nil {
+		return err
+	}
 
 	// Remove from index before deleting file
 	info, err := ls.Stat(key)
@@ -134,7 +179,16 @@ func (ls *LocalStorage) Delete(key string) error {
 }
 
 func (ls *LocalStorage) List(prefix string) ([]ObjectInfo, error) {
-	searchPath := filepath.Join(ls.basePath, filepath.Clean(prefix))
+	// An empty prefix lists the whole store; anything else must resolve
+	// inside it like a key.
+	searchPath := ls.basePath
+	if prefix != "" {
+		p, err := ls.resolve(prefix)
+		if err != nil {
+			return nil, err
+		}
+		searchPath = p
+	}
 	var objects []ObjectInfo
 
 	err := filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
@@ -175,7 +229,10 @@ func (ls *LocalStorage) List(prefix string) ([]ObjectInfo, error) {
 }
 
 func (ls *LocalStorage) Stat(key string) (*ObjectInfo, error) {
-	path := filepath.Join(ls.basePath, filepath.Clean(key))
+	path, err := ls.resolve(key)
+	if err != nil {
+		return nil, err
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, err
