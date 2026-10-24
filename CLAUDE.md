@@ -59,7 +59,7 @@ The server listens on **port 8080**.
 | **Public** | No | Anyone | `POST /login`, `GET /health`, `GET /fetch-object/:etag` |
 | **Authenticated** | Yes | Any logged-in user | `GET /data_models/users/:id`, `POST /games/scores` |
 | **Trusted** | Yes | Trusted, Admin | `GET /files/list`, `POST /translator/translations` |
-| **Admin** | Yes | Admin only | `POST /data_models/users`, `GET /voice-messages`, `POST /commander/process` |
+| **Admin** | Yes | Admin only | `POST /data_models/users`, `GET /voice-messages`, `POST /commander/process`, every `/cardgen/*` route (the Constellations card editor: assets, types, templates, cards, export profiles; system_3 #8634) |
 
 ## Environment Variables
 
@@ -94,6 +94,13 @@ The server listens on **port 8080**.
 | `pushup_entries` | Daily counts for the 60-day Pappas armhävningar challenge (date PK, count nullable). Trusted-gated via `/pushups/entries`. |
 | `pushup_milestones` | Seeded Swedish messages keyed by cumulative pushup count (e.g. 100, 500, 1000). Served via `/pushups/milestones`. |
 | `scratchpads` | One free-form plaintext buffer per user (`user_id` PK). Any logged-in user's own scratchpad, scoped to the session user id. Served via `GET`/`PUT /users/me/scratchpad`. |
+| `card_assets` | Content-addressed files for the card editor (`sha256` unique, sniffed `media_type`, `kind` image/svg/pdf/font, pixel size), stored under `cardgen/<sha256>` in the asset store. Admin-only via `/cardgen/assets`; delete is refused while a template or card references the row. |
+| `card_types` | The four Constellations card types (relationship, action, life, connection), each with a front and a back template. Seeded insert-if-absent. |
+| `card_templates` | Card layouts with `parent_template_id` (= `extends`); the `base` template is seeded and the type templates extend it. The current version is `current_version_id`. |
+| `card_template_versions` | Every saved template spec as a new row (`template_id` + `version_no`, jsonb `spec`, note, author); restore copies an earlier row. The spec's element props are a closed, validated set. |
+| `cards` | The deck: one row per card with its type, an optional template override, and links to `goal_cards` / `relationship_types` for the rows the game already defines (bootstrapped once, insert-if-absent). |
+| `card_versions` | Every saved card value set as a new row (`card_id` + `version_no`, jsonb `data`), same shape and restore semantics as template versions. |
+| `card_export_profiles` | Print configurations for the PDF export (card size, bleed, DPI, crop marks, sheet grid, backs); three vendor presets seeded. |
 
 ## Conventions
 
