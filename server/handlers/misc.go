@@ -182,6 +182,10 @@ func DeleteAssetHandler(c *gin.Context) {
 			RespondWithError(c, http.StatusBadRequest, "Key must be a relative key inside the asset store")
 			return
 		}
+		if errors.Is(err, storage.ErrKeyReserved) {
+			RespondWithError(c, http.StatusConflict, "Card editor assets are deleted through DELETE /cardgen/assets/:id")
+			return
+		}
 		log.Printf("Failed to delete asset %s: %v", key, err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to delete asset")
 		return
