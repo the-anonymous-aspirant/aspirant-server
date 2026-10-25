@@ -47,10 +47,13 @@ type CardAssetResponse struct {
 	PixelWidth       int       `json:"pixel_width"`
 	PixelHeight      int       `json:"pixel_height"`
 	UploadedByUserID uint      `json:"uploaded_by_user_id"`
-	ContentURL       string    `json:"content_url"`
+	// UploadedByName is the uploader's current display name ("" when the
+	// user no longer exists); system_3 #8758.
+	UploadedByName string `json:"uploaded_by_name"`
+	ContentURL     string `json:"content_url"`
 }
 
-func cardAssetResponse(a *data_models.CardAsset) CardAssetResponse {
+func cardAssetResponse(a *data_models.CardAsset, uploadedByName string) CardAssetResponse {
 	return CardAssetResponse{
 		ID:               a.ID,
 		CreatedAt:        a.CreatedAt,
@@ -62,6 +65,7 @@ func cardAssetResponse(a *data_models.CardAsset) CardAssetResponse {
 		PixelWidth:       a.PixelWidth,
 		PixelHeight:      a.PixelHeight,
 		UploadedByUserID: a.UploadedByUserID,
+		UploadedByName:   uploadedByName,
 		ContentURL:       fmt.Sprintf("/api/cardgen/assets/%d/content", a.ID),
 	}
 }
@@ -225,7 +229,7 @@ func UploadCardAssetHandler(c *gin.Context) {
 			}
 			existing.DeletedAt = nil
 		}
-		c.JSON(http.StatusOK, gin.H{"asset": cardAssetResponse(&existing), "deduplicated": true})
+		c.JSON(http.StatusOK, gin.H{"asset": cardAssetResponse(&existing, cardgenActorName(db, existing.UploadedByUserID)), "deduplicated": true})
 		return
 	case err != gorm.ErrRecordNotFound:
 		log.Printf("Cardgen: lookup asset by sha256 failed: %v", err)
@@ -260,7 +264,7 @@ func UploadCardAssetHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Failed to store asset")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"asset": cardAssetResponse(&a), "deduplicated": false})
+	c.JSON(http.StatusCreated, gin.H{"asset": cardAssetResponse(&a, cardgenActorName(db, a.UploadedByUserID)), "deduplicated": false})
 }
 
 // ListCardAssetsHandler handles GET /cardgen/assets — every live asset, newest
@@ -277,9 +281,14 @@ func ListCardAssetsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Failed to list assets")
 		return
 	}
+	ids := make([]uint, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].UploadedByUserID)
+	}
+	names := cardgenActorNames(db, ids)
 	out := make([]CardAssetResponse, 0, len(rows))
 	for i := range rows {
-		out = append(out, cardAssetResponse(&rows[i]))
+		out = append(out, cardAssetResponse(&rows[i], names[rows[i].UploadedByUserID]))
 	}
 	c.JSON(http.StatusOK, gin.H{"assets": out})
 }
@@ -291,7 +300,7 @@ func GetCardAssetHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"asset": cardAssetResponse(a)})
+	c.JSON(http.StatusOK, gin.H{"asset": cardAssetResponse(a, cardgenActorName(db, a.UploadedByUserID))})
 }
 
 // GetCardAssetContentHandler handles GET /cardgen/assets/:id/content — the

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"aspirant-online/server/data_models"
 
@@ -30,7 +31,7 @@ func newCardTemplateFixture(t *testing.T) *cardTemplateFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.AutoMigrate(&data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{})
+	db.AutoMigrate(&data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{}, &data_models.User{}, &data_models.UserDisplayName{})
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -190,3 +191,49 @@ func TestCardTemplates_SlugConflictReparentCycleAndDeleteRefusal(t *testing.T) {
 }
 
 func itoaCardgen(v uint) string { return strconv.FormatUint(uint64(v), 10) }
+
+// system_3 #8758: the version rows name their author. Three cases on one
+// template: v1 by the fixture's user 7, who has an open display-name row
+// ("Anna"); v2 written by the system actor (id 0, the shape the seeds carry);
+// v3 by a user id that resolves to nothing (a deleted account), which reads
+// "" so the client keeps its "user N" fallback.
+func TestCardTemplates_VersionsCarryTheAuthorsName(t *testing.T) {
+	f := newCardTemplateFixture(t)
+	if err := f.db.Create(&data_models.UserDisplayName{UserID: 7, DisplayName: "Anna", ValidFrom: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	id := f.mustCreate(t, "base", nil, `{"size": {"w_mm": 105, "h_mm": 74.25}, "elements": {"title": {"kind": "text", "size_pt": 12}}}`)
+	var tmpl data_models.CardTemplate
+	if err := f.db.First(&tmpl, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := data_models.AddTemplateVersion(f.db, &tmpl, json.RawMessage(`{"elements": {}}`), "seeded", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := data_models.AddTemplateVersion(f.db, &tmpl, json.RawMessage(`{"elements": {}}`), "by a gone user", 4242); err != nil {
+		t.Fatal(err)
+	}
+
+	w, out := f.do(t, http.MethodGet, "/cardgen/templates/"+itoaCardgen(id)+"/versions", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("versions: %d %s", w.Code, w.Body.String())
+	}
+	got := map[float64]string{}
+	for _, raw := range out["versions"].([]any) {
+		v := raw.(map[string]any)
+		got[v["version_no"].(float64)] = v["created_by_name"].(string)
+	}
+	want := map[float64]string{1: "Anna", 2: "system", 3: ""}
+	for n, name := range want {
+		if got[n] != name {
+			t.Errorf("v%v created_by_name = %q, want %q (all: %v)", n, got[n], name, got)
+		}
+	}
+
+	// The single-row routes resolve the same way: a version created now by
+	// user 7 answers with the name in the create response.
+	w, out = f.do(t, http.MethodPost, "/cardgen/templates/"+itoaCardgen(id)+"/versions", `{"spec": {"elements": {}}, "note": "mine"}`)
+	if w.Code != http.StatusCreated || out["version"].(map[string]any)["created_by_name"] != "Anna" {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+}
