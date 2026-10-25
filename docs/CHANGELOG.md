@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Storage: bytes under `cardgen/` are never entered in the MD5 index that the
+  legacy `GET /fetch-object/:etag` resolves, and the legacy `DELETE /assets`
+  refuses them (409); the card editor's content route stays the only path to
+  its assets (system_3 #8727, finding F1 of the #8653 security review).
 ### Changed
 
 - **Invoicing app owner: `flowah` → `vinoly`** (system_3 #8633). The user
