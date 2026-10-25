@@ -99,6 +99,31 @@ func main() {
 	// Initialize the Gin engine
 	r := gin.New() // Use gin.New() instead of gin.Default() to avoid default middleware
 
+	// Trust X-Forwarded-For only from the compose network (system_3 #8822):
+	// gin's default is to trust every proxy, which let a direct caller pick
+	// its own rate-limit bucket by setting its own X-Forwarded-For (gin.go's
+	// defaultTrustedCIDRs is 0.0.0.0/0). nginx is the only peer inside this
+	// subnet. Do NOT use TrustedPlatform = gin.PlatformCloudflare here: it
+	// trusts CF-Connecting-IP from ANY peer, including a direct :8081 caller.
+	trustedProxies, err := server.TrustedProxyCIDRs()
+	if err != nil {
+		log.Fatalf("SECURITY: could not determine the compose network's CIDR: %v", err)
+	}
+	if err := r.SetTrustedProxies(trustedProxies); err != nil {
+		log.Fatalf("SECURITY: SetTrustedProxies(%v): %v", trustedProxies, err)
+	}
+
+	// Security review (c54490 on #8822): gin's default RemoteIPHeaders is
+	// [X-Forwarded-For, X-Real-IP], and nginx's /api/ location passes a
+	// client-supplied X-Real-IP through unchanged. A request that never
+	// reaches Cloudflare (host-local traffic, the LAN over the [::]:80
+	// docker-proxy listener) carries no X-Forwarded-For, so ClientIP()
+	// would otherwise fall back to that caller-controlled header even
+	// from the trusted nginx peer. Restricting the list to
+	// X-Forwarded-For closes that path everywhere, including :8081 on
+	// loopback, with no further nginx change.
+	r.RemoteIPHeaders = []string{"X-Forwarded-For"}
+
 	// Set up middleware
 	server.SetupMiddleware(r)
 
