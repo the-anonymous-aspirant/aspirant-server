@@ -41,12 +41,15 @@ type CardVersionResponse struct {
 	VersionNo       int             `json:"version_no"`
 	Note            string          `json:"note"`
 	CreatedByUserID uint            `json:"created_by_user_id"`
-	CreatedAt       time.Time       `json:"created_at"`
-	Data            json.RawMessage `json:"data"`
+	// CreatedByName is the author's current display name ("system" for the
+	// seeds, "" when the user no longer exists); system_3 #8758.
+	CreatedByName string          `json:"created_by_name"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Data          json.RawMessage `json:"data"`
 }
 
-func cardVersionResponse(v *data_models.CardVersion) CardVersionResponse {
-	return CardVersionResponse{VersionNo: v.VersionNo, Note: v.Note, CreatedByUserID: v.CreatedByUserID, CreatedAt: v.CreatedAt, Data: v.Data}
+func cardVersionResponse(v *data_models.CardVersion, createdByName string) CardVersionResponse {
+	return CardVersionResponse{VersionNo: v.VersionNo, Note: v.Note, CreatedByUserID: v.CreatedByUserID, CreatedByName: createdByName, CreatedAt: v.CreatedAt, Data: v.Data}
 }
 
 func cardResponse(db *gorm.DB, c *data_models.Card, withData bool) (CardResponse, error) {
@@ -332,9 +335,14 @@ func ListCardVersionsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Failed to list versions")
 		return
 	}
+	ids := make([]uint, 0, len(versions))
+	for i := range versions {
+		ids = append(ids, versions[i].CreatedByUserID)
+	}
+	names := cardgenActorNames(db, ids)
 	out := make([]CardVersionResponse, 0, len(versions))
 	for i := range versions {
-		out = append(out, cardVersionResponse(&versions[i]))
+		out = append(out, cardVersionResponse(&versions[i], names[versions[i].CreatedByUserID]))
 	}
 	current := 0
 	if v, err := data_models.CurrentCardVersion(db, card); err == nil {
@@ -373,7 +381,7 @@ func CreateCardVersionHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Failed to save version")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"version": cardVersionResponse(v)})
+	c.JSON(http.StatusCreated, gin.H{"version": cardVersionResponse(v, cardgenActorName(db, v.CreatedByUserID))})
 }
 
 // RestoreCardVersionHandler handles POST /cardgen/cards/:id/versions/:n/restore.
@@ -403,7 +411,7 @@ func RestoreCardVersionHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Failed to restore version")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"version": cardVersionResponse(v)})
+	c.JSON(http.StatusCreated, gin.H{"version": cardVersionResponse(v, cardgenActorName(db, v.CreatedByUserID))})
 }
 
 // ResolveCardHandler handles GET /cardgen/cards/:id/resolved.

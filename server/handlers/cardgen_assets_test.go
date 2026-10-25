@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"aspirant-online/server/data_models"
 	"aspirant-online/server/storage"
@@ -47,7 +48,7 @@ func newCardAssetFixture(t *testing.T) *cardAssetFixture {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	db.AutoMigrate(&data_models.CardAsset{}, &data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{}, &data_models.Card{}, &data_models.CardVersion{})
+	db.AutoMigrate(&data_models.CardAsset{}, &data_models.CardType{}, &data_models.CardTemplate{}, &data_models.CardTemplateVersion{}, &data_models.Card{}, &data_models.CardVersion{}, &data_models.User{}, &data_models.UserDisplayName{})
 	t.Cleanup(func() { db.Close() })
 
 	dir := t.TempDir()
@@ -551,5 +552,54 @@ func TestCardAssetUsage_AndDeleteRefusalWhileReferenced(t *testing.T) {
 	data_models.AddCardVersion(f.db, &card, json.RawMessage(`{"values": {}}`), "v2", 7)
 	if w := f.call(t, http.MethodDelete, "/cardgen/assets/"+cardAssetID(id)); w.Code != http.StatusOK {
 		t.Errorf("delete after references dropped: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// system_3 #8758: the asset rows name their uploader. The fixture's user 7
+// has an open display-name row, so the upload response, the list and the
+// single-asset route all carry "Anna"; a second row owned by a user id that
+// resolves to nothing carries "".
+func TestCardAssets_CarryTheUploadersName(t *testing.T) {
+	f := newCardAssetFixture(t)
+	if err := f.db.Create(&data_models.UserDisplayName{UserID: 7, DisplayName: "Anna", ValidFrom: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := f.upload(t, "moon.png", cardPNGBytes(t))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	up := decodeUpload(t, w)
+	if up.Asset.UploadedByName != "Anna" {
+		t.Errorf("upload uploaded_by_name = %q", up.Asset.UploadedByName)
+	}
+	gone := data_models.CardAsset{SHA256: strings.Repeat("b", 64), OriginalFilename: "gone.svg", MediaType: "image/svg+xml", Kind: "svg", ByteSize: 1, UploadedByUserID: 4242}
+	if err := f.db.Create(&gone).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w = f.call(t, http.MethodGet, "/cardgen/assets")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", w.Code, w.Body.String())
+	}
+	var list struct {
+		Assets []CardAssetResponse `json:"assets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	names := map[uint]string{}
+	for _, a := range list.Assets {
+		names[a.ID] = a.UploadedByName
+	}
+	if names[up.Asset.ID] != "Anna" || names[gone.ID] != "" {
+		t.Errorf("list uploaded_by_name = %v", names)
+	}
+
+	w = f.call(t, http.MethodGet, "/cardgen/assets/"+strconv.FormatUint(uint64(up.Asset.ID), 10))
+	var one struct {
+		Asset CardAssetResponse `json:"asset"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &one); err != nil || one.Asset.UploadedByName != "Anna" {
+		t.Errorf("get: %d %s (%v)", w.Code, w.Body.String(), err)
 	}
 }
