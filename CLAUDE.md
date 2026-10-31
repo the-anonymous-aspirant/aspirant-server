@@ -82,6 +82,13 @@ The server listens on **port 8080**.
 
 \* With none of the four set, the server logs outbound mail instead of sending it and says so at startup. That is the current production state: the relay is pending an operator decision (system_3 #5119).
 
+| `CF_ACCESS_TEAM_DOMAIN` | No† | Cloudflare Access team domain, e.g. `aspirators-team.cloudflareaccess.com`. The assertion's `iss` is `https://` plus this, and its signing keys come from `/cdn-cgi/access/certs` under it |
+| `CF_ACCESS_AUD` | No† | The `/admin` Access application's AUD tag; the assertion's `aud` must carry it |
+| `CF_ACCESS_ADMIN_EMAIL` | No† | The one address the Access policy allows; the assertion's `email` must equal it (case-insensitive) |
+| `BREAK_GLASS_TOKEN` | No | Secret the loopback-only nginx listener sends as `X-Aspirant-Break-Glass`. A matching header stands in for the Access assertion on `POST /login/admin` only; the password is still required. Unset means no break-glass |
+
+† The Admin-tier gate (system_3 #8798). With none of the three set, the password alone issues Admin, on `/login` and `/login/admin`. With all three set, `/login` gives an Admin account a `Member` claim, and only `POST /login/admin` with a valid `Cf-Access-Jwt-Assertion` (or the break-glass header) issues Admin. With only some set, the gate fails closed: Admin through break-glass only, and an error is logged on every admin sign-in. Unlike SMTP this is not a startup error, because a server that refuses to boot takes member sign-in and the games down too.
+
 ## Database Tables
 
 | Table | Description |

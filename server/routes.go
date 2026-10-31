@@ -105,6 +105,12 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// disclosed username+email+role for any username to unauth
 	// callers and had no client consumers.
 	router.POST("/login", middleware.LoginRateLimit(), handlers.LoginHandler)
+	// POST /login/admin is the only route that issues the Admin tier while the
+	// Cloudflare Access gate is on (system_3 #8798). The browser reaches it as
+	// /admin/sign-in, inside the /admin Access application, so the request
+	// carries the Cf-Access-Jwt-Assertion the handler checks. Same throttle as
+	// /login, sharing its per-IP and per-username buckets.
+	router.POST("/login/admin", middleware.LoginRateLimit(), handlers.AdminLoginHandler)
 	// POST /logout is public by design: it must clear the session cookie
 	// even when the token is already expired or malformed. Clearing the
 	// HttpOnly auth_token cannot be done from the SPA (security-finding
