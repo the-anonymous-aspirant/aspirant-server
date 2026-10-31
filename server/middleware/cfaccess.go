@@ -128,12 +128,12 @@ func (cfg AccessConfig) Issuer() string {
 	return "https://" + cfg.TeamDomain
 }
 
-// accessCertsURL maps the configured issuer to its signing-key endpoint. It is
+// AccessCertsURL maps the configured issuer to its signing-key endpoint. It is
 // never fed anything from the token: a URL taken from a caller-written iss
 // would have the server fetch an address of the caller's choosing before
 // anything in the token is trusted (security c57526). A variable so tests can
 // point it at a local server.
-var accessCertsURL = func(issuer string) string {
+var AccessCertsURL = func(issuer string) string {
 	return issuer + "/cdn-cgi/access/certs"
 }
 
@@ -246,7 +246,7 @@ func VerifyAccessAssertion(assertion string, cfg AccessConfig) error {
 			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
 		}
 		kid, _ := t.Header["kid"].(string)
-		return defaultAccessKeys.key(accessCertsURL(issuer), kid)
+		return defaultAccessKeys.key(AccessCertsURL(issuer), kid)
 	})
 	if err != nil {
 		return err
