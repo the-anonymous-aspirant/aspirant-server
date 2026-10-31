@@ -59,6 +59,16 @@ func main() {
 	server.AutoMigrate(db)
 	log.Println("Database connected and migrated successfully")
 
+	// The Admin-tier gate (system_3 #8798). Log its mode at every start, and
+	// revoke Admin sessions when the mode changed since the last start. A
+	// failure is logged, not fatal: the mode itself still applies to every
+	// sign-in, and a server that refuses to boot takes member sign-in down too.
+	if gateMode, err := handlers.ReconcileAdminGateMode(db); err != nil {
+		log.Printf("ERROR: Admin gate mode %q: could not reconcile admin sessions: %v", gateMode, err)
+	} else {
+		log.Printf("Admin gate (Cloudflare Access second factor): %s", gateMode)
+	}
+
 	// Start the background writer that persists proxied-call latency samples to
 	// aspirant_db (system_3 #5953). Best-effort: the request path never blocks on
 	// it and a nil db would make it a no-op (db is non-nil here — we fail fast

@@ -45,10 +45,16 @@ func HealthCheckHandler(c *gin.Context) {
 		status = "degraded"
 	}
 
+	// The Admin-tier gate's mode is not a secret, and it is published here,
+	// unauthenticated, so the security sweep can raise a finding whenever it is
+	// not "enforced" (system_3 #8798, security c57514).
+	_, gateMode := middleware.LoadAccessConfig()
+
 	c.JSON(http.StatusOK, gin.H{
-		"status":  status,
-		"service": "server",
-		"checks":  checks,
+		"status":              status,
+		"service":             "server",
+		"checks":              checks,
+		"admin_second_factor": gateMode.String(),
 	})
 }
 
