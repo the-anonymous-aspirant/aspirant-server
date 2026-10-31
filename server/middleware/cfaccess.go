@@ -84,9 +84,11 @@ func (m AccessMode) String() string {
 	}
 }
 
-// teamDomainShape is a bare host name: no scheme, port, path or userinfo, so
-// the configured value can only ever name a host under the issuer we build.
-var teamDomainShape = regexp.MustCompile(`^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
+// teamDomainShape is a Cloudflare Access team host, `<team>.cloudflareaccess.com`:
+// no scheme, port, path or userinfo, and no other domain, so a mistyped value
+// reads as misconfigured instead of fetching keys from some other host
+// (security c57547 note 2).
+var teamDomainShape = regexp.MustCompile(`^[A-Za-z0-9-]+\.cloudflareaccess\.com$`)
 
 // AccessConfig is the /admin Access application the assertion must come from.
 type AccessConfig struct {
@@ -142,8 +144,12 @@ type accessKeyCache struct {
 	url       string
 	keys      map[string]*rsa.PublicKey
 	fetchedAt time.Time
-	client    *http.Client
-	nowFn     func() time.Time
+	// The last fetch attempt, successful or not: attempts are spaced by
+	// accessKeysMinRefetch per team (security c57547 note 1).
+	attemptURL  string
+	attemptedAt time.Time
+	client      *http.Client
+	nowFn       func() time.Time
 }
 
 var defaultAccessKeys = &accessKeyCache{
@@ -159,19 +165,29 @@ func (k *accessKeyCache) key(url, kid string) (*rsa.PublicKey, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	now := k.nowFn()
-	fresh := k.url == url && k.keys != nil && now.Sub(k.fetchedAt) < accessKeysTTL
-	if key, ok := k.keys[kid]; fresh && ok {
+	sameTeam := k.url == url && k.keys != nil
+	if key, ok := k.keys[kid]; sameTeam && ok && now.Sub(k.fetchedAt) < accessKeysTTL {
 		return key, nil
 	}
-	if fresh && now.Sub(k.fetchedAt) < accessKeysMinRefetch {
-		return nil, fmt.Errorf("unknown signing key %q", kid)
+	// At most one fetch a minute per team, whether the last one succeeded (an
+	// unknown kid) or failed. Without the failed case, a certs outage past the
+	// TTL had every admin sign-in retry the fetch, holding this mutex for up
+	// to the HTTP timeout each time (security c57547 note 1). In between, a
+	// cached key for this team keeps serving; with none, refuse.
+	if k.attemptURL == url && now.Sub(k.attemptedAt) < accessKeysMinRefetch {
+		if key, ok := k.keys[kid]; sameTeam && ok {
+			return key, nil
+		}
+		return nil, fmt.Errorf("unknown signing key %q (next key fetch after %s)",
+			kid, k.attemptedAt.Add(accessKeysMinRefetch).UTC().Format(time.RFC3339))
 	}
+	k.attemptURL, k.attemptedAt = url, now
 	keys, err := fetchAccessKeys(k.client, url)
 	if err != nil {
 		// A cached key set for this team keeps serving until a refetch
 		// succeeds, so a Cloudflare blip does not lock the operator out. With
 		// nothing cached, refuse (security c57526).
-		if key, ok := k.keys[kid]; ok && k.url == url {
+		if key, ok := k.keys[kid]; ok && sameTeam {
 			log.Printf("Access signing keys: refetch failed, serving the cached set: %v", err)
 			return key, nil
 		}

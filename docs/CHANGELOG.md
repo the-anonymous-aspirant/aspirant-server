@@ -16,6 +16,12 @@
 
 ### Security
 
+- **Access key fetches during a certs outage are spaced a minute apart, and the
+  team domain must be `<team>.cloudflareaccess.com`** (system_3 #9285, security
+  notes 1-2 on PR 148). A failed fetch past the cache TTL was retried by every
+  admin sign-in while holding the cache lock; now each team gets at most one
+  attempt a minute, the cached set serving in between. A
+  `CF_ACCESS_TEAM_DOMAIN` on any other domain reads as `misconfigured`.
 - **The Admin tier can be gated on Cloudflare Access** (system_3 #8798, #9269).
   New `POST /login/admin` issues the `Admin` claim only to a request carrying a
   valid `Cf-Access-Jwt-Assertion` for the `/admin` Access application (RS256
