@@ -16,6 +16,16 @@
 
 ### Security
 
+- **The Admin tier can be gated on Cloudflare Access** (system_3 #8798, #9269).
+  New `POST /login/admin` issues the `Admin` claim only to a request carrying a
+  valid `Cf-Access-Jwt-Assertion` for the `/admin` Access application (RS256
+  against the team's published keys, `aud`, `iss`, `exp`, the admin email), or
+  the loopback break-glass header, and checks that before the password. While
+  the gate is on, `/login` gives an Admin account a `Member` claim, so a stolen
+  password alone reaches no admin route, through Cloudflare or around it
+  (`:8081`, a sibling container). The gate is off until `CF_ACCESS_TEAM_DOMAIN`,
+  `CF_ACCESS_AUD` and `CF_ACCESS_ADMIN_EMAIL` are all set; a partial set fails
+  closed. See CLAUDE.md's environment table.
 - **Asset storage keys are confined to `ASSET_BASE_PATH`; the Member
   `POST /api/upload` route is removed** (system_3 #8657, reported from the
   card-editor design review in #8634). `storage.LocalStorage` joined a client
