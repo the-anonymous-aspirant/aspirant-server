@@ -194,6 +194,54 @@ func TestAccessKeysFetchFailure(t *testing.T) {
 	})
 }
 
+// Security c57547 note 1: during a certs outage, a failed fetch is not retried
+// by every sign-in; attempts are spaced a minute apart, the cached set serving
+// in between.
+func TestAccessKeysFailedFetchIsRetriedAtMostOncePerMinute(t *testing.T) {
+	t.Run("with a cached set", func(t *testing.T) {
+		k := accesstest.NewKeys(t, "kid-1")
+		_, now := useKeys(t, k)
+		token := k.Mint(t, accesstest.Claims())
+		if err := VerifyAccessAssertion(token, fixtureConfig); err != nil {
+			t.Fatalf("warm-up: %v", err)
+		}
+		k.Status.Store(http.StatusBadGateway)
+		*now = now.Add(2 * accessKeysTTL)
+		for i := 0; i < 3; i++ {
+			if err := VerifyAccessAssertion(token, fixtureConfig); err != nil {
+				t.Fatalf("attempt %d inside the outage: stale cache refused: %v", i, err)
+			}
+		}
+		if got := k.Hits(); got != 2 {
+			t.Fatalf("fetches = %d, want 2 (the warm-up and one failed refetch)", got)
+		}
+		*now = now.Add(2 * time.Minute)
+		_ = VerifyAccessAssertion(token, fixtureConfig)
+		if got := k.Hits(); got != 3 {
+			t.Fatalf("fetches after the minute = %d, want 3", got)
+		}
+	})
+	t.Run("with an empty cache", func(t *testing.T) {
+		k := accesstest.NewKeys(t, "kid-1")
+		_, now := useKeys(t, k)
+		k.Status.Store(http.StatusBadGateway)
+		token := k.Mint(t, accesstest.Claims())
+		for i := 0; i < 3; i++ {
+			if err := VerifyAccessAssertion(token, fixtureConfig); err == nil {
+				t.Fatalf("attempt %d accepted with no keys", i)
+			}
+		}
+		if got := k.Hits(); got != 1 {
+			t.Fatalf("fetches = %d, want 1", got)
+		}
+		k.Status.Store(http.StatusOK)
+		*now = now.Add(2 * time.Minute)
+		if err := VerifyAccessAssertion(token, fixtureConfig); err != nil {
+			t.Fatalf("after the outage, past the minute: %v", err)
+		}
+	})
+}
+
 func TestLoadAccessConfigModes(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -208,6 +256,9 @@ func TestLoadAccessConfigModes(t *testing.T) {
 		{"team with a scheme", "https://" + accesstest.Team, accesstest.AUD, accesstest.AdminEmail, AccessMisconfigured, "misconfigured"},
 		{"team with a path", accesstest.Team + "/x", accesstest.AUD, accesstest.AdminEmail, AccessMisconfigured, "misconfigured"},
 		{"team with a port", accesstest.Team + ":8443", accesstest.AUD, accesstest.AdminEmail, AccessMisconfigured, "misconfigured"},
+		{"team on another domain", "aspirators-team.example.com", accesstest.AUD, accesstest.AdminEmail, AccessMisconfigured, "misconfigured"},
+		{"team domain alone", "cloudflareaccess.com", accesstest.AUD, accesstest.AdminEmail, AccessMisconfigured, "misconfigured"},
+		{"team with a sub-subdomain", "a.b.cloudflareaccess.com", accesstest.AUD, accesstest.AdminEmail, AccessMisconfigured, "misconfigured"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
