@@ -52,6 +52,17 @@ func TestIsPubliclyPublishedETag_StripsQuotedInput(t *testing.T) {
 	}
 }
 
+// The Support nav icon and the support page's "Buy me a coffee" button
+// (system_3 #9231) fetch this hash unauthenticated on every route; it
+// must be in the default whitelist, not just in the client's asset map.
+const coffeeMugETag = "b5eeea9419635aaa0313bc4167c95731"
+
+func TestIsPubliclyPublishedETag_CoffeeMugReturnsTrue(t *testing.T) {
+	if !IsPubliclyPublishedETag(coffeeMugETag) {
+		t.Fatalf("coffee mug ETag %s should be in the whitelist", coffeeMugETag)
+	}
+}
+
 // --- FetchObjectHandler: gate behaviour ---
 
 func newFetchObjectRouter() *gin.Engine {

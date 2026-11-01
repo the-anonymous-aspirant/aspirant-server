@@ -158,6 +158,7 @@ func getDefaultAssetMappings() AssetMappingsConfig {
 		"gift-tile-8":             {Hash: "251aedf920f534f50b7aaf12ececaa6a", Type: "image"},
 		"gift-tile-9":             {Hash: "796f215d76aa3e1db1fb24d6fa5032d8", Type: "image"},
 		"qr-30-year-gift":         {Hash: "c21f41ffd5314e235f78fd3efe3e7464", Type: "image"},
+		"coffemug":                {Hash: "b5eeea9419635aaa0313bc4167c95731", Type: "image"},
 
 		// Audio
 		"ludde-sound":          {Hash: "93da53623e880afed235e170f55894ab", Type: "audio"},
