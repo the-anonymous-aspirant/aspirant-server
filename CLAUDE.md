@@ -111,6 +111,13 @@ The server listens on **port 8080**.
 
 ## Conventions
 
+### Changelog
+
+`docs/CHANGELOG.md` is never edited in a feature PR. Add one file per PR under
+`docs/changelog.d/`, named with its category (format in `docs/changelog.d/README.md`;
+validate with `sh scripts/changelog.sh check`). `scripts/changelog.sh collect` folds
+the fragments into the changelog on a PR of its own.
+
 This project follows the conventions defined in the [aspirant-meta](https://github.com/the-anonymous-aspirant/aspirant-meta) repository:
 
 - **DEVELOPMENT_PHILOSOPHY.md** -- AI-assisted development workflow
