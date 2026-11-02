@@ -1,5 +1,7 @@
 # Changelog
 
+_New entries are files in [changelog.d/](changelog.d/README.md), one per PR, named with their category; `scripts/changelog.sh collect` folds them in here._
+
 ## Unreleased
 
 - Storage: bytes under `cardgen/` are never entered in the MD5 index that the

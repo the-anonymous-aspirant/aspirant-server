@@ -91,6 +91,10 @@ go test -v ./...
 # Run specific package tests
 go test -v ./server/data_functions/...
 go test -v ./server/handlers/...
+
+# Changelog fragments (docs/changelog.d/): validate, then the shell unit test
+sh scripts/changelog.sh check
+sh tests/changelog_unit.sh
 ```
 
 ## Debugging

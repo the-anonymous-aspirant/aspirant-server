@@ -90,7 +90,8 @@ aspirant-server/
 │   ├── SPEC.md
 │   ├── ARCHITECTURE.md
 │   ├── OPERATIONS.md
-│   ├── CHANGELOG.md
+│   ├── CHANGELOG.md             # Rendered by scripts/changelog.sh; PRs add fragments
+│   ├── changelog.d/             # One changelog fragment per PR (README.md there)
 │   └── DECISIONS.md
 │
 └── .github/

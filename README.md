@@ -88,5 +88,5 @@ See [docs/OPERATIONS.md](docs/OPERATIONS.md) for detailed build arguments and de
 - [SPEC.md](docs/SPEC.md) -- Full API specification
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) -- Architecture diagrams
 - [OPERATIONS.md](docs/OPERATIONS.md) -- Setup, run, test, debug
-- [CHANGELOG.md](docs/CHANGELOG.md) -- Release history
+- [CHANGELOG.md](docs/CHANGELOG.md) -- Release history, rendered from [changelog.d/](docs/changelog.d/README.md): add one fragment per PR, never edit the file
 - [DECISIONS.md](docs/DECISIONS.md) -- Key design decisions
