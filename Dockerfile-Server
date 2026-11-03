@@ -17,7 +17,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
 # Production stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates tzdata
+# poppler-utils: the N26 import reads uploaded PDFs via pdftotext (#9812).
+RUN apk --no-cache add ca-certificates tzdata poppler-utils
 
 WORKDIR /root/
 
