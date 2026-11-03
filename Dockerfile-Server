@@ -20,15 +20,24 @@ FROM alpine:latest
 # poppler-utils: the N26 import reads uploaded PDFs via pdftotext (#9812).
 RUN apk --no-cache add ca-certificates tzdata poppler-utils
 
-WORKDIR /root/
+# The server runs as uid/gid 1000 ("server"), never root: /data/files is
+# bind-mounted from a 1000:1000-owned host dir, and the process parses
+# user-uploaded input (security N2 on system_3 #9812, task #9816).
+RUN addgroup -g 1000 server && adduser -D -H -u 1000 -G server server
+
+# /app, not /root: asset_mappings.json is saved to the working directory,
+# which must be writable by the non-root user.
+WORKDIR /app
 
 ENV TZ=UTC
 ENV PORT=8080
 
-RUN mkdir -p /data/files/shared
+RUN mkdir -p /data/files/shared && chown -R server:server /data/files /app
 
 COPY --from=builder /app/main .
 
 EXPOSE 8080
+
+USER server
 
 CMD ["./main"]
