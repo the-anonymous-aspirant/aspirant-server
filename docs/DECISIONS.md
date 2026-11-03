@@ -64,3 +64,21 @@ Key architectural and design decisions for aspirant-server.
 - **gopdf over `go-pdf/fpdf`.** fpdf was the usual Go choice, but its repository is archived (read 2026-10-21). gopdf is maintained and pure Go.
 - **Embedded TTF over core fonts.** Core fonts are limited to Latin-1, so a client name like "Łukasz" could only be printed by changing it. The embedded TTF prints every name exactly, on any runtime image, with nothing to install.
 - **Stored, not regenerated.** Storing the issued bytes means a later profile or client edit, a font update or a library upgrade can never alter a document that has already been issued.
+
+## PDF Text Extraction for the N26 Import
+
+**Decision:** Read uploaded N26 PDFs (transfer confirmations, account statements) with poppler's `pdftotext -layout`, run as a subprocess; the runtime image adds `poppler-utils` (system_3 #9812, choice matrix per corpus/system_3_choice_matrix.md).
+
+**Dimensions** (from CONVENTIONS.md/DEVELOPMENT_PHILOSOPHY.md: minimal dependencies, resource limits everywhere, fail loudly; plus one must-pass):
+
+| Dimension | pdftotext subprocess | ledongthuc/pdf (pure Go) | go-pdfium (wasm) | No parser (manual entry only) |
+|---|---|---|---|---|
+| Extracts the real N26 files (must-pass) | ✓ probed 2026-11-03: 1190 chars, 11/11 template keywords | ✗ probed: 209 chars, 0/11 keywords, at both v0.0.0-20250510 and latest v0.0.0-20261020 — cannot decode these files' font cmaps | untested, pdfium itself is proven on CID fonts | n/a — nothing extracted |
+| Dependency weight | ~9 MB apk package in the runtime image, zero Go deps | one Go module | ~? tens of MB wasm blob + wazero runtime module | zero |
+| Blast radius of malformed input | subprocess dies, server unaffected; 10 s timeout, 5 MB cap | in-process panic risk | in-process wasm, sandboxed | zero |
+| Maintenance | poppler is the xpdf lineage, maintained for decades | maintained, but demonstrably wrong on these files | maintained, heavy API | n/a |
+| **Recommendation** | **chosen** | rejected on the must-pass | viable fallback if poppler ever fails a file | rejected: the operator chose an importer (#9760 c60232) |
+
+**Why only an OS package and not a Go module:** the only maintained pure-Go candidate fails the must-pass dimension outright — the toolchain question (it needs go ≥ 1.24.1; this repo is on 1.26) turned out irrelevant, it extracts garbage from these files at every version. pdfium would work but costs an order of magnitude more complexity than shelling out to a binary alpine ships.
+
+**Open questions parked:** the account-statement strategy is built against look-alike fixtures only (no real statement existed at authoring time); its first real file validates it (system_3 #9814). If poppler's output shape for statements differs, only `parseN26AccountStatement` changes.
