@@ -1,0 +1,17 @@
+Estratto conto
+
+N26 Bank SE
+Nome Cognome Esempio
+IBAN DE00000011112222333344
+
+Data          Descrizione                                           Importo
+
+01.08.2026    Mara Esempio                                          +250,00 EUR
+              Bonifico ricevuto Illustrazione logo
+
+03.08.2026    Supermercato Esempio                                  -45,67 EUR
+
+05.08.2026    Cliente Due SRL                                       1.000,00 EUR
+              Acconto progetto murale
+
+N26 Bank SE Voltairestraße 8, 10179 Berlin, Germany

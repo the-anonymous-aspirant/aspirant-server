@@ -1,0 +1,65 @@
+Conferma dell'operazione
+
+
+
+
+Dettagli operazione
+
+
+
+
+Tipo di operazione                                    Importo
+
+
+Bonifico istantaneo                                   1.234,56 EUR
+
+
+Data valuta                                           Data operazione
+
+
+14.07.2026                                            13.07.2026
+
+
+Identificativo operazione                             Commissione
+
+
+a1b2c3d4-0e15-4a6f-9bd0-123456789abc                  0,00 EUR
+
+
+Causale
+
+Illustrazione copertina album
+
+
+
+
+DETTAGLI MITTENTE
+
+Mara Esempio
+                                                      IBAN
+
+
+                                                      DE00123456780000000000
+                                                      BIC
+
+
+                                                      EXAMPDEXXXX
+
+
+
+DETTAGLI DESTINATARIO
+
+Nome Cognome Esempio
+                                                      IBAN
+
+
+                                                      DE00000011112222333344
+                                                      BIC
+
+
+                                                      NTSBDEB1XXX
+
+
+
+
+N26 Bank SE Voltairestraße 8, 10179 Berlin, Germany                            Data   03.11.2026
