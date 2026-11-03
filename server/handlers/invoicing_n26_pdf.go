@@ -29,6 +29,13 @@ const (
 	// maxN26FilesPerRequest bounds one parse request; the operator's batch is
 	// five files, and a bigger upload is better split anyway.
 	maxN26FilesPerRequest = 10
+
+	// maxN26PDFPages and maxN26TextBytes bound the extractor explicitly
+	// rather than leaving the timeout as the only brake on a crafted
+	// many-page PDF (security review N1, #9812 c60279). A confirmation is
+	// one page; statements are a handful.
+	maxN26PDFPages = 20
+	maxN26TextBytes = 1 << 20
 )
 
 var errNotAPDF = errors.New("the file is not a PDF")
@@ -56,7 +63,10 @@ func ExtractN26PDFText(data []byte) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), n26ExtractTimeout)
 	defer cancel()
 	var out, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "pdftotext", "-layout", tmp.Name(), "-")
+	cmd := exec.CommandContext(ctx, "pdftotext", "-layout", "-l", fmt.Sprint(maxN26PDFPages), tmp.Name(), "-")
+	// The child parses hostile input; it gets a minimal environment, not the
+	// server's (security review N2, #9812 c60279).
+	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -64,6 +74,9 @@ func ExtractN26PDFText(data []byte) (string, error) {
 			return "", fmt.Errorf("pdftotext timed out after %s", n26ExtractTimeout)
 		}
 		return "", fmt.Errorf("pdftotext: %v (%s)", err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	if out.Len() > maxN26TextBytes {
+		return "", fmt.Errorf("the PDF's text is larger than %d bytes", maxN26TextBytes)
 	}
 	return out.String(), nil
 }

@@ -113,6 +113,10 @@ func TestN26ParseTransferConfirmationMalformed(t *testing.T) {
 		"no amount":    strings.Replace(full, "1.234,56 EUR", "", 1),
 		"no uuid":      strings.Replace(full, "a1b2c3d4-0e15-4a6f-9bd0-123456789abc", "not-an-id", 1),
 		"no sender":    strings.Replace(full, "DETTAGLI MITTENTE", "QUALCOS'ALTRO", 1),
+		// Security review F2 (c60279): with the name line gone, the block's
+		// first content is the IBAN value — the parser must refuse, never
+		// store the IBAN as the sender.
+		"name missing": strings.Replace(full, "Mara Esempio\n", "", 1),
 		"fee >= gross": strings.Replace(full, "0,00 EUR", "2.000,00 EUR", 1),
 	} {
 		if _, err := parseN26TransferConfirmation(text); err == nil {
@@ -153,6 +157,39 @@ func TestN26ParseStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
+	for i := range cands {
+		if cands[i].TransactionID != again[i].TransactionID {
+			t.Errorf("row %d id not stable: %q vs %q", i, cands[i].TransactionID, again[i].TransactionID)
+		}
+	}
+}
+
+// Two genuinely separate but field-identical rows in one statement are two
+// payments, not a duplicate — and stay deterministic across a re-parse
+// (security review F1, c60279).
+func TestN26ParseStatementIdenticalRows(t *testing.T) {
+	block := "01.08.2026    Mara Esempio                                          +250,00 EUR\n" +
+		"              Bonifico ricevuto Illustrazione logo\n"
+	text := readN26Fixture(t, "n26_statement.txt")
+	if !strings.Contains(text, block) {
+		t.Fatal("fixture drifted: the doubled block is not in it verbatim")
+	}
+	doubled := strings.Replace(text, block, block+block, 1)
+	cands, err := parseN26AccountStatement(doubled)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ids := map[string]int{}
+	for _, c := range cands {
+		ids[c.TransactionID]++
+	}
+	if len(cands) != 3 || len(ids) != 3 {
+		t.Fatalf("got %d candidates with %d distinct ids, want 3 and 3: %+v", len(cands), len(ids), cands)
+	}
+	if cands[0].Note != cands[1].Note || cands[0].GrossCents != cands[1].GrossCents {
+		t.Fatalf("the two copies must be field-identical for this test to bite: %+v vs %+v", cands[0], cands[1])
+	}
+	again, _ := parseN26AccountStatement(doubled)
 	for i := range cands {
 		if cands[i].TransactionID != again[i].TransactionID {
 			t.Errorf("row %d id not stable: %q vs %q", i, cands[i].TransactionID, again[i].TransactionID)
@@ -408,7 +445,16 @@ func TestN26ConfirmValidation(t *testing.T) {
 			t.Errorf("bad row %d: got %d (%s)", i, w.Code, w.Body.String())
 		}
 	}
-	// The unmutated row is the positive control for the eight above.
+	// Security review N3 (c60279): the batch is bounded.
+	many := make([]n26Candidate, maxN26ConfirmRows+1)
+	for i := range many {
+		many[i] = good
+	}
+	if w := confirmN26(t, r, many); w.Code != http.StatusBadRequest {
+		t.Errorf("oversize batch: got %d", w.Code)
+	}
+
+	// The unmutated row is the positive control for the shapes above.
 	if w := confirmN26(t, r, []n26Candidate{good}); w.Code != http.StatusOK {
 		t.Fatalf("good row: %d %s", w.Code, w.Body.String())
 	}

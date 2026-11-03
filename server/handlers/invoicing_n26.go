@@ -40,6 +40,9 @@ const (
 
 	n26KindTransferConfirmation = "n26_transfer_confirmation"
 	n26KindAccountStatement     = "n26_account_statement"
+
+	// maxN26ConfirmRows bounds one confirm request (security review N3).
+	maxN26ConfirmRows = 500
 )
 
 // Per-file parse error codes, machine-readable for the client.
@@ -101,6 +104,9 @@ var (
 	// "400,00 €").
 	n26AmountPattern = regexp.MustCompile(`(\d[\d.]*,\d{2})\s*(?:EUR|€)`)
 	n26DatePattern = regexp.MustCompile(`\d{2}\.\d{2}\.\d{4}`)
+	// n26IBANPattern recognises an IBAN standing alone where a name should
+	// be, the second half of the F2 fix (c60279).
+	n26IBANPattern = regexp.MustCompile(`^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$`)
 	n26UUIDPattern         = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 	// n26StatementRowPattern is one statement transaction line: booking date,
 	// counterparty, signed amount at line end. Continuation lines (no date)
@@ -248,14 +254,28 @@ func parseN26TransferConfirmation(text string) ([]n26Candidate, error) {
 	if mittenteHeader < 0 {
 		return nil, fmt.Errorf("missing the %q block", "DETTAGLI MITTENTE")
 	}
-	senderLine := nextContentLine(mittenteHeader, func(l string) bool {
-		t := strings.TrimSpace(l)
-		return t != "IBAN" && t != "BIC" && !strings.Contains(t, "DETTAGLI")
-	})
-	if senderLine < 0 {
+	// The name is only ever the content line BEFORE the block's first IBAN
+	// label; without one the block has no name, and stopping there keeps an
+	// IBAN value from being stored as the sender (security review F2, #9812
+	// c60279).
+	senderName := ""
+	for i := mittenteHeader + 1; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if t == "" {
+			continue
+		}
+		if strings.Contains(t, "IBAN") || strings.Contains(t, "DETTAGLI") {
+			break
+		}
+		senderName = t
+		break
+	}
+	if senderName == "" {
 		return nil, fmt.Errorf("no sender name in the DETTAGLI MITTENTE block")
 	}
-	senderName := strings.TrimSpace(lines[senderLine])
+	if n26IBANPattern.MatchString(senderName) {
+		return nil, fmt.Errorf("the DETTAGLI MITTENTE block carries an IBAN where the name belongs")
+	}
 
 	return []n26Candidate{{
 		DocumentKind:  n26KindTransferConfirmation,
@@ -323,9 +343,17 @@ func parseN26AccountStatement(text string) ([]n26Candidate, error) {
 			lastIdx = -1
 		}
 	}
+	// The id carries the row's occurrence number among identical (date,
+	// amount, sender, note) tuples, so two genuinely separate but identical
+	// payments in one statement stay two payments, while a re-upload of the
+	// same file still produces the same ids (security review F1, #9812
+	// c60279).
+	counts := map[string]int{}
 	for i := range out {
 		c := &out[i]
-		sum := sha256.Sum256([]byte(c.PaidOn + "|" + fmt.Sprint(c.GrossCents) + "|" + c.SenderName + "|" + c.Note))
+		key := c.PaidOn + "|" + fmt.Sprint(c.GrossCents) + "|" + c.SenderName + "|" + c.Note
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d", key, counts[key])))
+		counts[key]++
 		c.TransactionID = "stmt-" + hex.EncodeToString(sum[:])[:24]
 	}
 	return out, nil
@@ -478,6 +506,14 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	}
 	if len(req.Rows) == 0 {
 		RespondWithError(c, http.StatusBadRequest, "rows is empty")
+		return
+	}
+	// Each row runs an existence query under the issuing lock, so the batch
+	// is bounded (security review N3, #9812 c60279). 20 files of statement
+	// rows stay well below it.
+	if len(req.Rows) > maxN26ConfirmRows {
+		respondError(c, http.StatusBadRequest, "too_many_rows",
+			fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows))
 		return
 	}
 	type validated struct {
