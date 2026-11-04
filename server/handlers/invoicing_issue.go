@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aspirant-online/server/data_models"
+	"aspirant-online/server/invoicing_pdf"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -60,8 +61,8 @@ func checkIssuable(tx *gorm.DB, inv *data_models.InvoicingInvoice, items []data_
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if client == nil || !client.IsInvoiceable() {
-		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the client needs a name and a postal address"), nil
+	if client == nil || strings.TrimSpace(client.Name) == "" {
+		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the client needs a name"), nil
 	}
 
 	if len(items) == 0 {
@@ -71,6 +72,20 @@ func checkIssuable(tx *gorm.DB, inv *data_models.InvoicingInvoice, items []data_
 		if strings.TrimSpace(it.Description) == "" || it.QuantityMilli <= 0 || it.UnitPriceCents <= 0 {
 			return nil, nil, guard(http.StatusUnprocessableEntity, "line_items_incomplete",
 				"line item %d needs a description, a quantity above zero and a price above zero", it.Position), nil
+		}
+	}
+
+	// The recipient's address is an issue-time rule on the gross total, not
+	// a property of the client (system_3 #9835): up to 250 EUR gross the
+	// invoice is a §33 UStDV Kleinbetragsrechnung and needs none. The total
+	// is the one issuing is about to freeze, computed the same way.
+	if !client.HasPostalAddress() {
+		gross := *inv
+		recomputeTotals(&gross, items, profile.IsKleinunternehmer)
+		if data_models.InvoiceNeedsRecipientAddress(gross.TotalCents, gross.Currency) {
+			return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete",
+				"the client has no postal address, and this invoice totals %s gross: above %s an invoice must name the recipient's full address (§14 Abs. 4 UStG, §34a UStDV). Add the client's postal address to issue it",
+				invoicing_pdf.FormatEuro(gross.TotalCents, gross.Currency), invoicing_pdf.FormatEuro(data_models.KleinbetragLimitCents, "EUR")), nil
 		}
 	}
 
