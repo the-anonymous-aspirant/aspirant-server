@@ -30,6 +30,15 @@ const (
 	xlsxMaxSharedStrings = 100000
 	xlsxMaxRows          = 20000
 	xlsxMaxColumns       = 200
+	// encoding/xml builds its element stack and each start element's
+	// attribute slice before a token reaches us, so the part cap alone does
+	// not bound memory (@security F2, c60958 on system_3 #9872): 10M nested
+	// elements in 30 MB peaked at 1.1 GB. The depth cap and the run cap (no
+	// more than 1 MB between two '<', which bounds any one tag, its
+	// attributes and any one text node) close that. Real SpreadsheetML nests
+	// under ten deep, and Excel caps a cell's text at 32,767 characters.
+	xlsxMaxDepth    = 64
+	xlsxMaxRunBytes = 1 << 20
 )
 
 // errNotXLSX is returned for a zip that is not a SpreadsheetML workbook.
@@ -47,10 +56,12 @@ type xlsxInSheet struct {
 }
 
 // cappedReader fails once more than n bytes have been read, instead of
-// silently truncating the way io.LimitReader does.
+// silently truncating the way io.LimitReader does, and once more than
+// xlsxMaxRunBytes pass without a '<'.
 type cappedReader struct {
 	r    io.Reader
 	n    int64
+	run  int
 	name string
 }
 
@@ -63,10 +74,44 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 	}
 	k, err := c.r.Read(p)
 	c.n -= int64(k)
+	for _, b := range p[:k] {
+		if b == '<' {
+			c.run = 0
+			continue
+		}
+		c.run++
+		if c.run > xlsxMaxRunBytes {
+			return 0, fmt.Errorf("the workbook part %s holds a tag or text longer than %d MB", c.name, xlsxMaxRunBytes>>20)
+		}
+	}
 	return k, err
 }
 
-func openXLSXPart(f *zip.File) (*xml.Decoder, io.Closer, error) {
+// xlsxDecoder refuses elements nested deeper than xlsxMaxDepth.
+type xlsxDecoder struct {
+	*xml.Decoder
+	depth int
+	name  string
+}
+
+func (d *xlsxDecoder) next() (xml.Token, error) {
+	tok, err := d.Decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch tok.(type) {
+	case xml.StartElement:
+		d.depth++
+		if d.depth > xlsxMaxDepth {
+			return nil, fmt.Errorf("the workbook part %s nests elements deeper than %d", d.name, xlsxMaxDepth)
+		}
+	case xml.EndElement:
+		d.depth--
+	}
+	return tok, nil
+}
+
+func openXLSXPart(f *zip.File) (*xlsxDecoder, io.Closer, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, nil, errNotXLSX
@@ -74,7 +119,7 @@ func openXLSXPart(f *zip.File) (*xml.Decoder, io.Closer, error) {
 	// One byte over the cap is what tells an oversized part from one that is
 	// exactly at it.
 	d := xml.NewDecoder(&cappedReader{r: rc, n: xlsxMaxPartBytes + 1, name: f.Name})
-	return d, rc, nil
+	return &xlsxDecoder{Decoder: d, name: f.Name}, rc, nil
 }
 
 func attr(se xml.StartElement, local string) (string, bool) {
@@ -96,7 +141,7 @@ func readXLSXWorkbook(f *zip.File) (string, bool, error) {
 	defer c.Close()
 	relID, date1904 := "", false
 	for {
-		tok, err := d.Token()
+		tok, err := d.next()
 		if err == io.EOF {
 			break
 		}
@@ -138,7 +183,7 @@ func readXLSXRels(f *zip.File) (map[string]string, string, error) {
 	defer c.Close()
 	targets, shared := map[string]string{}, ""
 	for {
-		tok, err := d.Token()
+		tok, err := d.next()
 		if err == io.EOF {
 			break
 		}
@@ -178,7 +223,7 @@ func readXLSXSharedStrings(f *zip.File) ([]string, error) {
 	var cur strings.Builder
 	inSI, inT, phonetic := false, false, 0
 	for {
-		tok, err := d.Token()
+		tok, err := d.next()
 		if err == io.EOF {
 			break
 		}
@@ -255,7 +300,7 @@ func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
 	inV, inIS, inT, phonetic := false, false, false, 0
 
 	for {
-		tok, err := d.Token()
+		tok, err := d.next()
 		if err == io.EOF {
 			break
 		}

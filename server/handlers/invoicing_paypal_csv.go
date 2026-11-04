@@ -54,6 +54,13 @@ const (
 	paypalDateOrderMDY  = "mdy"
 )
 
+// paypalMaxRowTextBytes caps the text the importable rows carry in total. A
+// CSV can never store more than its 5 MB upload, but an .xlsx cell holds a
+// reference to a shared string, so one long string referenced from every row
+// fanned a 0.1 MB upload out to 382 MB of stored text (@security F1, c60958
+// on system_3 #9872). The cap sits here so it covers both formats.
+const paypalMaxRowTextBytes = 32 << 20
+
 // ErrPayPalDateOrderAmbiguous is returned when every slash date in the file
 // reads both ways; the caller must pass the order explicitly.
 var ErrPayPalDateOrderAmbiguous = errors.New("every date in the file reads as both day/month and month/day; re-upload with date_order=dmy or date_order=mdy")
@@ -495,6 +502,7 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	// reverses) or by its reference id.
 	reversals := map[string][]int64{}
 	var candidates []paypalRow
+	textBytes := 0
 	for i, rec := range records {
 		line := i + 2 // 1-based, after the header
 		typ := strings.ToLower(get(rec, "type"))
@@ -602,6 +610,11 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 			// a positive deposit amount, and it has no sender.
 			row.GrossCents, row.NetCents = -gross, -net
 			row.SenderEmail = ""
+		}
+		textBytes += len(row.TransactionID) + len(row.ReferenceTxnID) + len(row.Currency) +
+			len(row.SenderName) + len(row.SenderEmail) + len(row.Note)
+		if textBytes > paypalMaxRowTextBytes {
+			return nil, fmt.Errorf("the file's rows carry more than %d MB of text", paypalMaxRowTextBytes>>20)
 		}
 		candidates = append(candidates, row)
 	}

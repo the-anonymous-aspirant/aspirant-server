@@ -278,8 +278,16 @@ func TestReadXLSX_Refusals(t *testing.T) {
 		{"not a zip", []byte("Date,Name\n"), "not an Excel workbook"},
 		{"zip without a workbook", zipParts(t, map[string]string{"hello.txt": "hi"}), "not an Excel workbook"},
 		{"too many entries", zipParts(t, many), "more than 256 parts"},
-		// About 33 MB of spaces deflates to some tens of KB: the bomb shape.
-		{"part unpacks past the cap", zipParts(t, workbookParts(sheetXML(strings.Repeat(" ", xlsxMaxPartBytes+16)), "", false)), "unpacks to more than 32 MB"},
+		// A deflate bomb: 32 MB of comments zips to a few tens of KB. The
+		// comments keep a '<' every 8 bytes, so the part cap, not the run
+		// cap, is what refuses it.
+		{"part unpacks past the cap", zipParts(t, workbookParts(sheetXML(strings.Repeat("<!--x-->", xlsxMaxPartBytes/8+2)), "", false)), "unpacks to more than 32 MB"},
+		// @security F2 probes (c60958 on system_3 #9872): one text run, one
+		// tag's attributes, and nesting, each refused before the decoder can
+		// grow its buffers or element stack.
+		{"text run past 1 MB", zipParts(t, workbookParts(sheetXML(strings.Repeat(" ", xlsxMaxRunBytes+16)), "", false)), "longer than 1 MB"},
+		{"attributes past 1 MB", zipParts(t, withPart(workbookParts(ok, "", false), "xl/workbook.xml", `<workbook`+strings.Repeat(` a=""`, xlsxMaxRunBytes/5+16)+`/>`)), "longer than 1 MB"},
+		{"nesting past 64", zipParts(t, withPart(workbookParts(ok, "", false), "xl/workbook.xml", strings.Repeat("<a>", 10000)+strings.Repeat("</a>", 10000))), "deeper than 64"},
 		{"column past the cap", zipParts(t, workbookParts(sheetXML(`<row><c r="XFD1"><v>1</v></c></row>`), "", false)), "more than 200 columns"},
 		{"overlong column letters", zipParts(t, workbookParts(sheetXML(`<row><c r="ZZZZZZZZZZZZZZZZZZZZ1"><v>1</v></c></row>`), "", false)), "more than 200 columns"},
 		{"too many rows", zipParts(t, workbookParts(sheetXML(rows.String()), "", false)), "more than 20000 rows"},
@@ -305,5 +313,59 @@ func TestReadXLSX_MissingFirstSheetIsNamed(t *testing.T) {
 	delete(parts, "xl/worksheets/activity.xml")
 	if _, err := readXLSXFirstSheet(zipParts(t, parts)); err == nil || !strings.Contains(err.Error(), "first worksheet is missing") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func withPart(parts map[string]string, name, body string) map[string]string {
+	out := map[string]string{}
+	for k, v := range parts {
+		out[k] = v
+	}
+	out[name] = body
+	return out
+}
+
+// fanOutWorkbook is @security's F1 probe (c60958 on system_3 #9872): one
+// shared string of n bytes, referenced from Name, Subject, Note and Item
+// Title on every one of rows rows, so a small upload carries rows*4*n bytes
+// of row text.
+func fanOutWorkbook(t *testing.T, n, rows int) []byte {
+	t.Helper()
+	inl := func(ref, v string) string {
+		return fmt.Sprintf(`<c r="%s" t="inlineStr"><is><t>%s</t></is></c>`, ref, v)
+	}
+	header := []string{"Date", "Name", "Type", "Status", "Currency", "Gross", "Transaction ID", "Subject", "Note", "Item Title"}
+	var hdr strings.Builder
+	for i, h := range header {
+		hdr.WriteString(inl(xlsxColumn(i)+"1", h))
+	}
+	xmlRows := []string{`<row r="1">` + hdr.String() + `</row>`}
+	for r := 2; r <= rows+1; r++ {
+		n := strconv.Itoa(r)
+		xmlRows = append(xmlRows, `<row r="`+n+`">`+
+			`<c r="A`+n+`"><v>46218</v></c><c r="B`+n+`" t="s"><v>0</v></c>`+
+			inl("C"+n, "Mobile Payment")+inl("D"+n, "Completed")+inl("E"+n, "EUR")+
+			`<c r="F`+n+`"><v>10</v></c>`+inl("G"+n, "T"+n)+
+			`<c r="H`+n+`" t="s"><v>0</v></c><c r="I`+n+`" t="s"><v>0</v></c><c r="J`+n+`" t="s"><v>0</v></c></row>`)
+	}
+	shared := `<sst><si><t>` + strings.Repeat("x", n) + `</t></si></sst>`
+	return zipParts(t, workbookParts(sheetXML(xmlRows...), shared, false))
+}
+
+func TestParsePayPalXLSX_SharedStringFanOutIsCapped(t *testing.T) {
+	for _, c := range []struct{ n, rows int }{{5 << 10, 2000}, {50 << 10, 200}} {
+		data := fanOutWorkbook(t, c.n, c.rows)
+		if len(data) > 1<<20 {
+			t.Fatalf("probe %d x %d: the upload is %d bytes, meant to be under 1 MB", c.n, c.rows, len(data))
+		}
+		_, err := ParsePayPalActivityXLSX(data, "")
+		if err == nil || !strings.Contains(err.Error(), "more than 32 MB of text") {
+			t.Errorf("probe %d B x %d rows: got %v, want the text cap", c.n, c.rows, err)
+		}
+	}
+	// Positive control: the same shape at half the text imports every row.
+	res, err := ParsePayPalActivityXLSX(fanOutWorkbook(t, 5<<10, 1000), "")
+	if err != nil || len(res.Rows) != 1000 {
+		t.Fatalf("control: %v, %d rows", err, len(res.Rows))
 	}
 }

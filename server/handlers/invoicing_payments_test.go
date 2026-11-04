@@ -305,6 +305,9 @@ func TestImportPayPal_XLSXStoresTheSameRowsAsTheCSV(t *testing.T) {
 	if s := decodeSummary(t, uploadCSV(t, xlsxR, paypalFixtureEN, "")); s.Imported != 0 || s.Duplicates != 3 {
 		t.Errorf("CSV after xlsx: %+v", s)
 	}
+	if s := decodeSummary(t, uploadCSV(t, csvR, string(fixtureAsXLSX(t, paypalFixtureEN, false)), "")); s.Imported != 0 || s.Duplicates != 3 {
+		t.Errorf("xlsx after CSV: %+v", s)
+	}
 }
 
 func TestImportPayPal_IncomingRefundIsStoredAsRefund(t *testing.T) {
