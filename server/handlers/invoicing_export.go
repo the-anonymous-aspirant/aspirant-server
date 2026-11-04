@@ -17,7 +17,7 @@ import (
 
 // CSV exports for the invoicing app (system_3 #8367-C2). Every export runs
 // the §5 validation first and is refused while it reports violations: an
-// export is what goes to the Jobcenter and the lawyer.
+// export is what leaves the app, so it must not carry broken data.
 
 const (
 	invoicingEntityExport = "export"

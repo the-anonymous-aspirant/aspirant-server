@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -68,36 +69,39 @@ func TestValidation_EachCheckFires(t *testing.T) {
 		code  string
 		seed  func(f *invoiceFixture, ids []uint)
 		warns bool
+		// want: what the owner reads in the check screen, by printed
+		// number, euros and German dates.
+		want []string
 	}{
 		{"number_gap", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[2]).Updates(map[string]interface{}{"number": 5, "invoice_number": "2026-005"})
-		}, false},
+		}, false, []string{"Invoice numbers jump from 2026-002 to 2026-005."}},
 		{"number_order", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[2]).Update("issue_date", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-		}, false},
+		}, false, []string{"Invoice 2026-003 (01.10.2026) is dated before 2026-002 ("}},
 		{"issue_date_future", func(f *invoiceFixture, ids []uint) {
 			for _, id := range ids {
 				f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).Update("issue_date", time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC))
 			}
-		}, false},
+		}, false, []string{"Invoice 2026-001 is dated in the future (01.12.2026)."}},
 		{"service_after_issue", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("service_date_to", time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC))
-		}, false},
+		}, false, []string{"Invoice 2026-001: the service date (25.10.2026) is after the issue date ("}},
 		{"total_mismatch_items", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("total_cents", 1)
-		}, false},
+		}, false, []string{"Invoice 2026-001: the amounts don't add up (lines ", ", total 0,01 €)."}},
 		{"payment_not_paid_work", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("category", "gift")
-		}, false},
+		}, false, []string{"Invoice 2026-001 covers the payment of ", " €", ", which is not paid work."}},
 		{"payment_multiple_invoices", func(f *invoiceFixture, ids []uint) {
 			f.db.Create(&data_models.InvoicingInvoicePayment{InvoiceID: ids[2], PaymentID: f.payments[0].ID})
-		}, false},
+		}, false, []string{"The payment of ", " is on two invoices: 2026-001 and 2026-003."}},
 		{"pdf_missing", func(f *invoiceFixture, ids []uint) {
 			f.db.Where("invoice_id = ?", ids[0]).Delete(&data_models.InvoicingInvoicePDF{})
-		}, false},
+		}, false, []string{"Invoice 2026-001 has no PDF."}},
 		{"total_mismatch_payments", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("gross_cents", 12345)
-		}, true},
+		}, true, []string{"Invoice 2026-001 totals ", "; its payments total ", " €."}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -121,12 +125,32 @@ func TestValidation_EachCheckFires(t *testing.T) {
 			if !found {
 				t.Fatalf("%s did not fire: violations %v warnings %v", tc.code, codes(rep.Violations), codes(rep.Warnings))
 			}
+			var msg string
+			for _, it := range list {
+				if it.Code == tc.code {
+					msg = it.Message
+					break
+				}
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(msg, w) {
+					t.Errorf("%s message %q lacks %q", tc.code, msg, w)
+				}
+			}
+			for _, it := range append(append([]validationItem{}, rep.Violations...), rep.Warnings...) {
+				if strings.Contains(it.Message, "cents") || bareInvoiceID.MatchString(it.Message) {
+					t.Errorf("%s message names a database id or cents: %q", it.Code, it.Message)
+				}
+			}
 			if tc.code != "payment_multiple_invoices" && tc.code != "total_mismatch_items" && len(other) != 0 {
 				t.Errorf("unrelated findings: %v", codes(other))
 			}
 		})
 	}
 }
+
+// bareInvoiceID matches "invoice 12" with no printed number after it.
+var bareInvoiceID = regexp.MustCompile(`(?i)\binvoices? \d+([^\d-]|$)`)
 
 func TestValidation_SequenceStartingAboveOneIsNotAGap(t *testing.T) {
 	f := newInvoiceFixture(t)
@@ -324,23 +348,14 @@ func TestExport_WorkbookHasFourSheetsAndIsGatedOnValidation(t *testing.T) {
 	}
 }
 
-// #8367-E2: the Jobcenter bundle.
-func TestExport_JobcenterBundle(t *testing.T) {
+// Download all: one stored PDF per issued invoice and nothing else.
+func TestExport_InvoicesZip(t *testing.T) {
 	f, ids := issuedFixture(t)
-	f.r.GET("/invoicing/export/jobcenter-bundle.zip", ExportJobcenterBundleHandler)
+	f.r.GET("/invoicing/export/invoices.zip", ExportInvoicesZipHandler)
 
-	// A bank deposit, two paid-work payments under it, a gift outside it,
-	// and paid work not invoiced yet.
-	dep := data_models.InvoicingPayment{Source: "paypal", TransactionID: "W1", Kind: "withdrawal", PaidOn: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Currency: "EUR", GrossCents: 30000, Category: "uncategorised"}
-	f.db.Create(&dep)
-	f.db.Model(&data_models.InvoicingPayment{}).Where("id IN (?)", []uint{f.payments[0].ID, f.payments[2].ID}).Update("bank_deposit_id", dep.ID)
-	f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[3].ID).Update("note", `=HYPERLINK("http://x","y")`)
-	late := data_models.InvoicingPayment{Source: "paypal", TransactionID: "TX9", Kind: "incoming", PaidOn: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), Currency: "EUR", GrossCents: 700, Category: "paid_work", SenderName: "+cmd"}
-	f.db.Create(&late)
-
-	w := invoicingDo(f.r, "GET", "/invoicing/export/jobcenter-bundle.zip", "")
-	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Jobcenter-Nachweise.zip"` {
-		t.Fatalf("bundle: %d %v %s", w.Code, w.Header(), w.Body.String())
+	w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.zip", "")
+	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Rechnungen.zip"` {
+		t.Fatalf("zip: %d %v %s", w.Code, w.Header(), w.Body.String())
 	}
 	files := unzipXLSX(t, w.Body.Bytes())
 
@@ -354,51 +369,22 @@ func TestExport_JobcenterBundle(t *testing.T) {
 		}
 	}
 	if _, ok := files["Rechnung-2026-002.pdf"]; ok {
-		t.Errorf("the cancelled invoice's PDF is in the bundle")
+		t.Errorf("the cancelled invoice's PDF is in the ZIP")
 	}
-	if len(files) != 3 {
-		t.Errorf("bundle holds %d files, want 2 PDFs + summary", len(files))
-	}
-
-	rows := readCSV(t, files["Zusammenfassung.csv"])
-	if strings.Join(rows[0], ";") != strings.Join(bundleSummaryHeader, ";") {
-		t.Fatalf("summary header: %v", rows[0])
-	}
-	body := rows[1:]
-	if len(body) != 5 {
-		t.Fatalf("summary rows: %d, want 5 incoming payments: %v", len(body), body)
-	}
-	// Under the deposit first: TX1 (2026-001) and TX3 (2026-003).
-	if body[0][0] != "2026-08-01" || body[0][1] != "300,00" || body[0][6] != "TX1" || body[0][8] != "2026-001" || body[0][7] != "Bezahlte Arbeit" {
-		t.Errorf("first grouped row: %v", body[0])
-	}
-	if body[1][6] != "TX3" || body[1][8] != "2026-003" {
-		t.Errorf("second grouped row: %v", body[1])
-	}
-	byTxn := map[string][]string{}
-	for _, r := range body[2:] {
-		if r[0] != "Ohne Bankeinzahlung" {
-			t.Errorf("an unassigned payment is not marked: %v", r)
+	if len(files) != 2 {
+		names := make([]string, 0, len(files))
+		for n := range files {
+			names = append(names, n)
 		}
-		byTxn[r[6]] = r
-	}
-	// TX2's invoice was cancelled, so it is paid work without an issued invoice.
-	if byTxn["TX2"][8] != bundleNoInvoiceYet || byTxn["TX9"][8] != bundleNoInvoiceYet {
-		t.Errorf("uninvoiced paid work: %v / %v", byTxn["TX2"], byTxn["TX9"])
-	}
-	if byTxn["TX4"][7] != "Geschenk" || byTxn["TX4"][8] != "" {
-		t.Errorf("gift row: %v", byTxn["TX4"])
-	}
-	if byTxn["TX9"][5] != "'+cmd" {
-		t.Errorf("sender not neutralised: %q", byTxn["TX9"][5])
+		t.Errorf("ZIP holds %v, want the 2 issued PDFs only", names)
 	}
 	events, _ := data_models.ListInvoicingAuditEvents(f.db, "export", 0)
-	if len(events) != 1 || !strings.Contains(events[0].Details, "jobcenter_bundle") {
+	if len(events) != 1 || !strings.Contains(events[0].Details, "invoices_zip") {
 		t.Errorf("audit: %+v", events)
 	}
 
 	f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("total_cents", 1)
-	if w := invoicingDo(f.r, "GET", "/invoicing/export/jobcenter-bundle.zip", ""); w.Code != http.StatusConflict {
-		t.Errorf("bundle with a violation: %d", w.Code)
+	if w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.zip", ""); w.Code != http.StatusConflict {
+		t.Errorf("zip with a violation: %d", w.Code)
 	}
 }

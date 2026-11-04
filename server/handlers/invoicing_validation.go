@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"aspirant-online/server/data_models"
+	"aspirant-online/server/invoicing_pdf"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -14,6 +16,9 @@ import (
 // Data-integrity checks for the invoicing app (system_3 #8367-C2, spec §5).
 // The issue path already refuses each of these; the report re-checks what is
 // stored, so an export never ships data that drifted past a guard.
+//
+// Messages are read by the owner in the check screen, so they name the
+// printed invoice number, euros and German dates, never database ids or cents.
 
 type validationItem struct {
 	Code      string `json:"code"`
@@ -42,6 +47,15 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 	}
 	today := berlinToday()
 
+	label := map[uint]string{}
+	for _, inv := range numbered {
+		label[inv.ID] = invoiceLabel(inv)
+	}
+	day := invoicing_pdf.FormatDate
+	payment := func(p data_models.InvoicingPayment) string {
+		return fmt.Sprintf("the payment of %s on %s", invoicing_pdf.FormatEuro(p.GrossCents, p.Currency), day(p.PaidOn))
+	}
+
 	byPrefix := map[string][]data_models.InvoicingInvoice{}
 	for _, inv := range numbered {
 		byPrefix[inv.Prefix] = append(byPrefix[inv.Prefix], inv)
@@ -57,32 +71,32 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 			prev, cur := invs[i-1], invs[i]
 			switch {
 			case *cur.Number == *prev.Number:
-				add("number_duplicate", cur.ID, 0, "invoice number %s-%03d is used twice", prefix, *cur.Number)
+				add("number_duplicate", cur.ID, 0, "Invoice number %s is used twice.", label[cur.ID])
 			case *cur.Number != *prev.Number+1:
-				add("number_gap", cur.ID, 0, "numbers under %q jump from %d to %d", prefix, *prev.Number, *cur.Number)
+				add("number_gap", cur.ID, 0, "Invoice numbers jump from %s to %s.", label[prev.ID], label[cur.ID])
 			}
 			if prev.IssueDate != nil && cur.IssueDate != nil && cur.IssueDate.Before(*prev.IssueDate) {
-				add("number_order", cur.ID, 0, "invoice %s-%03d was issued on %s, before the lower number %s-%03d (%s)",
-					prefix, *cur.Number, cur.IssueDate.Format(invoicingDateLayout), prefix, *prev.Number, prev.IssueDate.Format(invoicingDateLayout))
+				add("number_order", cur.ID, 0, "Invoice %s (%s) is dated before %s (%s).",
+					label[cur.ID], day(*cur.IssueDate), label[prev.ID], day(*prev.IssueDate))
 			}
 		}
 	}
 
 	for _, inv := range numbered {
 		if inv.IssueDate == nil {
-			add("issue_date_missing", inv.ID, 0, "numbered invoice %d has no issue date", inv.ID)
+			add("issue_date_missing", inv.ID, 0, "Invoice %s has no issue date.", label[inv.ID])
 			continue
 		}
 		issue := dateOnly(*inv.IssueDate)
 		if issue.After(today) {
-			add("issue_date_future", inv.ID, 0, "invoice %d is dated %s, after today", inv.ID, issue.Format(invoicingDateLayout))
+			add("issue_date_future", inv.ID, 0, "Invoice %s is dated in the future (%s).", label[inv.ID], day(issue))
 		}
 		end := inv.ServiceDateTo
 		if end == nil {
 			end = inv.ServiceDateFrom
 		}
 		if end != nil && dateOnly(*end).After(issue) {
-			add("service_after_issue", inv.ID, 0, "invoice %d has a service date %s after its issue date %s", inv.ID, end.Format(invoicingDateLayout), issue.Format(invoicingDateLayout))
+			add("service_after_issue", inv.ID, 0, "Invoice %s: the service date (%s) is after the issue date (%s).", label[inv.ID], day(*end), day(issue))
 		}
 
 		items, err := data_models.ListInvoiceLineItems(db, inv.ID)
@@ -92,12 +106,13 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 		var net int64
 		for _, it := range items {
 			if it.LineTotalCents != data_models.LineTotalCents(it.QuantityMilli, it.UnitPriceCents) {
-				add("total_mismatch_items", inv.ID, 0, "invoice %d line %d total %d does not equal quantity × price", inv.ID, it.Position, it.LineTotalCents)
+				add("total_mismatch_items", inv.ID, 0, "Invoice %s, line %d: the total is not quantity × price.", label[inv.ID], it.Position)
 			}
 			net += it.LineTotalCents
 		}
 		if net != inv.NetCents || inv.NetCents+inv.VatCents != inv.TotalCents {
-			add("total_mismatch_items", inv.ID, 0, "invoice %d stores net %d / total %d, but its line items sum to %d", inv.ID, inv.NetCents, inv.TotalCents, net)
+			add("total_mismatch_items", inv.ID, 0, "Invoice %s: the amounts don't add up (lines %s, net %s, total %s).", label[inv.ID],
+				invoicing_pdf.FormatEuro(net, inv.Currency), invoicing_pdf.FormatEuro(inv.NetCents, inv.Currency), invoicing_pdf.FormatEuro(inv.TotalCents, inv.Currency))
 		}
 
 		if inv.Status != data_models.InvoiceStatusIssued {
@@ -108,7 +123,7 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 			return nil, err
 		}
 		if pdf == nil {
-			add("pdf_missing", inv.ID, 0, "issued invoice %d has no stored PDF", inv.ID)
+			add("pdf_missing", inv.ID, 0, "Invoice %s has no PDF.", label[inv.ID])
 		}
 		payments, err := data_models.ListInvoicePayments(db, inv.ID)
 		if err != nil {
@@ -118,7 +133,7 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 		for _, p := range payments {
 			paid += p.GrossCents
 			if p.Kind != data_models.PaymentKindIncoming || p.Category != data_models.PaymentCategoryPaidWork {
-				add("payment_not_paid_work", inv.ID, p.ID, "issued invoice %d covers payment %s, which is %q", inv.ID, p.TransactionID, p.Category)
+				add("payment_not_paid_work", inv.ID, p.ID, "Invoice %s covers %s, which is not paid work.", label[inv.ID], payment(p))
 			}
 			other, err := data_models.IssuedInvoiceForPayment(db, p.ID, inv.ID)
 			if err != nil {
@@ -126,16 +141,36 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 			}
 			// Report each pair once: from the lower invoice id.
 			if other != 0 && other > inv.ID {
-				add("payment_multiple_invoices", inv.ID, p.ID, "payment %s is on issued invoices %d and %d", p.TransactionID, inv.ID, other)
+				add("payment_multiple_invoices", inv.ID, p.ID, "%s is on two invoices: %s and %s.", capitalize(payment(p)), label[inv.ID], label[other])
 			}
 		}
 		if len(payments) > 0 && paid != inv.TotalCents {
 			rep.Warnings = append(rep.Warnings, validationItem{"total_mismatch_payments", inv.ID, 0,
-				fmt.Sprintf("invoice %d totals %d cents, its payments %d cents", inv.ID, inv.TotalCents, paid)})
+				fmt.Sprintf("Invoice %s totals %s; its payments total %s.", label[inv.ID],
+					invoicing_pdf.FormatEuro(inv.TotalCents, inv.Currency), invoicing_pdf.FormatEuro(paid, inv.Currency))})
 		}
 	}
 	rep.OK = len(rep.Violations) == 0
 	return rep, nil
+}
+
+// invoiceLabel is the number as printed on the invoice. A row from before the
+// printed number was stored falls back to prefix and number.
+func invoiceLabel(inv data_models.InvoicingInvoice) string {
+	if inv.InvoiceNumber != nil && *inv.InvoiceNumber != "" {
+		return *inv.InvoiceNumber
+	}
+	if inv.Number != nil {
+		return fmt.Sprintf("%s-%03d", inv.Prefix, *inv.Number)
+	}
+	return "(no number)"
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // GetInvoicingValidationHandler serves the §5 report.
