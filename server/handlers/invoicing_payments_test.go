@@ -267,3 +267,82 @@ func TestPatchPayment_RefusalsWriteNothing(t *testing.T) {
 		t.Errorf("list with unknown category: %d", w.Code)
 	}
 }
+
+// #9862-A1: the import reads an Excel file by its bytes. The upload helper
+// still names it activity.csv, which shows the filename is not what decides.
+func TestImportPayPal_XLSXStoresTheSameRowsAsTheCSV(t *testing.T) {
+	csvDB, xlsxDB := setupPaymentsDB(t), setupPaymentsDB(t)
+	csvR, xlsxR := setupPaymentsRouter(csvDB, 5), setupPaymentsRouter(xlsxDB, 5)
+
+	sc := decodeSummary(t, uploadCSV(t, csvR, paypalFixtureEN, ""))
+	w := uploadCSV(t, xlsxR, string(fixtureAsXLSX(t, paypalFixtureEN, false)), "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("xlsx import: %d %s", w.Code, w.Body.String())
+	}
+	sx := decodeSummary(t, w)
+	if sc.Format != "csv" || sx.Format != "xlsx" {
+		t.Errorf("formats: csv summary %q, xlsx summary %q", sc.Format, sx.Format)
+	}
+	if sx.Imported != sc.Imported || sx.Withdrawals != sc.Withdrawals || sx.Skipped != sc.Skipped || sx.Imported != 3 {
+		t.Fatalf("summaries differ: csv %+v, xlsx %+v", sc, sx)
+	}
+	cp, xp := listPayments(t, csvR, ""), listPayments(t, xlsxR, "")
+	if len(cp) != len(xp) {
+		t.Fatalf("payments: csv %d, xlsx %d", len(cp), len(xp))
+	}
+	byID := map[string]data_models.InvoicingPayment{}
+	for _, p := range cp {
+		byID[p.TransactionID] = p
+	}
+	for _, x := range xp {
+		c, ok := byID[x.TransactionID]
+		if !ok || c.GrossCents != x.GrossCents || c.NetCents != x.NetCents || !c.PaidOn.Equal(x.PaidOn) ||
+			c.Kind != x.Kind || c.SenderEmail != x.SenderEmail || c.Note != x.Note || c.Category != x.Category {
+			t.Errorf("payment %s differs:\n csv  %+v\n xlsx %+v", x.TransactionID, c, x)
+		}
+	}
+	// Either format re-uploaded over the other is all duplicates.
+	if s := decodeSummary(t, uploadCSV(t, xlsxR, paypalFixtureEN, "")); s.Imported != 0 || s.Duplicates != 3 {
+		t.Errorf("CSV after xlsx: %+v", s)
+	}
+	if s := decodeSummary(t, uploadCSV(t, csvR, string(fixtureAsXLSX(t, paypalFixtureEN, false)), "")); s.Imported != 0 || s.Duplicates != 3 {
+		t.Errorf("xlsx after CSV: %+v", s)
+	}
+}
+
+func TestImportPayPal_IncomingRefundIsStoredAsRefund(t *testing.T) {
+	r := setupPaymentsRouter(setupPaymentsDB(t), 5)
+	s := decodeSummary(t, uploadCSV(t, r, reversalHeader+
+		"02.07.2026,Client,Payment Refund,Completed,EUR,175.00,F1,\n"+
+		"08.07.2026,Client,Mobile Payment,Completed,EUR,90.00,P1,\n", ""))
+	if s.Imported != 2 || s.Refunds != 1 {
+		t.Fatalf("summary: %+v", s)
+	}
+	got := map[string]string{}
+	for _, p := range listPayments(t, r, "") {
+		got[p.TransactionID] = p.Category
+	}
+	if got["F1"] != data_models.PaymentCategoryRefund || got["P1"] != data_models.PaymentCategoryUncategorised {
+		t.Fatalf("categories: %v", got)
+	}
+}
+
+func TestImportPayPal_LegacyXLSIsRefusedAndWritesNothing(t *testing.T) {
+	db := setupPaymentsDB(t)
+	r := setupPaymentsRouter(db, 5)
+	xls := string([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}) + strings.Repeat("\x00", 512)
+	w := uploadCSV(t, r, xls, "")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "xls_unsupported") {
+		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+	broken := uploadCSV(t, r, "PK\x03\x04 not really a zip", "")
+	if broken.Code != http.StatusBadRequest || !strings.Contains(broken.Body.String(), "invalid_xlsx") {
+		t.Fatalf("broken zip: %d %s", broken.Code, broken.Body.String())
+	}
+	var rows, events int
+	db.Model(&data_models.InvoicingPayment{}).Count(&rows)
+	db.Model(&data_models.InvoicingAuditEvent{}).Count(&events)
+	if rows != 0 || events != 0 {
+		t.Fatalf("refused uploads wrote %d payments and %d audit events", rows, events)
+	}
+}

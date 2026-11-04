@@ -218,3 +218,80 @@ func TestParsePayPal_CurrencyMustBeAnISOCode(t *testing.T) {
 		}
 	}
 }
+
+// #9862-A1: the Type strings of a real statement (upload 112, read in c60929
+// on system_3 #9862), as synthetic rows. Her statement itself never enters
+// the repo.
+const reversalHeader = "Date,Name,Type,Status,Currency,Gross,Transaction ID,Reference Txn ID\n"
+
+func TestParsePayPal_BouncedWithdrawalImportsNeitherRow(t *testing.T) {
+	withdrawal := "02.07.2026,,User Initiated Withdrawal,Completed,EUR,-175.00,W1,\n"
+	reversal := "03.07.2026,,Reversal of ACH Withdrawal Transaction,Completed,EUR,175.00,W1,\n"
+	payment := "02.07.2026,Client,Mobile Payment,Completed,EUR,175.00,P1,\n"
+	// Either file order: PayPal lists newest first, a re-saved file may not.
+	for _, body := range []string{withdrawal + reversal + payment, payment + reversal + withdrawal} {
+		res := mustParse(t, reversalHeader+body, "")
+		if len(res.Rows) != 1 || res.Rows[0].TransactionID != "P1" {
+			t.Fatalf("rows: %+v", res.Rows)
+		}
+		if res.Skipped["reversal"] != 1 || res.Skipped["reversed"] != 1 {
+			t.Errorf("skipped: %v", res.Skipped)
+		}
+	}
+}
+
+func TestParsePayPal_PaymentReversedByReferenceIsDropped(t *testing.T) {
+	res := mustParse(t, reversalHeader+
+		"10.07.2026,Client,Mobile Payment,Completed,EUR,50.00,P1,\n"+
+		"12.07.2026,Client,Payment Reversal,Completed,EUR,-50.00,R1,P1\n"+
+		"13.07.2026,Other,Mobile Payment,Completed,EUR,50.00,P2,\n", "")
+	if len(res.Rows) != 1 || res.Rows[0].TransactionID != "P2" || res.Skipped["reversed"] != 1 {
+		t.Fatalf("rows %+v skipped %v", res.Rows, res.Skipped)
+	}
+}
+
+// A reversal only undoes a row moving the same amount the other way. A
+// chargeback reversal returns money to her under the payment's reference,
+// and the payment stands; so does one whose amount does not match.
+func TestParsePayPal_ReversalInTheSameDirectionKeepsThePayment(t *testing.T) {
+	res := mustParse(t, reversalHeader+
+		"10.07.2026,Client,Mobile Payment,Completed,EUR,80.00,P1,\n"+
+		"20.07.2026,Client,Chargeback,Completed,EUR,-80.00,C1,P1\n"+
+		"25.07.2026,Client,Chargeback Reversal,Completed,EUR,80.00,C2,P1\n"+
+		"11.07.2026,Client,Mobile Payment,Completed,EUR,60.00,P2,\n"+
+		"12.07.2026,Client,Payment Reversal,Completed,EUR,-20.00,R2,P2\n", "")
+	if len(res.Rows) != 2 || res.Rows[0].TransactionID != "P1" || res.Rows[1].TransactionID != "P2" {
+		t.Fatalf("rows: %+v", res.Rows)
+	}
+	if res.Skipped["reversed"] != 0 || res.Skipped["reversal"] != 2 {
+		t.Errorf("skipped: %v", res.Skipped)
+	}
+}
+
+func TestParsePayPal_HoldReversalIsSkipped(t *testing.T) {
+	res := mustParse(t, reversalHeader+
+		"26.07.2026,,Account Hold for Open Authorization,Completed,EUR,-4.00,H1,\n"+
+		"26.07.2026,,Reversal of General Account Hold,Completed,EUR,4.00,H2,\n", "")
+	if len(res.Rows) != 0 || res.Skipped["hold_or_authorization"] != 1 || res.Skipped["reversal"] != 1 {
+		t.Fatalf("rows %+v skipped %v", res.Rows, res.Skipped)
+	}
+}
+
+func TestParsePayPal_IncomingRefundIsPreCategorised(t *testing.T) {
+	res := mustParse(t, reversalHeader+
+		"02.07.2026,Client,Payment Refund,Completed,EUR,175.00,F1,\n"+
+		"05.07.2026,Buyer,Payment Refund,Completed,EUR,-15.00,F2,\n"+
+		"08.07.2026,Client,Mobile Payment,Completed,EUR,90.00,P1,\n", "")
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows: %+v", res.Rows)
+	}
+	if r := res.Rows[0]; r.TransactionID != "F1" || r.Kind != "incoming" || r.Category != "refund" {
+		t.Errorf("incoming refund: %+v", r)
+	}
+	if r := res.Rows[1]; r.TransactionID != "P1" || r.Category != "uncategorised" {
+		t.Errorf("payment: %+v", r)
+	}
+	if res.Skipped["outgoing"] != 1 {
+		t.Errorf("the refund she paid out is skipped as outgoing: %v", res.Skipped)
+	}
+}

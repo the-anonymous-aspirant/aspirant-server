@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,17 +41,29 @@ type invoicingImportSummary struct {
 	Skipped        int            `json:"skipped"`
 	SkippedReasons map[string]int `json:"skipped_reasons"`
 	Withdrawals    int            `json:"withdrawals"`
+	// Refunds counts imported payments pre-set to the refund category.
+	Refunds int `json:"refunds"`
+	// Format is the file format read: csv or xlsx.
+	Format string `json:"format"`
 }
 
-// ImportPayPalPaymentsHandler takes a PayPal activity CSV (multipart field
-// "file", optional form value date_order=dmy|mdy) and stores its incoming
-// payments and withdrawals. Re-uploading the same file imports nothing new.
+// File signatures the import sniffs: an .xlsx is a zip; a legacy .xls is an
+// OLE2 compound file, which the import does not read.
+var (
+	zipSignature  = []byte("PK\x03\x04")
+	ole2Signature = []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}
+)
+
+// ImportPayPalPaymentsHandler takes a PayPal activity CSV or Excel (.xlsx)
+// file (multipart field "file", optional form value date_order=dmy|mdy) and
+// stores its incoming payments and withdrawals. The format is read from the
+// bytes, not the filename. Re-uploading the same file imports nothing new.
 func ImportPayPalPaymentsHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 
 	fh, err := c.FormFile("file")
 	if err != nil {
-		RespondWithError(c, http.StatusBadRequest, "Upload a PayPal CSV in the form field \"file\"")
+		RespondWithError(c, http.StatusBadRequest, "Upload a PayPal CSV or Excel file in the form field \"file\"")
 		return
 	}
 	if fh.Size > maxPayPalImportBytes {
@@ -69,9 +82,18 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		return
 	}
 
-	parsed, err := ParsePayPalActivityCSV(data, c.PostForm("date_order"))
+	if bytes.HasPrefix(data, ole2Signature) {
+		respondError(c, http.StatusBadRequest, "xls_unsupported",
+			"This is an Excel 97-2003 (.xls) file. Save it as .xlsx or CSV and upload that.")
+		return
+	}
+	format, code := "csv", "invalid_csv"
+	parse := ParsePayPalActivityCSV
+	if bytes.HasPrefix(data, zipSignature) {
+		format, code, parse = "xlsx", "invalid_xlsx", ParsePayPalActivityXLSX
+	}
+	parsed, err := parse(data, c.PostForm("date_order"))
 	if err != nil {
-		code := "invalid_csv"
 		if errors.Is(err, ErrPayPalDateOrderAmbiguous) {
 			code = "date_order_ambiguous"
 		}
@@ -80,7 +102,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 
 	userID := invoicingUserID(c)
-	summary := invoicingImportSummary{RowsRead: parsed.RowsRead, SkippedReasons: parsed.Skipped}
+	summary := invoicingImportSummary{RowsRead: parsed.RowsRead, SkippedReasons: parsed.Skipped, Format: format}
 	for _, n := range parsed.Skipped {
 		summary.Skipped += n
 	}
@@ -136,7 +158,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			SenderName:     row.SenderName,
 			SenderEmail:    row.SenderEmail,
 			Note:           row.Note,
-			Category:       data_models.PaymentCategoryUncategorised,
+			Category:       row.Category,
 		}
 		if row.Kind == data_models.PaymentKindIncoming {
 			cl, err := data_models.FindInvoicingClientByPayPalEmail(tx, row.SenderEmail)
@@ -160,6 +182,9 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		summary.Imported++
 		if row.Kind == data_models.PaymentKindWithdrawal {
 			summary.Withdrawals++
+		}
+		if row.Category == data_models.PaymentCategoryRefund {
+			summary.Refunds++
 		}
 	}
 	details := auditDetails(gin.H{"filename": fh.Filename, "summary": summary})
