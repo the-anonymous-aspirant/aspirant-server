@@ -37,6 +37,13 @@ const (
 	colTotalW      = 80.0
 	colDescW       = contentW - colPosW - colQtyW - colPriceW - colTotalW
 	notesWrapWidth = contentW
+	// The logo's box, top right of the header (system_3 #9858). It ends at
+	// logoTop+logoBoxH = 120, clear of the window-envelope recipient line at
+	// recipientTop; the issuer text keeps logoGap from its left edge.
+	logoTop  = 48.0
+	logoBoxW = 140.0
+	logoBoxH = 72.0
+	logoGap  = 16.0
 )
 
 // canvas is the drawing surface Render needs. The gopdf adapter draws the
@@ -47,6 +54,7 @@ type canvas interface {
 	TextWidth(s string) (float64, error)
 	Wrap(s string, width float64) ([]string, error)
 	Line(x1, y1, x2, y2 float64)
+	Image(png []byte, x, y, w, h float64) error
 	NewPage()
 }
 
@@ -142,15 +150,49 @@ func (k *cursor) rightText(right float64, s string, bold bool, size float64) err
 	return k.c.Text(right-w, k.y, s)
 }
 
+// logoRect fits a logo into the header box, aspect kept, right-aligned on
+// the right margin.
+func logoRect(l *Logo) (x, y, w, h float64) {
+	scale := logoBoxW / float64(l.Width)
+	if s := logoBoxH / float64(l.Height); s < scale {
+		scale = s
+	}
+	w, h = float64(l.Width)*scale, float64(l.Height)*scale
+	return marginX + contentW - w, logoTop, w, h
+}
+
 func layout(c canvas, doc Document) error {
 	k := &cursor{c: c, y: marginTop}
 
-	// Issuer, top left, with the Steuernummer.
-	for i, l := range doc.Issuer {
-		if err := k.text(marginX, l, i == 0, bodySize); err != nil {
+	// The logo, when set, top right; the issuer lines then wrap short of it.
+	issuerWidth := 0.0
+	if doc.Logo != nil {
+		x, y, w, h := logoRect(doc.Logo)
+		if err := c.Image(doc.Logo.PNG, x, y, w, h); err != nil {
 			return err
 		}
-		k.y += lineGap
+		issuerWidth = x - logoGap - marginX
+	}
+
+	// Issuer, top left, with the Steuernummer.
+	for i, l := range doc.Issuer {
+		if err := c.SetFont(i == 0, bodySize); err != nil {
+			return err
+		}
+		lines := []string{l}
+		if issuerWidth > 0 {
+			wrapped, err := wrapLines(c, l, issuerWidth)
+			if err != nil {
+				return err
+			}
+			lines = wrapped
+		}
+		for _, wl := range lines {
+			if err := k.text(marginX, wl, i == 0, bodySize); err != nil {
+				return err
+			}
+			k.y += lineGap
+		}
 	}
 
 	// Recipient block where a window envelope shows it.
@@ -324,6 +366,14 @@ func (g *gopdfCanvas) Wrap(s string, width float64) ([]string, error) {
 func (g *gopdfCanvas) Line(x1, y1, x2, y2 float64) {
 	g.pdf.SetLineWidth(0.5)
 	g.pdf.Line(x1, y1, x2, y2)
+}
+
+func (g *gopdfCanvas) Image(png []byte, x, y, w, h float64) error {
+	holder, err := gopdf.ImageHolderByBytes(png)
+	if err != nil {
+		return fmt.Errorf("load logo: %w", err)
+	}
+	return g.pdf.ImageByHolder(holder, x, y, &gopdf.Rect{W: w, H: h})
 }
 
 func (g *gopdfCanvas) NewPage() {

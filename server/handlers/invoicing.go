@@ -81,12 +81,20 @@ func GetInvoicingProfileHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
 		return
 	}
-	if p == nil {
-		d := data_models.DefaultInvoicingProfile()
-		c.JSON(http.StatusOK, gin.H{"profile": d, "saved": false})
+	logo, err := data_models.GetInvoicingProfileLogo(db)
+	if err != nil {
+		log.Printf("Error retrieving invoicing logo: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true})
+	// has_logo tells the editor whether to fetch the preview; the bytes are
+	// served by GET /invoicing/profile/logo, never in this payload.
+	if p == nil {
+		d := data_models.DefaultInvoicingProfile()
+		c.JSON(http.StatusOK, gin.H{"profile": d, "saved": false, "has_logo": logo != nil})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true, "has_logo": logo != nil})
 }
 
 // PutInvoicingProfileHandler replaces the issuer profile. The admin seeds it

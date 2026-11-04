@@ -63,6 +63,7 @@ type Document struct {
 	Items     []ItemRow
 	Totals    []Field
 	Notes     []string // § 19 line, payment confirmations, retroactive note
+	Logo      *Logo    // the issuer's logo, top right; nil prints none
 }
 
 // Input is an issued invoice with the snapshots frozen at issue.
@@ -72,6 +73,7 @@ type Input struct {
 	Invoice  data_models.InvoicingInvoice
 	Items    []data_models.InvoicingLineItem
 	Payments []data_models.InvoicingPayment
+	Logo     *Logo // the logo set at issue, if any (system_3 #9858)
 }
 
 // FormatDate prints a date the German way: 21.10.2026.
@@ -132,7 +134,7 @@ func Build(in Input) (Document, error) {
 	}
 	issueDate := FormatDate(*inv.IssueDate)
 
-	doc := Document{Title: TitleRechnung}
+	doc := Document{Title: TitleRechnung, Logo: in.Logo}
 	doc.Issuer = append([]string{in.Profile.FullName}, nonEmptyLines(in.Profile.Address)...)
 	doc.Issuer = append(doc.Issuer, labelSteuernummer+": "+in.Profile.Steuernummer)
 	if in.Profile.Email != "" {
