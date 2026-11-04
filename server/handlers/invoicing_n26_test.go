@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -267,6 +268,13 @@ func confirmN26(t *testing.T, r *gin.Engine, rows []n26Candidate) *httptest.Resp
 // pdftotext extraction. Library-written bytes, never pasted ones.
 func buildN26LookalikePDF(t *testing.T) []byte {
 	t.Helper()
+	return buildN26PDFFromText(t, readN26Fixture(t, "n26_confirmation.txt"))
+}
+
+// buildN26PDFFromText renders the given lines the same way, for a variant of
+// the fixture.
+func buildN26PDFFromText(t *testing.T, text string) []byte {
+	t.Helper()
 	pdf := gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 	pdf.AddPage()
@@ -277,7 +285,7 @@ func buildN26LookalikePDF(t *testing.T) []byte {
 		t.Fatalf("set font: %v", err)
 	}
 	y := 40.0
-	for _, line := range strings.Split(readN26Fixture(t, "n26_confirmation.txt"), "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		if strings.TrimSpace(line) != "" {
 			pdf.SetXY(40, y)
 			if err := pdf.Cell(nil, line); err != nil {
@@ -436,6 +444,9 @@ func TestN26ConfirmValidation(t *testing.T) {
 		func(c *n26Candidate) { c.GrossCents = 0 },
 		func(c *n26Candidate) { c.FeeCents = 1000 },
 		func(c *n26Candidate) { c.SenderName = "" },
+		// #9881: the parse never offers a PayPal transfer; a client that
+		// posts one back anyway is refused.
+		func(c *n26Candidate) { c.SenderName = "PAYPAL" },
 	}
 	for i, mutate := range bad {
 		row := good
@@ -457,5 +468,153 @@ func TestN26ConfirmValidation(t *testing.T) {
 	// The unmutated row is the positive control for the shapes above.
 	if w := confirmN26(t, r, []n26Candidate{good}); w.Code != http.StatusOK {
 		t.Fatalf("good row: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// --- system_3 #9881: a credit whose payer is PayPal is her own withdrawal ---
+
+func TestN26PayPalSender(t *testing.T) {
+	for name, want := range map[string]bool{
+		"PAYPAL":                              true, // her real confirmations' sender line
+		"PayPal Europe S.a.r.l. et Cie S.C.A": true, // the company name a statement prints
+		"paypal":                              true,
+		"Mara Esempio":                        false,
+		"Cliente Due SRL":                     false,
+		"":                                    false,
+	} {
+		if got := isPayPalSender(name); got != want {
+			t.Errorf("isPayPalSender(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// A statement keeps its other rows and their ids, drops the PayPal row with
+// a count, and keeps a customer's row whose note merely mentions PayPal.
+func TestN26DropPayPalTransfers(t *testing.T) {
+	text := readN26Fixture(t, "n26_statement.txt")
+	plain, err := parseN26AccountStatement(text)
+	if err != nil || len(plain) != 2 {
+		t.Fatalf("fixture parse: %d rows, %v", len(plain), err)
+	}
+	const company = "PayPal Europe S.a.r.l. et Cie S.C.A"
+	const mention = "Bonifico ricevuto Illustrazione logo, saldo via PayPal"
+	mixed := strings.Replace(text, "Cliente Due SRL                    ", company, 1)
+	mixed = strings.Replace(mixed, "Bonifico ricevuto Illustrazione logo", mention, 1)
+	if mixed == text || !strings.Contains(mixed, company) || !strings.Contains(mixed, mention) {
+		t.Fatal("fixture drifted: the replacements did not apply")
+	}
+	all, err := parseN26AccountStatement(mixed)
+	if err != nil || len(all) != 2 || all[1].SenderName != company {
+		t.Fatalf("mixed parse must still read both rows before the filter: %+v, %v", all, err)
+	}
+	kept, skipped := dropPayPalTransfers(all)
+	if len(kept) != 1 || kept[0].SenderName != "Mara Esempio" || kept[0].Note != mention {
+		t.Fatalf("kept: %+v", kept)
+	}
+	if skipped[n26SkipPayPalTransfer] != 1 || len(skipped) != 1 {
+		t.Fatalf("skipped: %+v", skipped)
+	}
+	if kept[0].TransactionID != all[0].TransactionID {
+		t.Error("a kept row's id changed when a sibling row was dropped")
+	}
+	// Positive control: nothing to drop leaves the rows and no skipped map.
+	if k, s := dropPayPalTransfers(plain); len(k) != 2 || s != nil {
+		t.Fatalf("clean statement: kept %d, skipped %+v", len(k), s)
+	}
+}
+
+// Through the real pipeline: one ordinary confirmation and one whose sender
+// is PAYPAL, as in her files. The ordinary one is offered; the PayPal one is
+// counted under its file and offered nowhere.
+func TestN26ImportPipelineLeavesOutPayPalTransfers(t *testing.T) {
+	requirePdftotext(t)
+	db := setupPaymentsDB(t)
+	r := setupN26Router(db, 7)
+
+	fixture := readN26Fixture(t, "n26_confirmation.txt")
+	paypalText := strings.Replace(fixture, "Mara Esempio\n", "PAYPAL\n", 1)
+	paypalText = strings.Replace(paypalText, "a1b2c3d4-0e15-4a6f-9bd0-123456789abc", "f0e1d2c3-0b0a-4999-8888-777766665555", 1)
+	if paypalText == fixture || !strings.Contains(paypalText, "PAYPAL\n") {
+		t.Fatal("fixture drifted: the sender replacement did not apply")
+	}
+	w := uploadN26(t, r, map[string][]byte{
+		"conferma.pdf":        buildN26LookalikePDF(t),
+		"conferma-paypal.pdf": buildN26PDFFromText(t, paypalText),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
+	}
+	byName := map[string]n26ParsedFile{}
+	for _, f := range decodeN26Parse(t, w).Files {
+		byName[f.Filename] = f
+	}
+	ordinary, pp := byName["conferma.pdf"], byName["conferma-paypal.pdf"]
+	if ordinary.Error != nil || len(ordinary.Candidates) != 1 || ordinary.Skipped != nil {
+		t.Fatalf("ordinary file: %+v", ordinary)
+	}
+	if pp.Error != nil || pp.DocumentKind != n26KindTransferConfirmation || len(pp.Candidates) != 0 {
+		t.Fatalf("PayPal file must read cleanly and offer nothing: %+v", pp)
+	}
+	if pp.Skipped[n26SkipPayPalTransfer] != 1 {
+		t.Fatalf("PayPal file skipped: %+v", pp.Skipped)
+	}
+	// The wire shape the client reads.
+	if !strings.Contains(w.Body.String(), `"skipped":{"paypal_transfer":1}`) {
+		t.Errorf("response lacks the skipped count: %s", w.Body.String())
+	}
+}
+
+// A PayPal transfer stored before the import rule cannot become paid work,
+// can move to any other category, and cannot go on a draft; an ordinary N26
+// row and the PayPal import's own rows stay invoiceable.
+func TestPayPalTransferIntoN26_NeverPaidWorkNeverInvoiced(t *testing.T) {
+	f := newInvoiceFixture(t)
+	seed := func(txn, sender, category string) data_models.InvoicingPayment {
+		t.Helper()
+		cid := f.clientID
+		p := data_models.InvoicingPayment{
+			Source: invoicingPaymentSourceN26, TransactionID: txn, Kind: data_models.PaymentKindIncoming,
+			PaidOn: time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC), Currency: "EUR", GrossCents: 50000, NetCents: 50000,
+			SenderName: sender, Category: category, Entry: data_models.PaymentEntryImport, ClientID: &cid,
+		}
+		if err := f.db.Create(&p).Error; err != nil {
+			t.Fatalf("seed %s: %v", txn, err)
+		}
+		return p
+	}
+	fresh := seed("stmt-fresh", "PayPal Europe S.a.r.l. et Cie S.C.A", data_models.PaymentCategoryUncategorised)
+	stored := seed("stmt-stored", "PAYPAL", data_models.PaymentCategoryPaidWork)
+	ordinary := seed("stmt-ordinary", "Mara Esempio", data_models.PaymentCategoryPaidWork)
+	path := func(p data_models.InvoicingPayment) string { return fmt.Sprintf("/invoicing/payments/%d", p.ID) }
+	before := countAuditEvents(t, f.db)
+
+	w := invoicingDo(f.r, "PATCH", path(fresh), `{"category":"paid_work"}`)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "paypal_transfer_not_paid_work") {
+		t.Fatalf("paid_work on a PayPal transfer: %d %s", w.Code, w.Body.String())
+	}
+	if got, _ := data_models.GetInvoicingPayment(f.db, fresh.ID); got.Category != data_models.PaymentCategoryUncategorised {
+		t.Fatalf("refused patch changed the category: %q", got.Category)
+	}
+	if after := countAuditEvents(t, f.db); after != before {
+		t.Fatalf("refused patch wrote %d audit rows", after-before)
+	}
+
+	w = invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, stored.ID))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "payment_paypal_transfer") {
+		t.Fatalf("draft over a stored PayPal transfer: %d %s", w.Code, w.Body.String())
+	}
+
+	// The way off paid work stays open, for the row stored before the rule.
+	if w := invoicingDo(f.r, "PATCH", path(stored), `{"category":"other"}`); w.Code != http.StatusOK {
+		t.Fatalf("move the stored row to other: %d %s", w.Code, w.Body.String())
+	}
+	if w := invoicingDo(f.r, "PATCH", path(fresh), `{"category":"gift"}`); w.Code != http.StatusOK {
+		t.Fatalf("another category on a PayPal transfer: %d %s", w.Code, w.Body.String())
+	}
+
+	// Controls: an ordinary N26 row and a PayPal-import row draft as before.
+	w = invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d,%d]}`, ordinary.ID, f.payments[0].ID))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("control draft: %d %s", w.Code, w.Body.String())
 	}
 }
