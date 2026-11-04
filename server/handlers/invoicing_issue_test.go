@@ -317,6 +317,13 @@ func TestIssue_Guardrails(t *testing.T) {
 		{"payment recategorised after drafting", 422, "payment_not_paid_work", func(t *testing.T, f *invoiceFixture, id uint) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("category", "gift")
 		}},
+		// system_3 #9881: a draft made before the import rule, over an N26
+		// row whose payer is PayPal (the served draft's shape), still cannot
+		// be issued, although the row is paid work.
+		{"payment is a transfer from PayPal into N26", 422, "payment_paypal_transfer", func(t *testing.T, f *invoiceFixture, id uint) {
+			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).
+				Updates(map[string]interface{}{"source": invoicingPaymentSourceN26, "sender_name": "PAYPAL"})
+		}},
 		{"payment already on another issued invoice", 422, "payment_already_invoiced", func(t *testing.T, f *invoiceFixture, id uint) {
 			other := f.draft(t, 0)
 			if code, _, body := f.issue(other); code != http.StatusOK {
