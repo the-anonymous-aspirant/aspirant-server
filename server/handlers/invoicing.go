@@ -214,8 +214,9 @@ type invoicingClientRequest struct {
 }
 
 // bindInvoicingClient parses and validates a client body; it writes the 400
-// itself and returns ok=false on any problem. Name and address are required
-// because an invoice needs both (spec §4.2).
+// itself and returns ok=false on any problem. The name is required. The
+// address is optional: an invoice up to 250 EUR gross needs none (§33 UStDV),
+// and issuing enforces it above that (system_3 #9835).
 func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	var req invoicingClientRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -226,8 +227,8 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	req.Address = strings.TrimSpace(req.Address)
 	req.Email = strings.TrimSpace(req.Email)
 	req.PayPalEmail = strings.ToLower(strings.TrimSpace(req.PayPalEmail))
-	if req.Name == "" || req.Address == "" {
-		RespondWithError(c, http.StatusBadRequest, "name and address are required")
+	if req.Name == "" {
+		RespondWithError(c, http.StatusBadRequest, "name is required")
 		return req, false
 	}
 	if !validOptionalEmail(req.Email) || !validOptionalEmail(req.PayPalEmail) {

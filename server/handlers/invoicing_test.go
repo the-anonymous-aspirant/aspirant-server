@@ -212,7 +212,6 @@ func TestInvoicingClients_CreateListUpdateRoundTripsAndAudits(t *testing.T) {
 func TestInvoicingClients_InvalidBodiesAreRefusedAndWriteNothing(t *testing.T) {
 	cases := map[string]string{
 		"missing name":     `{"name":" ","address":"A"}`,
-		"missing address":  `{"name":"N","address":""}`,
 		"bad email":        `{"name":"N","address":"A","email":"x@"}`,
 		"bad paypal email": `{"name":"N","address":"A","paypal_email":"nope"}`,
 	}
@@ -229,6 +228,30 @@ func TestInvoicingClients_InvalidBodiesAreRefusedAndWriteNothing(t *testing.T) {
 				t.Errorf("refused POST wrote %d client rows and %d audit rows", rows, countAuditEvents(t, db))
 			}
 		})
+	}
+}
+
+// #9835: a client may have no postal address. An invoice up to 250 EUR gross
+// needs none (§33 UStDV); issuing enforces it above that.
+func TestInvoicingClients_AddressIsOptional(t *testing.T) {
+	db := setupInvoicingDB(t)
+	r := setupInvoicingRouter(db, 7)
+	w := invoicingDo(r, "POST", "/invoicing/clients", `{"name":"Anna","address":"  "}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST without an address: got %d: %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Client data_models.InvoicingClient `json:"client"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+	if created.Client.ID == 0 || created.Client.Address != "" || created.Client.HasPostalAddress() {
+		t.Fatalf("created: %+v (a blank address is stored empty)", created.Client)
+	}
+	if w := invoicingDo(r, "PUT", fmt.Sprintf("/invoicing/clients/%d", created.Client.ID), `{"name":"Anna B.","address":""}`); w.Code != http.StatusOK {
+		t.Fatalf("PUT without an address: got %d: %s", w.Code, w.Body.String())
+	}
+	if w := invoicingDo(r, "PUT", fmt.Sprintf("/invoicing/clients/%d", created.Client.ID), `{"name":"","address":""}`); w.Code != http.StatusBadRequest {
+		t.Errorf("PUT without a name: got %d, want 400", w.Code)
 	}
 }
 
