@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"aspirant-online/server/data_models"
 )
 
 // PayPal activity CSV parsing for the invoicing app (system_3 #8367-B1).
@@ -40,6 +43,8 @@ const (
 	paypalSkipOutgoing     = "outgoing"
 	paypalSkipMemo         = "memo"
 	paypalSkipNoID         = "missing_transaction_id"
+	paypalSkipReversal     = "reversal"
+	paypalSkipReversed     = "reversed"
 )
 
 // Date orders accepted for NN/NN/YYYY dates.
@@ -48,6 +53,13 @@ const (
 	paypalDateOrderDMY  = "dmy"
 	paypalDateOrderMDY  = "mdy"
 )
+
+// paypalMaxRowTextBytes caps the text the importable rows carry in total. A
+// CSV can never store more than its 5 MB upload, but an .xlsx cell holds a
+// reference to a shared string, so one long string referenced from every row
+// fanned a 0.1 MB upload out to 382 MB of stored text (@security F1, c60958
+// on system_3 #9872). The cap sits here so it covers both formats.
+const paypalMaxRowTextBytes = 32 << 20
 
 // ErrPayPalDateOrderAmbiguous is returned when every slash date in the file
 // reads both ways; the caller must pass the order explicitly.
@@ -65,6 +77,9 @@ type paypalRow struct {
 	SenderName     string
 	SenderEmail    string
 	Note           string
+	// Category is the payment category the row imports with: uncategorised,
+	// or refund for money returned to her (#9862-A1).
+	Category string
 }
 
 type paypalParseResult struct {
@@ -109,6 +124,13 @@ var (
 	paypalCreditImpacts     = []string{"credit", "haben", "gutschrift"}
 	paypalDebitImpacts      = []string{"debit", "soll", "belastung"}
 	paypalMemoImpacts       = []string{"memo"}
+	// From the Type strings on a real statement (system_3 #9862, upload 112):
+	// "Reversal of ACH Withdrawal Transaction" credits back a bounced
+	// withdrawal under the withdrawal's own transaction id, and "Payment
+	// Refund" is money returned, not earned. The German spellings are PayPal
+	// UI terms, not yet seen in a real export.
+	paypalReversalTypes = []string{"reversal", "storno", "rückbuchung"}
+	paypalRefundTypes   = []string{"refund", "rückzahlung", "erstattung"}
 )
 
 func containsAny(s string, needles []string) bool {
@@ -303,25 +325,8 @@ func parsePayPalDate(raw, order string) (time.Time, error) {
 	return t, nil
 }
 
-// ParsePayPalActivityCSV turns a PayPal activity export into payment rows.
-// Rows that are not money in (fees, conversions, holds, outgoing payments) are
-// counted per reason in Skipped; withdrawals to the bank come back as
-// withdrawal rows so payments can be grouped by bank deposit.
-func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, error) {
-	text := toUTF8(data)
-	firstLine := text
-	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
-		firstLine = text[:i]
-	}
-	r := csv.NewReader(strings.NewReader(text))
-	r.Comma = sniffDelimiter(firstLine)
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
-
-	header, err := r.Read()
-	if err != nil {
-		return nil, fmt.Errorf("could not read the header row: %w", err)
-	}
+// mapPayPalColumns finds each field's column by header name.
+func mapPayPalColumns(header []string) (map[string]int, error) {
 	col := map[string]int{}
 	for i, h := range header {
 		n := normaliseHeader(h)
@@ -345,6 +350,29 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("not a PayPal activity export: missing column(s) %s", strings.Join(missing, ", "))
 	}
+	return col, nil
+}
+
+// ParsePayPalActivityCSV turns a PayPal activity CSV into payment rows.
+func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, error) {
+	text := toUTF8(data)
+	firstLine := text
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		firstLine = text[:i]
+	}
+	r := csv.NewReader(strings.NewReader(text))
+	r.Comma = sniffDelimiter(firstLine)
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	header, err := r.Read()
+	if err != nil {
+		return nil, fmt.Errorf("could not read the header row: %w", err)
+	}
+	col, err := mapPayPalColumns(header)
+	if err != nil {
+		return nil, err
+	}
 
 	var records [][]string
 	for {
@@ -360,7 +388,97 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 		}
 		records = append(records, rec)
 	}
+	return parsePayPalRecords(col, records, dateOrder)
+}
 
+// excelSerialDate converts an Excel date serial to a calendar date. In the
+// 1900 system, day 1 is 1900-01-01 and Excel counts a 29 February 1900 that
+// never was, so from 1 March 1900 on the serial counts from 1899-12-30. The
+// 1904 system counts from 1904-01-01. The fraction is the time of day.
+func excelSerialDate(serial float64, date1904 bool) (time.Time, error) {
+	if serial < 61 && !date1904 || serial < 0 || serial > 2958465 {
+		return time.Time{}, fmt.Errorf("date serial %v is outside the dates a payment can have", serial)
+	}
+	epoch := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+	if date1904 {
+		epoch = time.Date(1904, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	return epoch.AddDate(0, 0, int(math.Floor(serial))), nil
+}
+
+// ParsePayPalActivityXLSX turns a PayPal activity Excel file into payment
+// rows. The first non-empty row of the first worksheet is the header, read by
+// name as in the CSV. A numeric date cell is an Excel date serial, and a
+// numeric money cell is rounded to cents (Excel stores 17.72 as
+// 17.719999999999999).
+func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult, error) {
+	sheet, err := readXLSXFirstSheet(data)
+	if err != nil {
+		return nil, err
+	}
+	empty := func(row []xlsxInCell) bool {
+		for _, c := range row {
+			if strings.TrimSpace(c.Text) != "" {
+				return false
+			}
+		}
+		return true
+	}
+	rows := sheet.Rows
+	for len(rows) > 0 && empty(rows[0]) {
+		rows = rows[1:]
+	}
+	if len(rows) == 0 {
+		return nil, errors.New("the worksheet is empty")
+	}
+	header := make([]string, len(rows[0]))
+	for i, c := range rows[0] {
+		header[i] = c.Text
+	}
+	col, err := mapPayPalColumns(header)
+	if err != nil {
+		return nil, err
+	}
+	money := map[int]bool{}
+	for _, f := range []string{"gross", "fee", "net"} {
+		if i, ok := col[f]; ok {
+			money[i] = true
+		}
+	}
+	var records [][]string
+	for _, row := range rows[1:] {
+		if empty(row) {
+			continue
+		}
+		rec := make([]string, len(row))
+		for i, c := range row {
+			switch {
+			case !c.IsNum:
+				rec[i] = c.Text
+			case i == col["date"]:
+				d, err := excelSerialDate(c.Num, sheet.Date1904)
+				if err != nil {
+					return nil, err
+				}
+				rec[i] = d.Format("2006-01-02")
+			case money[i]:
+				rec[i] = strconv.FormatFloat(math.Round(c.Num*100)/100, 'f', 2, 64)
+			default:
+				rec[i] = c.Text
+			}
+		}
+		records = append(records, rec)
+	}
+	return parsePayPalRecords(col, records, dateOrder)
+}
+
+// parsePayPalRecords classifies the records of either export format. Rows
+// that are not money in (fees, conversions, holds, outgoing payments) are
+// counted per reason in Skipped; withdrawals to the bank come back as
+// withdrawal rows so payments can be grouped by bank deposit. A reversal
+// cancels the row it reverses, so a bounced withdrawal or a reversed payment
+// imports as neither row.
+func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string) (*paypalParseResult, error) {
 	get := func(rec []string, field string) string {
 		i, ok := col[field]
 		if !ok || i >= len(rec) {
@@ -379,6 +497,12 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 	}
 
 	res := &paypalParseResult{RowsRead: len(records), Skipped: map[string]int{}}
+	// reversals maps a transaction id to the signed gross of each reversal
+	// row naming it, by its own id (a reversal can carry the id of the row it
+	// reverses) or by its reference id.
+	reversals := map[string][]int64{}
+	var candidates []paypalRow
+	textBytes := 0
 	for i, rec := range records {
 		line := i + 2 // 1-based, after the header
 		typ := strings.ToLower(get(rec, "type"))
@@ -412,6 +536,13 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 		switch {
 		case !containsAny(status, paypalCompletedStatuses):
 			res.Skipped[paypalSkipNotCompleted]++
+		case containsAny(typ, paypalReversalTypes):
+			res.Skipped[paypalSkipReversal]++
+			for _, id := range []string{get(rec, "transaction_id"), get(rec, "reference_id")} {
+				if id != "" {
+					reversals[id] = append(reversals[id], gross)
+				}
+			}
 		case containsAny(typ, paypalConversionTypes):
 			res.Skipped[paypalSkipConversion]++
 		case containsAny(typ, paypalHoldTypes):
@@ -469,12 +600,43 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 			SenderName:     get(rec, "name"),
 			SenderEmail:    strings.ToLower(get(rec, "from_email")),
 			Note:           strings.Join(notes, " | "),
+			Category:       data_models.PaymentCategoryUncategorised,
+		}
+		if kind == paypalKindIncoming && containsAny(typ, paypalRefundTypes) {
+			row.Category = data_models.PaymentCategoryRefund
 		}
 		if kind == paypalKindWithdrawal {
 			// A withdrawal is money leaving PayPal for the bank: keep it as
 			// a positive deposit amount, and it has no sender.
 			row.GrossCents, row.NetCents = -gross, -net
 			row.SenderEmail = ""
+		}
+		textBytes += len(row.TransactionID) + len(row.ReferenceTxnID) + len(row.Currency) +
+			len(row.SenderName) + len(row.SenderEmail) + len(row.Note)
+		if textBytes > paypalMaxRowTextBytes {
+			return nil, fmt.Errorf("the file's rows carry more than %d MB of text", paypalMaxRowTextBytes>>20)
+		}
+		candidates = append(candidates, row)
+	}
+	// A reversal may come before or after the row it reverses in the file,
+	// so the cancelling runs once every row is classified. A reversal undoes
+	// a row only when it moves the same amount the other way: a "Chargeback
+	// Reversal" returns money to her under the original payment's reference,
+	// and that payment stands.
+	for _, row := range candidates {
+		signed := row.GrossCents
+		if row.Kind == paypalKindWithdrawal {
+			signed = -signed
+		}
+		undone := false
+		for _, g := range reversals[row.TransactionID] {
+			if g == -signed {
+				undone = true
+			}
+		}
+		if undone {
+			res.Skipped[paypalSkipReversed]++
+			continue
 		}
 		res.Rows = append(res.Rows, row)
 	}
