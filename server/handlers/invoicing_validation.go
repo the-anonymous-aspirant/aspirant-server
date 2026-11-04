@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
+	"time"
 
 	"aspirant-online/server/data_models"
-	"aspirant-online/server/invoicing_pdf"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -18,7 +17,9 @@ import (
 // stored, so an export never ships data that drifted past a guard.
 //
 // Messages are read by the owner in the check screen, so they name the
-// printed invoice number, euros and German dates, never database ids or cents.
+// printed invoice number, amounts and dates, never database ids or cents. They
+// use the screen's spellings (2026-10-05, €350.00: formatDay and formatMoney
+// in the client's invoicing api.js); the German spellings belong to the PDF.
 
 type validationItem struct {
 	Code      string `json:"code"`
@@ -51,10 +52,7 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 	for _, inv := range numbered {
 		label[inv.ID] = invoiceLabel(inv)
 	}
-	day := invoicing_pdf.FormatDate
-	payment := func(p data_models.InvoicingPayment) string {
-		return fmt.Sprintf("the payment of %s on %s", invoicing_pdf.FormatEuro(p.GrossCents, p.Currency), day(p.PaidOn))
-	}
+	day := screenDay
 
 	byPrefix := map[string][]data_models.InvoicingInvoice{}
 	for _, inv := range numbered {
@@ -112,7 +110,7 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 		}
 		if net != inv.NetCents || inv.NetCents+inv.VatCents != inv.TotalCents {
 			add("total_mismatch_items", inv.ID, 0, "Invoice %s: the amounts don't add up (lines %s, net %s, total %s).", label[inv.ID],
-				invoicing_pdf.FormatEuro(net, inv.Currency), invoicing_pdf.FormatEuro(inv.NetCents, inv.Currency), invoicing_pdf.FormatEuro(inv.TotalCents, inv.Currency))
+				screenMoney(net, inv.Currency), screenMoney(inv.NetCents, inv.Currency), screenMoney(inv.TotalCents, inv.Currency))
 		}
 
 		if inv.Status != data_models.InvoiceStatusIssued {
@@ -133,7 +131,8 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 		for _, p := range payments {
 			paid += p.GrossCents
 			if p.Kind != data_models.PaymentKindIncoming || p.Category != data_models.PaymentCategoryPaidWork {
-				add("payment_not_paid_work", inv.ID, p.ID, "Invoice %s covers %s, which is not paid work.", label[inv.ID], payment(p))
+				add("payment_not_paid_work", inv.ID, p.ID, "Invoice %s covers a payment that is not paid work: %s on %s (%s).",
+					label[inv.ID], screenMoney(p.GrossCents, p.Currency), day(p.PaidOn), categoryLabel(p.Category))
 			}
 			other, err := data_models.IssuedInvoiceForPayment(db, p.ID, inv.ID)
 			if err != nil {
@@ -141,13 +140,14 @@ func validateInvoicing(db *gorm.DB) (*validationReport, error) {
 			}
 			// Report each pair once: from the lower invoice id.
 			if other != 0 && other > inv.ID {
-				add("payment_multiple_invoices", inv.ID, p.ID, "%s is on two invoices: %s and %s.", capitalize(payment(p)), label[inv.ID], label[other])
+				add("payment_multiple_invoices", inv.ID, p.ID, "The payment of %s on %s is on two invoices: %s and %s.",
+					screenMoney(p.GrossCents, p.Currency), day(p.PaidOn), label[inv.ID], label[other])
 			}
 		}
 		if len(payments) > 0 && paid != inv.TotalCents {
 			rep.Warnings = append(rep.Warnings, validationItem{"total_mismatch_payments", inv.ID, 0,
 				fmt.Sprintf("Invoice %s totals %s; its payments total %s.", label[inv.ID],
-					invoicing_pdf.FormatEuro(inv.TotalCents, inv.Currency), invoicing_pdf.FormatEuro(paid, inv.Currency))})
+					screenMoney(inv.TotalCents, inv.Currency), screenMoney(paid, inv.Currency))})
 		}
 	}
 	rep.OK = len(rep.Violations) == 0
@@ -166,11 +166,42 @@ func invoiceLabel(inv data_models.InvoicingInvoice) string {
 	return "(no number)"
 }
 
-func capitalize(s string) string {
-	if s == "" {
-		return s
+// screenDay is the client's formatDay: the calendar day as yyyy-mm-dd.
+func screenDay(t time.Time) string { return t.Format("2006-01-02") }
+
+// screenMoney is the client's formatMoney (Intl en-GB): €1,234.56, -€5.00,
+// and for a currency other than euros the code before the amount.
+func screenMoney(cents int64, currency string) string {
+	sign := ""
+	if cents < 0 {
+		sign, cents = "-", -cents
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	whole := fmt.Sprint(cents / 100)
+	for i := len(whole) - 3; i > 0; i -= 3 {
+		whole = whole[:i] + "," + whole[i:]
+	}
+	amount := fmt.Sprintf("%s.%02d", whole, cents%100)
+	if currency == "" || currency == "EUR" {
+		return sign + "€" + amount
+	}
+	return sign + currency + " " + amount
+}
+
+// paymentCategoryLabels are the client's CATEGORY_LABELS.
+var paymentCategoryLabels = map[string]string{
+	data_models.PaymentCategoryUncategorised: "Uncategorised",
+	data_models.PaymentCategoryPaidWork:      "Paid work",
+	data_models.PaymentCategoryGift:          "Gift",
+	data_models.PaymentCategoryLoan:          "Loan",
+	data_models.PaymentCategoryRefund:        "Refund",
+	data_models.PaymentCategoryOther:         "Other",
+}
+
+func categoryLabel(c string) string {
+	if l, ok := paymentCategoryLabels[c]; ok {
+		return l
+	}
+	return c
 }
 
 // GetInvoicingValidationHandler serves the §5 report.

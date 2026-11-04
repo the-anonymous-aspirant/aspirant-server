@@ -78,30 +78,30 @@ func TestValidation_EachCheckFires(t *testing.T) {
 		}, false, []string{"Invoice numbers jump from 2026-002 to 2026-005."}},
 		{"number_order", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[2]).Update("issue_date", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-		}, false, []string{"Invoice 2026-003 (01.10.2026) is dated before 2026-002 ("}},
+		}, false, []string{"Invoice 2026-003 (2026-10-01) is dated before 2026-002 ("}},
 		{"issue_date_future", func(f *invoiceFixture, ids []uint) {
 			for _, id := range ids {
 				f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).Update("issue_date", time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC))
 			}
-		}, false, []string{"Invoice 2026-001 is dated in the future (01.12.2026)."}},
+		}, false, []string{"Invoice 2026-001 is dated in the future (2026-12-01)."}},
 		{"service_after_issue", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("service_date_to", time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC))
-		}, false, []string{"Invoice 2026-001: the service date (25.10.2026) is after the issue date ("}},
+		}, false, []string{"Invoice 2026-001: the service date (2026-10-25) is after the issue date ("}},
 		{"total_mismatch_items", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("total_cents", 1)
-		}, false, []string{"Invoice 2026-001: the amounts don't add up (lines ", ", total 0,01 €)."}},
+		}, false, []string{"Invoice 2026-001: the amounts don't add up (lines ", ", total €0.01)."}},
 		{"payment_not_paid_work", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("category", "gift")
-		}, false, []string{"Invoice 2026-001 covers the payment of ", " €", ", which is not paid work."}},
+		}, false, []string{"Invoice 2026-001 covers a payment that is not paid work: €100.00 on 2026-07-10 (Gift)."}},
 		{"payment_multiple_invoices", func(f *invoiceFixture, ids []uint) {
 			f.db.Create(&data_models.InvoicingInvoicePayment{InvoiceID: ids[2], PaymentID: f.payments[0].ID})
-		}, false, []string{"The payment of ", " is on two invoices: 2026-001 and 2026-003."}},
+		}, false, []string{"The payment of €100.00 on 2026-07-10 is on two invoices: 2026-001 and 2026-003."}},
 		{"pdf_missing", func(f *invoiceFixture, ids []uint) {
 			f.db.Where("invoice_id = ?", ids[0]).Delete(&data_models.InvoicingInvoicePDF{})
 		}, false, []string{"Invoice 2026-001 has no PDF."}},
 		{"total_mismatch_payments", func(f *invoiceFixture, ids []uint) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("gross_cents", 12345)
-		}, true, []string{"Invoice 2026-001 totals ", "; its payments total ", " €."}},
+		}, true, []string{"Invoice 2026-001 totals €100.00; its payments total €123.45."}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -151,6 +151,18 @@ func TestValidation_EachCheckFires(t *testing.T) {
 
 // bareInvoiceID matches "invoice 12" with no printed number after it.
 var bareInvoiceID = regexp.MustCompile(`(?i)\binvoices? \d+([^\d-]|$)`)
+
+func TestScreenMoneyMatchesTheClient(t *testing.T) {
+	cases := map[int64]string{0: "€0.00", 5: "€0.05", 35000: "€350.00", 123456: "€1,234.56", 123456789: "€1,234,567.89", -500: "-€5.00"}
+	for cents, want := range cases {
+		if got := screenMoney(cents, "EUR"); got != want {
+			t.Errorf("screenMoney(%d) = %q, want %q", cents, got, want)
+		}
+	}
+	if got := screenMoney(1000, "USD"); got != "USD 10.00" {
+		t.Errorf("other currency: %q", got)
+	}
+}
 
 func TestValidation_SequenceStartingAboveOneIsNotAGap(t *testing.T) {
 	f := newInvoiceFixture(t)
