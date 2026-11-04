@@ -43,7 +43,30 @@ const (
 
 	// maxN26ConfirmRows bounds one confirm request (security review N3).
 	maxN26ConfirmRows = 500
+
+	// n26SkipPayPalTransfer is the per-file skipped reason for a credit whose
+	// payer is PayPal (system_3 #9881).
+	n26SkipPayPalTransfer = "paypal_transfer"
 )
+
+// isPayPalSender reports whether an N26 credit's payer is PayPal. Money that
+// reaches her N26 account from PayPal is her own withdrawal: the same money
+// as the PayPal payments it sums, which the PayPal import already holds (her
+// main income channel, system_3 #9881). Imported as an incoming payment it
+// could be invoiced a second time. Her real transfer confirmations print the
+// bare word PAYPAL as the sender; statements are expected to print PayPal's
+// company name, which contains it too. Only the sender name is read, never
+// the note, so a customer's own transfer that mentions PayPal stays a payment.
+func isPayPalSender(name string) bool {
+	return strings.Contains(strings.ToLower(name), "paypal")
+}
+
+// isPayPalTransferIntoN26 is the stored-row form of isPayPalSender: an N26
+// payment whose payer is PayPal. Such a row can never be paid work, so it can
+// never be invoiced, whenever it was stored.
+func isPayPalTransferIntoN26(p data_models.InvoicingPayment) bool {
+	return p.Source == invoicingPaymentSourceN26 && isPayPalSender(p.SenderName)
+}
 
 // Per-file parse error codes, machine-readable for the client.
 const (
@@ -78,11 +101,34 @@ type n26FileError struct {
 	Message string `json:"message"`
 }
 
+// n26ParsedFile is one uploaded file's result. Skipped counts the rows read
+// from the file but left out of Candidates, per reason (today only
+// n26SkipPayPalTransfer), so the owner is told why they are missing.
 type n26ParsedFile struct {
 	Filename     string         `json:"filename"`
 	DocumentKind string         `json:"document_kind,omitempty"`
 	Candidates   []n26Candidate `json:"candidates,omitempty"`
+	Skipped      map[string]int `json:"skipped,omitempty"`
 	Error        *n26FileError  `json:"error,omitempty"`
+}
+
+// dropPayPalTransfers removes the candidates whose payer is PayPal and
+// returns the rest with the count it removed. A statement's synthesized ids
+// are derived before this runs, so a kept row's id does not depend on it.
+func dropPayPalTransfers(cands []n26Candidate) ([]n26Candidate, map[string]int) {
+	kept := make([]n26Candidate, 0, len(cands))
+	var skipped map[string]int
+	for _, c := range cands {
+		if isPayPalSender(c.SenderName) {
+			if skipped == nil {
+				skipped = map[string]int{}
+			}
+			skipped[n26SkipPayPalTransfer]++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, skipped
 }
 
 // n26Strategy pairs a document-kind predicate with its parse function; the
@@ -467,6 +513,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 			fail(n26ErrParseFailed, fmt.Sprintf("read as %s but a field is missing or malformed: %v", strategy.name, err))
 			continue
 		}
+		cands, entry.Skipped = dropPayPalTransfers(cands)
 		if err := flagN26Candidates(db, cands); err != nil {
 			log.Printf("N26 import: flagging candidates of %q: %v", fh.Filename, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error checking candidates against stored payments")
@@ -538,6 +585,12 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		}
 		if row.SenderName == "" || len(row.SenderName) > 200 {
 			bad("sender_name is missing or too long")
+			return
+		}
+		// The parse never offers such a row; the client posts rows back,
+		// so the rule is enforced here too.
+		if isPayPalSender(row.SenderName) {
+			bad("the payer is PayPal: a transfer from PayPal is already counted in the PayPal import")
 			return
 		}
 		if len(row.Note) > 500 {

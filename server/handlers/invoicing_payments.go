@@ -295,6 +295,16 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 			refuse("Only incoming payments are categorised; this row is a bank withdrawal")
 			return
 		}
+		// A transfer from PayPal into N26 is money the PayPal import
+		// already holds, so it is never paid work (system_3 #9881). Any
+		// other category stays open, so a row stored before this rule can
+		// be moved off paid work.
+		if cat == data_models.PaymentCategoryPaidWork && cat != p.Category && isPayPalTransferIntoN26(*p) {
+			tx.Rollback()
+			respondError(c, http.StatusUnprocessableEntity, "paypal_transfer_not_paid_work",
+				"this is a transfer from PayPal into N26; the PayPal payments it sums are the paid work, so it cannot be paid work itself")
+			return
+		}
 		if cat != p.Category {
 			// An issued invoice is immutable (spec §10), and so is the
 			// paid-work fact it rests on. Cancel the invoice first. The

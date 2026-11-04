@@ -111,6 +111,12 @@ func checkInvoiceablePayments(tx *gorm.DB, ids []uint, invoiceID uint) ([]data_m
 			return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work",
 				"payment %s is %q, not paid work; only paid-work payments can be invoiced", paymentLabel(*p), p.Category), nil
 		}
+		// A row stored as paid work before the import rule (system_3 #9881)
+		// still cannot be invoiced: the PayPal payments it sums are.
+		if isPayPalTransferIntoN26(*p) {
+			return nil, guard(http.StatusUnprocessableEntity, "payment_paypal_transfer",
+				"payment %s is a transfer from PayPal into N26; invoice the PayPal payments it sums instead", paymentLabel(*p)), nil
+		}
 		other, err := data_models.IssuedInvoiceForPayment(tx, p.ID, invoiceID)
 		if err != nil {
 			return nil, nil, err
