@@ -19,8 +19,9 @@ import (
 // transaction, and served from storage ever after.
 
 // storeInvoicePDF renders the issued invoice from its frozen profile and
-// client and stores the bytes. It returns the document's sha256.
-func storeInvoicePDF(tx *gorm.DB, inv *data_models.InvoicingInvoice, profile *data_models.InvoicingProfile, client *data_models.InvoicingClient, items []data_models.InvoicingLineItem) (string, error) {
+// client, with the logo set at issue (nil for none), and stores the bytes. It
+// returns the document's sha256.
+func storeInvoicePDF(tx *gorm.DB, inv *data_models.InvoicingInvoice, profile *data_models.InvoicingProfile, client *data_models.InvoicingClient, items []data_models.InvoicingLineItem, logo *invoicing_pdf.Logo) (string, error) {
 	payments, err := data_models.ListInvoicePayments(tx, inv.ID)
 	if err != nil {
 		return "", err
@@ -31,6 +32,7 @@ func storeInvoicePDF(tx *gorm.DB, inv *data_models.InvoicingInvoice, profile *da
 		Invoice:  *inv,
 		Items:    items,
 		Payments: payments,
+		Logo:     logo,
 	})
 	if err != nil {
 		return "", err

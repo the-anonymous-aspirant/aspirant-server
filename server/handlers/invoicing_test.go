@@ -27,7 +27,7 @@ func setupInvoicingDB(t *testing.T) *gorm.DB {
 	}
 	db.AutoMigrate(&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{},
 		&data_models.InvoicingInvoice{}, &data_models.InvoicingLineItem{}, &data_models.InvoicingInvoicePayment{},
-		&data_models.InvoicingInvoicePDF{})
+		&data_models.InvoicingInvoicePDF{}, &data_models.InvoicingProfileLogo{})
 	t.Cleanup(func() { db.Close() })
 	return db
 }
