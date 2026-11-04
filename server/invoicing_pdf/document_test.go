@@ -176,3 +176,26 @@ func TestBuild_ManualPaymentLines(t *testing.T) {
 		t.Errorf("internal id or an empty reference printed: %q", got)
 	}
 }
+
+// #9835: a Kleinbetragsrechnung (§33 UStDV, up to 250 EUR gross) may go to a
+// client with no address. The recipient block is then the name alone, and
+// the service date is still printed: the Jobcenter matches income to months
+// (report 795 F4).
+func TestBuild_NoClientAddressPrintsNameOnlyAndTheServiceDate(t *testing.T) {
+	in := issuedInput(true)
+	in.Client.Address = ""
+	in.Invoice.TotalCents = 4998
+	d, err := Build(in)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if strings.Join(d.Recipient, "|") != "Łukasz Müller GmbH" {
+		t.Errorf("recipient without an address: %q", d.Recipient)
+	}
+	if len(d.Meta) != 3 || d.Meta[2] != (Field{"Leistungsdatum", "14.07.2026"}) {
+		t.Errorf("service date must print without an address: %+v", d.Meta)
+	}
+	if _, err := Render(d); err != nil {
+		t.Errorf("render without an address: %v", err)
+	}
+}

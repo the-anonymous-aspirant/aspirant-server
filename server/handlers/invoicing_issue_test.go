@@ -289,8 +289,12 @@ func TestIssue_Guardrails(t *testing.T) {
 		{"no client", 422, "client_incomplete", func(t *testing.T, f *invoiceFixture, id uint) {
 			invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), `{"client_id":null}`)
 		}},
-		{"client without address", 422, "client_incomplete", func(t *testing.T, f *invoiceFixture, id uint) {
+		{"client without a name", 422, "client_incomplete", func(t *testing.T, f *invoiceFixture, id uint) {
+			f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("name", "")
+		}},
+		{"client without address above 250 EUR gross", 422, "250,00 €", func(t *testing.T, f *invoiceFixture, id uint) {
 			f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("address", "")
+			invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), `{"line_items":[{"description":"x","quantity_milli":1000,"unit_price_cents":25001}]}`)
 		}},
 		{"no line items", 422, "line_items_incomplete", func(t *testing.T, f *invoiceFixture, id uint) {
 			invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), `{"line_items":[]}`)
@@ -358,6 +362,69 @@ func TestIssue_Guardrails(t *testing.T) {
 				t.Errorf("a refused issue changed the draft: %+v", inv)
 			}
 		})
+	}
+}
+
+// #9835: the recipient's address is an issue-time rule on the gross total.
+// Up to 250.00 EUR gross the invoice is a §33 UStDV Kleinbetragsrechnung and
+// a client with a name and no address may be invoiced; one cent above, the
+// refusal names the cause and the threshold.
+func TestIssue_NoAddressAllowedUpToKleinbetragLimit(t *testing.T) {
+	cases := []struct {
+		name             string
+		kleinunternehmer bool
+		netCents         int
+		wantCode         int
+	}{
+		// Kleinunternehmerin: no VAT, so the gross is the net.
+		{"exactly 250,00 EUR", true, 25000, http.StatusOK},
+		{"250,01 EUR", true, 25001, http.StatusUnprocessableEntity},
+		{"well below", true, 1999, http.StatusOK},
+		// Regelbesteuerung: 19 % VAT counts toward the gross.
+		// 210,08 + 39,92 = 250,00; 210,09 + 39,92 = 250,01.
+		{"VAT brings the gross to exactly 250,00", false, 21008, http.StatusOK},
+		{"VAT tips the gross over 250,00", false, 21009, http.StatusUnprocessableEntity},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInvoiceFixture(t)
+			if !tc.kleinunternehmer {
+				f.db.Model(&data_models.InvoicingProfile{}).Where("id = 1").Update("is_kleinunternehmer", false)
+			}
+			f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("address", "")
+			id := f.draft(t, 0)
+			body := fmt.Sprintf(`{"line_items":[{"description":"Portrait","quantity_milli":1000,"unit_price_cents":%d}]}`, tc.netCents)
+			if w := invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), body); w.Code != http.StatusOK {
+				t.Fatalf("edit: %d %s", w.Code, w.Body.String())
+			}
+			code, d, resp := f.issue(id)
+			if code != tc.wantCode {
+				t.Fatalf("issue: got %d, want %d: %s", code, tc.wantCode, resp)
+			}
+			if code == http.StatusOK {
+				if d.Invoice.TotalCents > data_models.KleinbetragLimitCents {
+					t.Fatalf("issued without an address above the limit: total %d", d.Invoice.TotalCents)
+				}
+				return
+			}
+			for _, want := range []string{"client_incomplete", "no postal address", "250,01 €", "above 250,00 €"} {
+				if !strings.Contains(resp, want) {
+					t.Errorf("refusal %s lacks %q", resp, want)
+				}
+			}
+		})
+	}
+}
+
+// A non-EUR invoice always needs the address: the §33 ceiling is in euros.
+func TestIssue_NoAddressNonEuroIsRefused(t *testing.T) {
+	f := newInvoiceFixture(t)
+	f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("address", "")
+	id := f.draft(t, 0)
+	f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).Update("currency", "USD")
+	if code, _, body := f.issue(id); code != http.StatusUnprocessableEntity || !strings.Contains(body, "client_incomplete") {
+		t.Fatalf("got %d %s, want 422 client_incomplete", code, body)
 	}
 }
 

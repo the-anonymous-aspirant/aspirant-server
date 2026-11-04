@@ -1,6 +1,7 @@
 package data_models
 
 import (
+	"strings"
 	"time"
 	_ "time/tzdata" // BerlinLocation must resolve even without a system zoneinfo
 
@@ -81,10 +82,27 @@ type InvoicingClient struct {
 
 func (InvoicingClient) TableName() string { return "invoicing_clients" }
 
-// IsInvoiceable reports whether the client carries what §14 UStG needs on an
-// invoice: a name and a postal address.
-func (cl InvoicingClient) IsInvoiceable() bool {
-	return cl.Name != "" && cl.Address != ""
+// KleinbetragLimitCents is the §33 UStDV ceiling: an invoice up to 250.00 EUR
+// gross is a Kleinbetragsrechnung, which need not name the recipient's
+// address (system_3 #9835, report 795 F3). §34a UStDV leaves §33 untouched,
+// so the ceiling holds for a Kleinunternehmerin too.
+const KleinbetragLimitCents = 25000
+
+// HasPostalAddress reports whether the client has an address to print.
+func (cl InvoicingClient) HasPostalAddress() bool {
+	return strings.TrimSpace(cl.Address) != ""
+}
+
+// InvoiceNeedsRecipientAddress reports whether an invoice with this gross
+// total must carry the recipient's full address. Above the §33 UStDV ceiling
+// it must, under §14 Abs. 4 Nr. 1 UStG or, for a Kleinunternehmerin, §34a
+// Nr. 1 UStDV (report 795 F1). The ceiling is in euros, so an invoice in any
+// other currency always needs the address: the rule fails closed.
+func InvoiceNeedsRecipientAddress(totalCents int64, currency string) bool {
+	if currency != "" && currency != "EUR" {
+		return true
+	}
+	return totalCents > KleinbetragLimitCents
 }
 
 func ListInvoicingClients(db *gorm.DB) ([]InvoicingClient, error) {
