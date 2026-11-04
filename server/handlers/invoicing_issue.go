@@ -281,7 +281,12 @@ func IssueInvoiceHandler(c *gin.Context) {
 	// The PDF is rendered from the snapshots just frozen and stored in the
 	// same transaction: an issued invoice always has its document, and a
 	// render failure leaves the draft (and the number) untouched.
-	pdfSHA, err := storeInvoicePDF(tx, inv, profile, client, items)
+	logo, logoSHA, err := invoiceLogo(tx)
+	if err != nil {
+		respondInvoicingInternal(c, tx, "loading the logo", err)
+		return
+	}
+	pdfSHA, err := storeInvoicePDF(tx, inv, profile, client, items, logo)
 	if unprintable := asUnprintable(err); unprintable != nil {
 		respondGuard(c, tx, guard(http.StatusUnprocessableEntity, "unprintable_characters",
 			"the invoice would print without %q, which the invoice font cannot show; change those characters in the profile, the client or the line items", string(unprintable.Runes)))
@@ -292,7 +297,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		return
 	}
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionIssue, invoicingEntityInvoice, inv.ID,
-		auditDetails(gin.H{"invoice_number": invoiceNumber, "issue_date": issueDate.Format(invoicingDateLayout), "total_cents": inv.TotalCents, "pdf_sha256": pdfSHA})); err != nil {
+		auditDetails(gin.H{"invoice_number": invoiceNumber, "issue_date": issueDate.Format(invoicingDateLayout), "total_cents": inv.TotalCents, "pdf_sha256": pdfSHA, "logo_sha256": logoSHA})); err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
 	}

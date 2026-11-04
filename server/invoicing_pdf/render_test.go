@@ -14,9 +14,23 @@ import (
 // recordingCanvas captures what layout draws, so the test asserts on the
 // printed text without parsing a PDF.
 type recordingCanvas struct {
-	texts []string
-	pages int
-	size  float64
+	texts  []string
+	placed []placedText
+	images []placedImage
+	pages  int
+	size   float64
+}
+
+type placedText struct {
+	x, y, size float64
+	page       int
+	s          string
+}
+
+type placedImage struct {
+	x, y, w, h float64
+	page       int
+	png        []byte
 }
 
 func (r *recordingCanvas) SetFont(bold bool, size float64) error { r.size = size; return nil }
@@ -25,6 +39,11 @@ func (r *recordingCanvas) Text(x, y float64, s string) error {
 		return fmt.Errorf("text %q drawn off the page at (%.0f, %.0f)", s, x, y)
 	}
 	r.texts = append(r.texts, s)
+	r.placed = append(r.placed, placedText{x: x, y: y, size: r.size, page: r.pages, s: s})
+	return nil
+}
+func (r *recordingCanvas) Image(png []byte, x, y, w, h float64) error {
+	r.images = append(r.images, placedImage{x: x, y: y, w: w, h: h, page: r.pages, png: png})
 	return nil
 }
 func (r *recordingCanvas) TextWidth(s string) (float64, error) {
