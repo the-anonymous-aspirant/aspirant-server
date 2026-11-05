@@ -15,11 +15,16 @@ import (
 	"aspirant-online/server/data_models"
 )
 
-// Legal text, verbatim from spec §4.5. The %s slots are the spec's
-// [Datum]/[PayPal/Stripe]/… and [Ausstellungsdatum] placeholders.
+// Legal text. The %s slots are the spec's [Datum]/[PayPal/Stripe]/… and
+// [Ausstellungsdatum] placeholders.
 const (
-	TitleRechnung       = "Rechnung"
-	Paragraph19UStGLine = "Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."
+	TitleRechnung = "Rechnung"
+	// Names the § 19 exemption per § 34a Satz 1 Nr. 5 UStDV (in force since
+	// 2026-01-01), which asks the invoice to state that the Kleinunternehmer
+	// exemption applies, not merely that no VAT is charged — the spec's own
+	// pre-2025 wording (system_3 #9879, operator confirmed on #9656 c61387,
+	// pending the lawyer's review of the sample invoice).
+	Paragraph19UStGLine = "Es gilt die Steuerbefreiung für Kleinunternehmer gemäß § 19 UStG."
 	paymentReceivedLine = "Zahlung erhalten am %s per %s (Transaktions-ID: %s)"
 	// A hand-entered payment without a reference ends at the method
 	// (system_3 #8409): the parenthesis is printed only for a real id.
