@@ -34,6 +34,7 @@ const (
 // Field labels. These name the §14 UStG fields; they carry no legal claim.
 const (
 	labelSteuernummer      = "Steuernummer"
+	labelTelefon           = "Tel."
 	labelRechnungsnummer   = "Rechnungsnummer"
 	labelRechnungsdatum    = "Rechnungsdatum"
 	labelLeistungsdatum    = "Leistungsdatum"
@@ -143,6 +144,10 @@ func Build(in Input) (Document, error) {
 	doc.Issuer = append(doc.Issuer, labelSteuernummer+": "+in.Profile.Steuernummer)
 	if in.Profile.Email != "" {
 		doc.Issuer = append(doc.Issuer, in.Profile.Email)
+	}
+	// Optional, and printed only when set (system_3 #9967).
+	if in.Profile.Phone != "" {
+		doc.Issuer = append(doc.Issuer, labelTelefon+": "+in.Profile.Phone)
 	}
 	doc.Recipient = append([]string{in.Client.Name}, nonEmptyLines(in.Client.Address)...)
 

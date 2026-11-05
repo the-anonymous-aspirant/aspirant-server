@@ -143,6 +143,36 @@ func TestInvoicingProfile_EmptySteuernummerSaves(t *testing.T) {
 	}
 }
 
+// system_3 #9967 (operator c61727): an optional issuer phone, trimmed, kept,
+// and cleared by a save without it.
+func TestInvoicingProfile_PhoneIsOptionalAndRoundTrips(t *testing.T) {
+	r := setupInvoicingRouter(setupInvoicingDB(t), 42)
+	put := func(phone string) {
+		t.Helper()
+		body := `{"full_name":"F","address":"A","steuernummer":"1","email":"","phone":"` + phone + `","is_kleinunternehmer":true,"invoice_number_prefix":"2026","next_invoice_number":1}`
+		if w := invoicingDo(r, "PUT", "/invoicing/profile", body); w.Code != http.StatusOK {
+			t.Fatalf("PUT phone %q: got %d: %s", phone, w.Code, w.Body.String())
+		}
+	}
+	get := func() string {
+		t.Helper()
+		w := invoicingDo(r, "GET", "/invoicing/profile", "")
+		var got struct {
+			Profile data_models.InvoicingProfile `json:"profile"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &got)
+		return got.Profile.Phone
+	}
+	put("  +49 (30) 1234-567  ")
+	if p := get(); p != "+49 (30) 1234-567" {
+		t.Fatalf("phone after save: %q, want it trimmed", p)
+	}
+	put("")
+	if p := get(); p != "" {
+		t.Errorf("phone after a save without it: %q, want empty", p)
+	}
+}
+
 func TestInvoicingProfile_InvalidBodiesAreRefusedAndWriteNothing(t *testing.T) {
 	cases := map[string]string{
 		"missing name":     `{"full_name":"","address":"A","is_kleinunternehmer":true,"invoice_number_prefix":"2026","next_invoice_number":1}`,
@@ -154,6 +184,8 @@ func TestInvoicingProfile_InvalidBodiesAreRefusedAndWriteNothing(t *testing.T) {
 		"missing vat flag": `{"full_name":"F","address":"A","invoice_number_prefix":"2026","next_invoice_number":1}`,
 		"missing next":     `{"full_name":"F","address":"A","is_kleinunternehmer":true,"invoice_number_prefix":"2026"}`,
 		"not json":         `full_name=F`,
+		"bad phone":        `{"full_name":"F","address":"A","phone":"call me","is_kleinunternehmer":true,"invoice_number_prefix":"2026","next_invoice_number":1}`,
+		"phone too long":   `{"full_name":"F","address":"A","phone":"+49 30 1234567890 1234567890 1234567890 1","is_kleinunternehmer":true,"invoice_number_prefix":"2026","next_invoice_number":1}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
