@@ -71,7 +71,7 @@ func TestBuild_KleinunternehmerinCarriesEveryParagraph14Field(t *testing.T) {
 		t.Errorf("totals without VAT rows: %+v", d.Totals)
 	}
 	want := []string{
-		"Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.",
+		"Es gilt die Steuerbefreiung für Kleinunternehmer gemäß § 19 UStG.",
 		"Zahlung erhalten am 14.07.2026 per PayPal (Transaktions-ID: 1AA11111AA1111111)",
 	}
 	if strings.Join(d.Notes, "\n") != strings.Join(want, "\n") {
