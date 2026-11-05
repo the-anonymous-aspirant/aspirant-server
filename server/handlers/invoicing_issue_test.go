@@ -608,6 +608,37 @@ func TestListInvoices_Filters(t *testing.T) {
 // #8396: once issued, the list, the search, the detail and the CSV all show
 // the client as frozen at issue, so a later rename of the client cannot make
 // the screen disagree with the PDF. A draft follows the rename.
+// system_3 #9962: the client's notes are Flower's alone. The snapshot frozen
+// into an issued invoice (and everything rendered from it) leaves them out,
+// while the live client keeps them.
+func TestIssue_ClientSnapshotLeavesOutNotes(t *testing.T) {
+	f := newInvoiceFixture(t)
+	const secret = "Private: owes a touch-up, call before May"
+	if err := f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("notes", secret).Error; err != nil {
+		t.Fatalf("setting notes: %v", err)
+	}
+	id := f.draft(t, 0, 1)
+	code, d, body := f.issue(id)
+	if code != http.StatusOK {
+		t.Fatalf("issue: %d %s", code, body)
+	}
+	if !strings.Contains(d.Invoice.ClientSnapshot, "Galerie Nord") {
+		t.Fatalf("snapshot lost the client itself: %q", d.Invoice.ClientSnapshot)
+	}
+	if strings.Contains(d.Invoice.ClientSnapshot, "touch-up") {
+		t.Errorf("issued snapshot carries the client's notes: %q", d.Invoice.ClientSnapshot)
+	}
+	var stored data_models.InvoicingInvoice
+	f.db.First(&stored, id)
+	if strings.Contains(stored.ClientSnapshot, "touch-up") || strings.Contains(body, "touch-up") {
+		t.Errorf("notes reached the stored invoice or the issue response")
+	}
+	live, _ := data_models.GetInvoicingClient(f.db, f.clientID)
+	if live == nil || live.Notes != secret {
+		t.Errorf("live client lost its notes: %+v", live)
+	}
+}
+
 func TestIssued_ShowsTheClientNameFrozenAtIssue(t *testing.T) {
 	f := newInvoiceFixture(t)
 	issued := f.draft(t, 0)
