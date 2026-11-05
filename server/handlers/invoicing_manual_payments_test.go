@@ -153,7 +153,10 @@ func TestManualPayment_PayPalReferenceDeduplicatesBothWays(t *testing.T) {
 	}
 }
 
-func TestManualPayment_DeleteOnlyWhenManualAndOnNoInvoice(t *testing.T) {
+// Until #10009 only a manual payment on no invoice could be deleted; now any
+// payment not on an issued invoice can (invoicing_payment_delete_test.go has
+// the cases). This keeps the list flag and the manual path's own audit.
+func TestManualPayment_DeleteAndTheOnInvoiceFlag(t *testing.T) {
 	f := newInvoiceFixture(t)
 	_, loose, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash"}`)
 	_, drafted, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":2000,"method":"cash"}`)
@@ -169,11 +172,11 @@ func TestManualPayment_DeleteOnlyWhenManualAndOnNoInvoice(t *testing.T) {
 		t.Errorf("on_invoice: loose %v, drafted %v", onInvoice[loose.ID], onInvoice[drafted.ID])
 	}
 
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", drafted.ID), ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "payment_on_invoice") {
-		t.Errorf("delete a payment on a draft: %d %s", w.Code, w.Body.String())
+	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", drafted.ID), ""); w.Code != http.StatusNoContent {
+		t.Errorf("delete a payment on a draft (#10009: allowed): %d %s", w.Code, w.Body.String())
 	}
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", f.payments[0].ID), ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "imported_payment") {
-		t.Errorf("delete an imported payment: %d %s", w.Code, w.Body.String())
+	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", f.payments[0].ID), ""); w.Code != http.StatusNoContent {
+		t.Errorf("delete an imported payment (#10009: allowed): %d %s", w.Code, w.Body.String())
 	}
 	if w := invoicingDo(f.r, "DELETE", "/invoicing/payments/99999", ""); w.Code != http.StatusNotFound {
 		t.Errorf("delete unknown: %d", w.Code)
@@ -213,13 +216,19 @@ func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing
 
 	_, kept, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
 	invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, kept.ID))
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", kept.ID), ""); w.Code != http.StatusConflict {
+	// Since #10009 a payment on a draft can be deleted; its link goes with it.
+	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", kept.ID), ""); w.Code != http.StatusNoContent {
 		t.Errorf("delete after draft: %d", w.Code)
+	}
+	if n := orphanLinks(); n != 0 {
+		t.Errorf("delete after draft left %d links to a deleted payment", n)
 	}
 
 	// Both at once, repeatedly. sqlite :memory: needs one shared connection,
 	// so this serialises on it; on Postgres the payment-row and issuing
-	// locks do the ordering. Either way exactly one side may win.
+	// locks do the ordering. The delete always wins (since #10009 it may take
+	// a draft's payment with it); the draft wins only when it ran first. No
+	// order may leave a link to a deleted payment.
 	f.db.DB().SetMaxOpenConns(1)
 	for i := 0; i < 20; i++ {
 		_, p, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
@@ -235,9 +244,11 @@ func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing
 			codes[1] = invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, p.ID)).Code
 		}()
 		wg.Wait()
-		deleted, drafted := codes[0] == http.StatusNoContent, codes[1] == http.StatusCreated
-		if deleted == drafted {
-			t.Errorf("round %d: delete %d, draft %d; exactly one must win", i, codes[0], codes[1])
+		if codes[0] != http.StatusNoContent || (codes[1] != http.StatusCreated && codes[1] != http.StatusUnprocessableEntity) {
+			t.Errorf("round %d: delete %d, draft %d", i, codes[0], codes[1])
+		}
+		if n := orphanLinks(); n != 0 {
+			t.Fatalf("round %d: %d invoice links point at a deleted payment", i, n)
 		}
 	}
 	if n := orphanLinks(); n != 0 {

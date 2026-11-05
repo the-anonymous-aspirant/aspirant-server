@@ -165,7 +165,10 @@ func invoiceWarnings(inv data_models.InvoicingInvoice, payments []data_models.In
 	for _, p := range payments {
 		sum += p.GrossCents
 	}
-	if len(payments) > 0 && sum != inv.TotalCents {
+	// A draft whose last payment was deleted (system_3 #10009) keeps its line
+	// items, so it must say its money is no longer covered: the mismatch
+	// counts a draft with no payments too.
+	if (len(payments) > 0 || inv.Status == data_models.InvoiceStatusDraft) && sum != inv.TotalCents {
 		return []string{fmt.Sprintf("total_mismatch: invoice total %d cents, linked payments %d cents", inv.TotalCents, sum)}
 	}
 	return []string{}

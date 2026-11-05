@@ -421,7 +421,7 @@ func detectN26Document(text string) (n26Strategy, bool) {
 func flagN26Candidates(db *gorm.DB, cands []n26Candidate) error {
 	for i := range cands {
 		c := &cands[i]
-		exists, err := data_models.InvoicingPaymentExists(db, invoicingPaymentSourceN26, c.TransactionID)
+		exists, err := data_models.InvoicingPaymentSeen(db, invoicingPaymentSourceN26, c.TransactionID)
 		if err != nil {
 			return err
 		}
@@ -641,7 +641,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			continue
 		}
 		seen[v.row.TransactionID] = true
-		exists, err := data_models.InvoicingPaymentExists(tx, invoicingPaymentSourceN26, v.row.TransactionID)
+		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingPaymentSourceN26, v.row.TransactionID)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking N26 payment %s: %v", v.row.TransactionID, err)

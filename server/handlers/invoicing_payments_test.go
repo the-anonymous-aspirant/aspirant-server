@@ -22,7 +22,7 @@ import (
 func setupPaymentsDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := setupInvoicingDB(t)
-	db.AutoMigrate(&data_models.InvoicingPayment{})
+	db.AutoMigrate(&data_models.InvoicingPayment{}, &data_models.InvoicingPaymentTombstone{})
 	return db
 }
 
@@ -32,7 +32,7 @@ func setupPaymentsRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r.GET("/invoicing/payments", ListInvoicingPaymentsHandler)
 	r.PATCH("/invoicing/payments/:id", PatchInvoicingPaymentHandler)
 	r.POST("/invoicing/payments/manual", CreateManualPaymentHandler)
-	r.DELETE("/invoicing/payments/:id", DeleteManualPaymentHandler)
+	r.DELETE("/invoicing/payments/:id", DeletePaymentHandler)
 	return r
 }
 

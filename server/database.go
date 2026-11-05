@@ -203,6 +203,7 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.InvoicingInvoice{})
 	db.AutoMigrate(&data_models.InvoicingLineItem{})
 	db.AutoMigrate(&data_models.InvoicingInvoicePayment{})
+	db.AutoMigrate(&data_models.InvoicingPaymentTombstone{}) // #10009: deleted payments stay out of re-imports
 	db.AutoMigrate(&data_models.InvoicingInvoicePDF{})
 	db.AutoMigrate(&data_models.InvoicingProfileLogo{}) // #9858: the issuer's logo
 

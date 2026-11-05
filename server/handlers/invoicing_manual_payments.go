@@ -303,10 +303,16 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"payment": p})
 }
 
-// DeleteManualPaymentHandler removes a hand-entered payment that is on no
-// invoice (draft, issued or cancelled): DELETE /invoicing/payments/:id. An
-// imported payment is never deleted, because the file is its record.
-func DeleteManualPaymentHandler(c *gin.Context) {
+// DeletePaymentHandler removes a payment, imported or entered by hand:
+// DELETE /invoicing/payments/:id (system_3 #10009, operator c61587/c61853).
+// Only a payment on an issued invoice is refused: that invoice must be
+// cancelled first. A payment on a draft or a cancelled invoice is deleted
+// with its link. The draft keeps its line items and its total, and says the
+// payments no longer cover it (invoiceWarnings); the cancelled invoice keeps
+// its number and its stored PDF. A tombstone keeps a re-import of the same
+// file from bringing an imported payment back, and the delete's audit event
+// keeps the whole row.
+func DeletePaymentHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -314,9 +320,9 @@ func DeleteManualPaymentHandler(c *gin.Context) {
 		return
 	}
 	tx := db.Begin()
-	// The issuing lock orders this against a draft create or a payment_ids
-	// edit that would link the payment while it is deleted: both take the
-	// same lock before reading the payment (#8409 security F1).
+	// The issuing lock orders this against a draft create, a payment_ids edit
+	// or an issue that would link or freeze the payment while it is deleted:
+	// all take the same lock before reading the payment (#8409 security F1).
 	if _, err := lockIssuing(tx); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for payment %d: %v", id, err)
@@ -341,23 +347,34 @@ func DeleteManualPaymentHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusNotFound, "Payment not found")
 		return
 	}
-	if !p.IsManual() {
-		tx.Rollback()
-		respondError(c, http.StatusConflict, "imported_payment",
-			"an imported payment cannot be deleted; its PayPal file is the record")
-		return
-	}
-	invoiceID, err := data_models.PaymentOnAnyInvoice(tx, p.ID)
+	issuedID, err := data_models.IssuedInvoiceForPayment(tx, p.ID, 0)
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error checking invoices for payment %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
 		return
 	}
-	if invoiceID != 0 {
+	if issuedID != 0 {
+		label := fmt.Sprintf("%d", issuedID)
+		if inv, err := data_models.GetInvoicingInvoice(tx, issuedID); err == nil && inv != nil {
+			label = invoiceLabel(*inv)
+		}
 		tx.Rollback()
 		respondError(c, http.StatusConflict, "payment_on_invoice",
-			fmt.Sprintf("payment is on invoice %d; delete that draft (or cancel that invoice) first", invoiceID))
+			fmt.Sprintf("payment is on issued invoice %s; cancel that invoice first", label))
+		return
+	}
+	unlinked, err := data_models.InvoiceIDsForPayment(tx, p.ID)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error listing invoices for payment %d: %v", id, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
+		return
+	}
+	if err := tx.Where("payment_id = ?", p.ID).Delete(&data_models.InvoicingInvoicePayment{}).Error; err != nil {
+		tx.Rollback()
+		log.Printf("Error unlinking payment %d: %v", id, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
 		return
 	}
 	if err := tx.Delete(p).Error; err != nil {
@@ -366,11 +383,17 @@ func DeleteManualPaymentHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
 		return
 	}
-	details := auditDetails(gin.H{
-		"paid_on": p.PaidOn.Format(invoicingDateLayout), "gross_cents": p.GrossCents, "currency": p.Currency,
-		"method": p.Method, "reference": p.Reference, "sender_name": p.SenderName, "note": p.Note,
-	})
-	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionDelete, invoicingEntityPayment, p.ID, details); err != nil {
+	userID := invoicingUserID(c)
+	if err := data_models.TombstoneInvoicingPayment(tx, *p, userID, invoicingNow().UTC()); err != nil {
+		tx.Rollback()
+		log.Printf("Error tombstoning payment %d: %v", id, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
+		return
+	}
+	// The whole row as it was, so the delete loses nothing the audit trail
+	// had, plus the invoices it was unlinked from.
+	details := auditDetails(gin.H{"before": p, "unlinked_invoice_ids": unlinked})
+	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionDelete, invoicingEntityPayment, p.ID, details); err != nil {
 		tx.Rollback()
 		log.Printf("Error auditing payment delete %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
