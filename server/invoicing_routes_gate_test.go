@@ -101,8 +101,8 @@ func TestInvoicingRoutes_OnlyOwnerAndAdminPassTheGate(t *testing.T) {
 
 	routes := invoicingRoutes(r)
 	// Positive control: an empty enumeration would pass every assertion below.
-	if len(routes) < 24 {
-		t.Fatalf("found %d /invoicing/ routes, want at least the 24 A1..E2 + #8409 register — the enumeration is not seeing the shipped table", len(routes))
+	if len(routes) < 22 {
+		t.Fatalf("found %d /invoicing/ routes, want at least the 22 A1..E2 + #8409 register minus the #9906 removals (per-invoice CSV, Excel workbook) — the enumeration is not seeing the shipped table", len(routes))
 	}
 
 	owner := mustToken(t, invoicingOwnerID, "Member")

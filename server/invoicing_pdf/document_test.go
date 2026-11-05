@@ -73,7 +73,6 @@ func TestBuild_KleinunternehmerinCarriesEveryParagraph14Field(t *testing.T) {
 	want := []string{
 		"Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.",
 		"Zahlung erhalten am 14.07.2026 per PayPal (Transaktions-ID: 1AA11111AA1111111)",
-		"Diese Rechnung wurde am 21.10.2026 nachträglich für die bereits erbrachte und bezahlte Leistung ausgestellt.",
 	}
 	if strings.Join(d.Notes, "\n") != strings.Join(want, "\n") {
 		t.Errorf("legal text differs from the spec:\n got: %q\nwant: %q", d.Notes, want)

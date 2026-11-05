@@ -57,12 +57,6 @@ func csvDate(t *time.Time) string {
 	return t.Format(invoicingDateLayout)
 }
 
-func csvQuantity(milli int64) string {
-	s := fmt.Sprintf("%d,%03d", milli/1000, milli%1000)
-	s = strings.TrimRight(s, "0")
-	return strings.TrimSuffix(s, ",")
-}
-
 // writeCSV renders rows as a German-Excel-friendly CSV: UTF-8 BOM, ';'
 // separated.
 func writeCSV(header []string, rows [][]string) ([]byte, error) {
@@ -186,57 +180,6 @@ func invoiceCSVRow(db *gorm.DB, inv data_models.InvoicingInvoice) ([]string, err
 		csvMoney(inv.NetCents), csvMoney(inv.VatCents), csvMoney(inv.TotalCents), spreadsheetSafe(inv.Currency),
 		spreadsheetSafe(strings.Join(ids, " ")), csvDate(inv.CancelledAt), spreadsheetSafe(inv.CancelReason),
 	}, nil
-}
-
-var lineItemsCSVHeader = append(append([]string{}, invoicesCSVHeader[:7]...),
-	"Pos.", "Beschreibung", "Menge", "Einzelpreis", "Positionsbetrag")
-
-// ExportInvoiceCSVHandler exports one issued invoice, one row per line item.
-func ExportInvoiceCSVHandler(c *gin.Context) {
-	db := c.MustGet("db").(*gorm.DB)
-	id, ok := parseInvoiceID(c)
-	if !ok {
-		return
-	}
-	inv, err := data_models.GetInvoicingInvoice(db, id)
-	if err != nil {
-		respondInvoicingInternal(c, nil, "exporting invoice", err)
-		return
-	}
-	if inv == nil {
-		RespondWithError(c, http.StatusNotFound, "Invoice not found")
-		return
-	}
-	if inv.InvoiceNumber == nil {
-		respondError(c, http.StatusConflict, "not_issued", "a draft is not exported; issue the invoice first")
-		return
-	}
-	if !runExportValidation(c, db) {
-		return
-	}
-	base, err := invoiceCSVRow(db, *inv)
-	if err != nil {
-		respondInvoicingInternal(c, nil, "exporting invoice", err)
-		return
-	}
-	items, err := data_models.ListInvoiceLineItems(db, inv.ID)
-	if err != nil {
-		respondInvoicingInternal(c, nil, "exporting invoice", err)
-		return
-	}
-	rows := make([][]string, 0, len(items))
-	for i, it := range items {
-		row := append(append([]string{}, base[:7]...),
-			fmt.Sprint(i+1), spreadsheetSafe(it.Description), csvQuantity(it.QuantityMilli), csvMoney(it.UnitPriceCents), csvMoney(it.LineTotalCents))
-		rows = append(rows, row)
-	}
-	content, err := writeCSV(lineItemsCSVHeader, rows)
-	if err != nil {
-		respondInvoicingInternal(c, nil, "exporting invoice", err)
-		return
-	}
-	filename := "Rechnung-" + unsafeFilenameChars.ReplaceAllString(*inv.InvoiceNumber, "_") + ".csv"
-	serveCSV(c, db, filename, content, gin.H{"kind": "invoice_csv", "invoice_id": inv.ID})
 }
 
 // decodeClientSnapshot reads the client frozen at issue.
