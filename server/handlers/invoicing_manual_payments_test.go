@@ -55,7 +55,6 @@ func TestManualPayment_DraftIssueAndExportsPrintTheReference(t *testing.T) {
 	}
 
 	f.r.GET("/invoicing/export/workbook.xlsx", ExportWorkbookHandler)
-	f.r.GET("/invoicing/export/jobcenter-bundle.zip", ExportJobcenterBundleHandler)
 	wb := unzipXLSX(t, invoicingDo(f.r, "GET", "/invoicing/export/workbook.xlsx", "").Body.Bytes())
 	var manualRow []string
 	for _, row := range readSheet(t, wb, "3").Rows {
@@ -72,10 +71,6 @@ func TestManualPayment_DraftIssueAndExportsPrintTheReference(t *testing.T) {
 	}
 	if manualRow == nil || manualRow[2] != "manuell" || manualRow[len(manualRow)-1] != "Banküberweisung" {
 		t.Errorf("workbook Payments row for the hand-entered payment: %v", manualRow)
-	}
-	bundle := unzipXLSX(t, invoicingDo(f.r, "GET", "/invoicing/export/jobcenter-bundle.zip", "").Body.Bytes())
-	if summary := string(bundle["Zusammenfassung.csv"]); !strings.Contains(summary, "RE-2026-17") || strings.Contains(summary, p.TransactionID) {
-		t.Errorf("bundle summary must print the reference, never the internal id: %s", summary)
 	}
 
 	// Paid work entered by hand is still paid work on an issued invoice:

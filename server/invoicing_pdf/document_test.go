@@ -179,8 +179,7 @@ func TestBuild_ManualPaymentLines(t *testing.T) {
 
 // #9835: a Kleinbetragsrechnung (§33 UStDV, up to 250 EUR gross) may go to a
 // client with no address. The recipient block is then the name alone, and
-// the service date is still printed: the Jobcenter matches income to months
-// (report 795 F4).
+// the service date is still printed: § 14 UStG requires it on every invoice.
 func TestBuild_NoClientAddressPrintsNameOnlyAndTheServiceDate(t *testing.T) {
 	in := issuedInput(true)
 	in.Client.Address = ""
