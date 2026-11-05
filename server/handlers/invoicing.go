@@ -33,6 +33,10 @@ const (
 
 var invoicePrefixPattern = regexp.MustCompile(`^[0-9A-Za-z-]{1,20}$`)
 
+// invoicePhonePattern is the optional issuer phone (system_3 #9967): what a
+// German number is written with, at most 40 characters, or empty.
+var invoicePhonePattern = regexp.MustCompile(`^[0-9+()/. -]{0,40}$`)
+
 func invoicingUserID(c *gin.Context) uint {
 	if v, ok := c.Get("user_id"); ok {
 		if id, ok := v.(uint); ok {
@@ -67,6 +71,7 @@ type invoicingProfileRequest struct {
 	Address             string `json:"address"`
 	Steuernummer        string `json:"steuernummer"`
 	Email               string `json:"email"`
+	Phone               string `json:"phone"`
 	IsKleinunternehmer  *bool  `json:"is_kleinunternehmer"`
 	InvoiceNumberPrefix string `json:"invoice_number_prefix"`
 	NextInvoiceNumber   *int   `json:"next_invoice_number"`
@@ -113,6 +118,7 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	req.Address = strings.TrimSpace(req.Address)
 	req.Steuernummer = strings.TrimSpace(req.Steuernummer)
 	req.Email = strings.TrimSpace(req.Email)
+	req.Phone = strings.TrimSpace(req.Phone)
 	req.InvoiceNumberPrefix = strings.TrimSpace(req.InvoiceNumberPrefix)
 
 	if req.FullName == "" || req.Address == "" {
@@ -121,6 +127,10 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	}
 	if !validOptionalEmail(req.Email) {
 		RespondWithError(c, http.StatusBadRequest, "email is not a valid address")
+		return
+	}
+	if !invoicePhonePattern.MatchString(req.Phone) {
+		RespondWithError(c, http.StatusBadRequest, "phone may hold digits, spaces and + - ( ) / . only, at most 40 characters")
 		return
 	}
 	if !invoicePrefixPattern.MatchString(req.InvoiceNumberPrefix) {
@@ -142,6 +152,7 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		Address:             req.Address,
 		Steuernummer:        req.Steuernummer,
 		Email:               req.Email,
+		Phone:               req.Phone,
 		IsKleinunternehmer:  *req.IsKleinunternehmer,
 		InvoiceNumberPrefix: req.InvoiceNumberPrefix,
 		NextInvoiceNumber:   *req.NextInvoiceNumber,
