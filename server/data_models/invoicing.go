@@ -30,7 +30,12 @@ type InvoicingProfile struct {
 	Email        string `json:"email" gorm:"type:text;not null;default:''"`
 	// Phone is optional; printed on the invoice under the email only when set
 	// (operator c61727, system_3 #9967).
-	Phone               string    `json:"phone" gorm:"type:text;not null;default:''"`
+	Phone string `json:"phone" gorm:"type:text;not null;default:''"`
+	// InstagramURL and TelegramURL are the issuer's own profile links, stored
+	// canonical (https://www.instagram.com/<name>/, https://t.me/<name>) or
+	// empty (system_3 #9971). Not printed: the PDF prints named fields only.
+	InstagramURL        string    `json:"instagram_url" gorm:"column:instagram_url;type:text;not null;default:''"`
+	TelegramURL         string    `json:"telegram_url" gorm:"column:telegram_url;type:text;not null;default:''"`
 	IsKleinunternehmer  bool      `json:"is_kleinunternehmer" gorm:"not null;default:true"`
 	InvoiceNumberPrefix string    `json:"invoice_number_prefix" gorm:"type:text;not null;default:''"`
 	NextInvoiceNumber   int       `json:"next_invoice_number" gorm:"not null;default:1"`
@@ -82,18 +87,28 @@ type InvoicingClient struct {
 	// Notes are Flower's own notes on the client (system_3 #9962). They are
 	// hers alone: never on an invoice, its PDF, its frozen client snapshot or
 	// an export (see ForInvoice).
-	Notes     string    `json:"notes" gorm:"type:text;not null;default:''"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Notes string `json:"notes" gorm:"type:text;not null;default:''"`
+	// Phone and the profile links are how Flower reaches the client (system_3
+	// #9971). Like the notes they are hers, not the invoice's: ForInvoice
+	// leaves them out. Links are stored canonical or empty.
+	Phone        string    `json:"phone" gorm:"type:text;not null;default:''"`
+	InstagramURL string    `json:"instagram_url" gorm:"column:instagram_url;type:text;not null;default:''"`
+	TelegramURL  string    `json:"telegram_url" gorm:"column:telegram_url;type:text;not null;default:''"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (InvoicingClient) TableName() string { return "invoicing_clients" }
 
 // ForInvoice is the client as an invoice may carry it: everything but her
-// private notes. The issue-time ClientSnapshot is built from this, so the
-// notes never reach a stored invoice or anything rendered from one.
+// private notes and her ways of reaching the client (phone, Instagram,
+// Telegram). The issue-time ClientSnapshot and the PDF are built from this,
+// so none of them reach a stored invoice or anything rendered from one.
 func (cl InvoicingClient) ForInvoice() InvoicingClient {
 	cl.Notes = ""
+	cl.Phone = ""
+	cl.InstagramURL = ""
+	cl.TelegramURL = ""
 	return cl
 }
 
