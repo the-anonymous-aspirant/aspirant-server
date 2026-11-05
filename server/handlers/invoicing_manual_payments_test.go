@@ -48,29 +48,10 @@ func TestManualPayment_DraftIssueAndExportsPrintTheReference(t *testing.T) {
 		t.Fatalf("issue: %d %s", c, b)
 	}
 
-	// The all-invoices CSV and the workbook carry the transaction ids.
+	// The all-invoices CSV carries the transaction ids.
 	csv := invoicingDo(f.r, "GET", "/invoicing/export/invoices.csv", "").Body.String()
 	if !strings.Contains(csv, "RE-2026-17") || strings.Contains(csv, p.TransactionID) {
 		t.Errorf("invoices CSV must print the reference, never the internal id: %s", csv)
-	}
-
-	f.r.GET("/invoicing/export/workbook.xlsx", ExportWorkbookHandler)
-	wb := unzipXLSX(t, invoicingDo(f.r, "GET", "/invoicing/export/workbook.xlsx", "").Body.Bytes())
-	var manualRow []string
-	for _, row := range readSheet(t, wb, "3").Rows {
-		var cells []string
-		for _, cell := range row.Cells {
-			cells = append(cells, cell.Inline+cell.Value)
-		}
-		if strings.Contains(strings.Join(cells, "|"), p.TransactionID) {
-			t.Errorf("workbook leaks the internal id: %v", cells)
-		}
-		if len(cells) > 3 && cells[3] == "RE-2026-17" {
-			manualRow = cells
-		}
-	}
-	if manualRow == nil || manualRow[2] != "manuell" || manualRow[len(manualRow)-1] != "Banküberweisung" {
-		t.Errorf("workbook Payments row for the hand-entered payment: %v", manualRow)
 	}
 
 	// Paid work entered by hand is still paid work on an issued invoice:

@@ -244,9 +244,8 @@ func optionalID(raw json.RawMessage) (*uint, error) {
 	return &v, nil
 }
 
-// PatchInvoicingPaymentHandler sets a payment's category, client link and/or
-// bank-deposit grouping. Fields left out of the body are unchanged; null
-// clears a link.
+// PatchInvoicingPaymentHandler sets a payment's category and/or client link.
+// Fields left out of the body are unchanged; null clears a link.
 func PatchInvoicingPaymentHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -256,11 +255,11 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 	}
 	var body map[string]json.RawMessage
 	if err := c.ShouldBindJSON(&body); err != nil || len(body) == 0 {
-		RespondWithError(c, http.StatusBadRequest, "Send at least one of category, client_id, bank_deposit_id")
+		RespondWithError(c, http.StatusBadRequest, "Send at least one of category, client_id")
 		return
 	}
 	for k := range body {
-		if k != "category" && k != "client_id" && k != "bank_deposit_id" {
+		if k != "category" && k != "client_id" {
 			RespondWithError(c, http.StatusBadRequest, "Unknown field "+strconv.Quote(k))
 			return
 		}
@@ -354,31 +353,6 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		}
 		p.ClientID = cid
 	}
-	if raw, ok := body["bank_deposit_id"]; ok {
-		did, err := optionalID(raw)
-		if err != nil {
-			refuse("bank_deposit_id " + err.Error())
-			return
-		}
-		if did != nil {
-			if p.Kind != data_models.PaymentKindIncoming {
-				refuse("Only incoming payments are grouped under a bank deposit")
-				return
-			}
-			dep, err := data_models.GetInvoicingPayment(tx, *did)
-			if err != nil {
-				tx.Rollback()
-				log.Printf("Error reading deposit %d: %v", *did, err)
-				RespondWithError(c, http.StatusInternalServerError, "Error updating payment")
-				return
-			}
-			if dep == nil || dep.Kind != data_models.PaymentKindWithdrawal {
-				refuse("bank_deposit_id must name a bank withdrawal row")
-				return
-			}
-		}
-		p.BankDepositID = did
-	}
 
 	if err := tx.Save(p).Error; err != nil {
 		tx.Rollback()
@@ -387,8 +361,8 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		return
 	}
 	details := auditDetails(gin.H{
-		"before": gin.H{"category": before.Category, "client_id": before.ClientID, "bank_deposit_id": before.BankDepositID},
-		"after":  gin.H{"category": p.Category, "client_id": p.ClientID, "bank_deposit_id": p.BankDepositID},
+		"before": gin.H{"category": before.Category, "client_id": before.ClientID},
+		"after":  gin.H{"category": p.Category, "client_id": p.ClientID},
 	})
 	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCategorise, invoicingEntityPayment, p.ID, details); err != nil {
 		tx.Rollback()

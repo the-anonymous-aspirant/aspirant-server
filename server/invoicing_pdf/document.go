@@ -24,7 +24,6 @@ const (
 	// A hand-entered payment without a reference ends at the method
 	// (system_3 #8409): the parenthesis is printed only for a real id.
 	paymentReceivedLineNoReference = "Zahlung erhalten am %s per %s"
-	retroactiveIssueLine           = "Diese Rechnung wurde am %s nachträglich für die bereits erbrachte und bezahlte Leistung ausgestellt."
 )
 
 // Field labels. These name the §14 UStG fields; they carry no legal claim.
@@ -181,6 +180,5 @@ func Build(in Input) (Document, error) {
 			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLineNoReference, FormatDate(p.PaidOn), p.MethodLabel()))
 		}
 	}
-	doc.Notes = append(doc.Notes, fmt.Sprintf(retroactiveIssueLine, issueDate))
 	return doc, nil
 }

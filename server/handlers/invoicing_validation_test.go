@@ -216,24 +216,6 @@ func TestExport_AllInvoicesCSV(t *testing.T) {
 	}
 }
 
-func TestExport_SingleInvoiceCSVHasOneRowPerItem(t *testing.T) {
-	f := newInvoiceFixture(t)
-	id := f.draft(t, 0)
-	invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), `{"line_items":[{"description":"Wandbild","quantity_milli":2500,"unit_price_cents":2000},{"description":"Material","quantity_milli":1000,"unit_price_cents":5000}]}`)
-	if w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/export.csv", id), ""); w.Code != http.StatusConflict {
-		t.Errorf("a draft exported: %d", w.Code)
-	}
-	f.issue(id)
-	w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/export.csv", id), "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Disposition"), "Rechnung-2026-001.csv") {
-		t.Fatalf("export: %d %v", w.Code, w.Header())
-	}
-	rows := readCSV(t, w.Body.Bytes())
-	if len(rows) != 3 || rows[1][8] != "Wandbild" || rows[1][9] != "2,5" || rows[1][10] != "20,00" || rows[1][11] != "50,00" || rows[2][8] != "Material" {
-		t.Fatalf("line rows: %v", rows)
-	}
-}
-
 func TestExport_ViolationsBlockTheExportWarningsDoNot(t *testing.T) {
 	f, ids := issuedFixture(t)
 	f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("gross_cents", 12345)
@@ -242,11 +224,9 @@ func TestExport_ViolationsBlockTheExportWarningsDoNot(t *testing.T) {
 	}
 	f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("total_cents", 1)
 	auditBefore := countAuditEvents(t, f.db)
-	for _, path := range []string{"/invoicing/export/invoices.csv", fmt.Sprintf("/invoicing/invoices/%d/export.csv", ids[2])} {
-		w := invoicingDo(f.r, "GET", path, "")
-		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "validation_failed") || !strings.Contains(w.Body.String(), "total_mismatch_items") {
-			t.Errorf("%s with a violation: %d %s", path, w.Code, w.Body.String())
-		}
+	w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.csv", "")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "validation_failed") || !strings.Contains(w.Body.String(), "total_mismatch_items") {
+		t.Errorf("export with a violation: %d %s", w.Code, w.Body.String())
 	}
 	if countAuditEvents(t, f.db) != auditBefore {
 		t.Errorf("a refused export was audited as an export")
@@ -258,16 +238,14 @@ func TestExport_ViolationsBlockTheExportWarningsDoNot(t *testing.T) {
 func TestExport_FormulaInjectionIsNeutralised(t *testing.T) {
 	f := newInvoiceFixture(t)
 	f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Updates(map[string]interface{}{"name": "+cmd|' /C calc'!A0", "address": "@SUM(A1)\nBerlin"})
-	f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("note", `=HYPERLINK("http://x","y")`)
 	id := f.draft(t, 0)
-	invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), `{"line_items":[{"description":"=HYPERLINK(\"http://x\",\"y\")","quantity_milli":1000,"unit_price_cents":10000}]}`)
 	if code, _, body := f.issue(id); code != http.StatusOK {
 		t.Fatalf("issue: %d %s", code, body)
 	}
-	w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/export.csv", id), "")
+	w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.csv", "")
 	rows := readCSV(t, w.Body.Bytes())
-	if rows[1][5] != "'+cmd|' /C calc'!A0" || !strings.HasPrefix(rows[1][6], "'@SUM(A1)") || rows[1][8] != `'=HYPERLINK("http://x","y")` {
-		t.Fatalf("unneutralised cells: name %q address %q description %q", rows[1][5], rows[1][6], rows[1][8])
+	if rows[1][5] != "'+cmd|' /C calc'!A0" || !strings.HasPrefix(rows[1][6], "'@SUM(A1)") {
+		t.Fatalf("unneutralised cells: name %q address %q", rows[1][5], rows[1][6])
 	}
 }
 
@@ -305,58 +283,6 @@ func TestIssue_UnprintableCharactersAreRefused(t *testing.T) {
 	f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("name", "Wang Xiaoming Studio")
 	if code, _, body := f.issue(id); code != http.StatusOK {
 		t.Fatalf("after the fix: %d %s", code, body)
-	}
-}
-
-// #8367-E1: the Excel workbook export.
-func TestExport_WorkbookHasFourSheetsAndIsGatedOnValidation(t *testing.T) {
-	f, ids := issuedFixture(t)
-	f.r.GET("/invoicing/export/workbook.xlsx", ExportWorkbookHandler)
-
-	w := invoicingDo(f.r, "GET", "/invoicing/export/workbook.xlsx", "")
-	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Rechnungen.xlsx"` {
-		t.Fatalf("export: %d %v", w.Code, w.Header())
-	}
-	files := unzipXLSX(t, w.Body.Bytes())
-	if got := strings.Join(sheetNames(t, files), "|"); got != "Invoices|Line items|Payments|Clients" {
-		t.Fatalf("sheets: %s", got)
-	}
-	invoices := readSheet(t, files, "1")
-	if len(invoices.Rows) != 1+3 {
-		t.Errorf("Invoices rows: %d, want header + 3 numbered invoices", len(invoices.Rows))
-	}
-	first := invoices.Rows[1].Cells
-	if first[0].Inline != "2026-001" || first[1].Inline != "issued" || first[9].Value != "100" || first[9].Type != "" {
-		t.Errorf("first invoice row: %+v", first)
-	}
-	if invoices.Rows[2].Cells[1].Inline != "cancelled" {
-		t.Errorf("cancelled invoice row: %+v", invoices.Rows[2].Cells[1])
-	}
-	if items := readSheet(t, files, "2"); len(items.Rows) != 1+3 {
-		t.Errorf("Line items rows: %d", len(items.Rows))
-	}
-	payments := readSheet(t, files, "3")
-	if len(payments.Rows) != 1+len(f.payments) {
-		t.Errorf("Payments rows: %d, want header + %d", len(payments.Rows), len(f.payments))
-	}
-	cats := map[string]bool{}
-	for _, r := range payments.Rows[1:] {
-		cats[r.Cells[11].Inline] = true
-	}
-	if !cats["paid_work"] || !cats["gift"] {
-		t.Errorf("Payments sheet categories: %v", cats)
-	}
-	if clients := readSheet(t, files, "4"); len(clients.Rows) != 2 || clients.Rows[1].Cells[0].Inline != "Galerie Nord" {
-		t.Errorf("Clients sheet: %+v", clients.Rows)
-	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "export", 0)
-	if len(events) != 1 || !strings.Contains(events[0].Details, "workbook_xlsx") {
-		t.Errorf("export audit: %+v", events)
-	}
-
-	f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", ids[0]).Update("total_cents", 1)
-	if w := invoicingDo(f.r, "GET", "/invoicing/export/workbook.xlsx", ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "validation_failed") {
-		t.Errorf("workbook with a violation: %d", w.Code)
 	}
 }
 

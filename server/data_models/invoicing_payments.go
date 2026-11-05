@@ -83,7 +83,6 @@ type InvoicingPayment struct {
 	Note           string    `json:"note" gorm:"type:text;not null;default:''"`
 	Category       string    `json:"category" gorm:"type:text;not null;default:'uncategorised'"`
 	ClientID       *uint     `json:"client_id"`
-	BankDepositID  *uint     `json:"bank_deposit_id"`
 	Entry          string    `json:"entry" gorm:"type:text;not null;default:'import'"`
 	Method         string    `json:"method" gorm:"type:text;not null;default:''"`
 	Reference      string    `json:"reference" gorm:"type:text;not null;default:''"`

@@ -183,7 +183,7 @@ func TestImportPayPal_RefusalsWriteNothing(t *testing.T) {
 	}
 }
 
-func TestPatchPayment_CategoryClientAndDeposit(t *testing.T) {
+func TestPatchPayment_CategoryAndClient(t *testing.T) {
 	db := setupPaymentsDB(t)
 	r := setupPaymentsRouter(db, 5)
 	uploadCSV(t, r, paypalFixtureEN, "")
@@ -200,13 +200,12 @@ func TestPatchPayment_CategoryClientAndDeposit(t *testing.T) {
 
 	p := incoming[0]
 	path := fmt.Sprintf("/invoicing/payments/%d", p.ID)
-	body := fmt.Sprintf(`{"category":"paid_work","client_id":%d,"bank_deposit_id":%d}`, created.Client.ID, withdrawals[0].ID)
+	body := fmt.Sprintf(`{"category":"paid_work","client_id":%d}`, created.Client.ID)
 	if w := invoicingDo(r, "PATCH", path, body); w.Code != http.StatusOK {
 		t.Fatalf("patch: %d %s", w.Code, w.Body.String())
 	}
 	got := listPayments(t, r, "?category=paid_work")
-	if len(got) != 1 || got[0].ID != p.ID || got[0].ClientID == nil || *got[0].ClientID != created.Client.ID ||
-		got[0].BankDepositID == nil || *got[0].BankDepositID != withdrawals[0].ID {
+	if len(got) != 1 || got[0].ID != p.ID || got[0].ClientID == nil || *got[0].ClientID != created.Client.ID {
 		t.Fatalf("after patch: %+v", got)
 	}
 
@@ -215,7 +214,7 @@ func TestPatchPayment_CategoryClientAndDeposit(t *testing.T) {
 		t.Fatalf("clear client: %d %s", w.Code, w.Body.String())
 	}
 	after, _ := data_models.GetInvoicingPayment(db, p.ID)
-	if after.ClientID != nil || after.Category != "paid_work" || after.BankDepositID == nil {
+	if after.ClientID != nil || after.Category != "paid_work" {
 		t.Errorf("partial patch: %+v", after)
 	}
 
@@ -243,8 +242,6 @@ func TestPatchPayment_RefusalsWriteNothing(t *testing.T) {
 		{"category on a withdrawal", out, `{"category":"paid_work"}`, http.StatusBadRequest},
 		{"unknown client", in, `{"client_id":999}`, http.StatusBadRequest},
 		{"zero client id", in, `{"client_id":0}`, http.StatusBadRequest},
-		{"deposit is an incoming row", in, fmt.Sprintf(`{"bank_deposit_id":%d}`, incoming[1].ID), http.StatusBadRequest},
-		{"withdrawal under a deposit", out, fmt.Sprintf(`{"bank_deposit_id":%d}`, withdrawal.ID), http.StatusBadRequest},
 		{"unknown field", in, `{"amount":1}`, http.StatusBadRequest},
 		{"empty body", in, `{}`, http.StatusBadRequest},
 		{"unknown payment", "/invoicing/payments/999", `{"category":"gift"}`, http.StatusNotFound},
@@ -259,7 +256,7 @@ func TestPatchPayment_RefusalsWriteNothing(t *testing.T) {
 		t.Errorf("refused patches wrote %d audit rows", after-before)
 	}
 	for _, p := range listPayments(t, r, "") {
-		if p.Category != data_models.PaymentCategoryUncategorised || p.BankDepositID != nil {
+		if p.Category != data_models.PaymentCategoryUncategorised {
 			t.Errorf("refused patch changed payment %d: %+v", p.ID, p)
 		}
 	}
