@@ -345,9 +345,20 @@ func TestParsePayPal_StatusStillDecidesWhereItExists(t *testing.T) {
 }
 
 func TestParsePayPal_NeitherTypeNorDescriptionIsRefused(t *testing.T) {
-	_, err := ParsePayPalActivityCSV([]byte("Date,Name,Currency,Gross,Transaction ID\n03.07.2026,A,EUR,10.00,T1\n"), "")
+	_, err := ParsePayPalActivityCSV([]byte("Date,Name,Currency,Gross,Transaction ID,Balance\n03.07.2026,A,EUR,10.00,T1,10.00\n"), "")
 	if err == nil || !strings.Contains(err.Error(), "type") || strings.Contains(err.Error(), "status") {
 		t.Fatalf("got %v, want an error naming type and not status", err)
+	}
+}
+
+// security on PR 168 (c61953): without Status, only a statement (a Balance
+// on every row) may import. An activity export with its Status column cut
+// is refused, so its Pending and Denied rows cannot land as paid.
+func TestParsePayPal_NoStatusAndNoBalanceIsRefused(t *testing.T) {
+	_, err := ParsePayPalActivityCSV([]byte("Date,Name,Type,Currency,Gross,Transaction ID\n"+
+		"03.07.2026,A,Mobile Payment,EUR,10.00,T1\n"), "")
+	if err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("got %v, want a refusal naming status", err)
 	}
 }
 

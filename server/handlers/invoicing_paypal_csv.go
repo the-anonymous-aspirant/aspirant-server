@@ -109,11 +109,18 @@ var paypalColumns = map[string][]string{
 	"note":           {"note", "hinweis"},
 	"item_title":     {"item title", "artikelbezeichnung"},
 	"balance_impact": {"balance impact", "auswirkung auf guthaben"},
+	// The running balance a statement prints on every posted row. Only its
+	// presence is read (see mapPayPalColumns). The German statement's
+	// spelling is not known from a real export yet, so it is not guessed.
+	"balance": {"balance"},
 }
 
-// Status is not required: PayPal's statement CSV has no Status column, and
-// every row it lists carries a Balance, i.e. is posted (system_3 #10023).
-// Where the column exists, a row must read completed to import.
+// Status is required unless the file is a statement: PayPal's statement CSV
+// has no Status column, and every row it lists carries a Balance, i.e. is
+// posted (system_3 #10023). So a file needs Status or Balance; where Status
+// exists, a row must read completed to import. A file with neither (an
+// activity export with its Status column cut, say) is still refused, so its
+// Pending or Denied rows cannot import as paid (security on PR 168, c61953).
 var paypalRequiredColumns = []string{"date", "name", "type", "currency", "gross", "transaction_id"}
 
 // Classification vocabularies, matched as lower-cased substrings of Type and
@@ -365,6 +372,11 @@ func mapPayPalColumns(header []string) (map[string]int, error) {
 		if _, ok := col[f]; !ok {
 			missing = append(missing, f)
 		}
+	}
+	_, hasStatus := col["status"]
+	_, hasBalance := col["balance"]
+	if !hasStatus && !hasBalance {
+		missing = append(missing, "status (or a statement's balance)")
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("not a PayPal activity export: missing column(s) %s", strings.Join(missing, ", "))
