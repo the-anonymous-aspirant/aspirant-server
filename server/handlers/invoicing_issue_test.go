@@ -41,7 +41,6 @@ func setupInvoiceRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r.POST("/invoicing/invoices/:id/issue", IssueInvoiceHandler)
 	r.POST("/invoicing/invoices/:id/cancel", CancelInvoiceHandler)
 	r.GET("/invoicing/invoices/:id/pdf", GetInvoicePDFHandler)
-	r.GET("/invoicing/invoices/:id/export.csv", ExportInvoiceCSVHandler)
 	r.GET("/invoicing/export/invoices.csv", ExportAllInvoicesCSVHandler)
 	r.GET("/invoicing/validation", GetInvoicingValidationHandler)
 	return r
@@ -659,7 +658,7 @@ func TestIssued_ShowsTheClientNameFrozenAtIssue(t *testing.T) {
 		}
 	}
 
-	w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/export.csv", issued), "")
+	w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.csv", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("csv: %d %s", w.Code, w.Body.String())
 	}
