@@ -34,6 +34,15 @@ jobs:
       packages: write
     steps:
     - uses: actions/checkout@v4
+    # The concurrency group above orders pushes, but a re-run (or a dispatch)
+    # of an older commit joins the same queue and would still retag :latest
+    # with it, rolling the deploy back. So the moving tags (:latest, :main) go
+    # only on a build of the commit that is main's head right now; any other
+    # build still pushes its sha- tag. If the head cannot be read, the build
+    # fails rather than guessing (system_3 #9966/#9982; aspirant-client #409).
+    - name: Is this commit main's head?
+      id: head
+      run: bash scripts/is-main-head.sh "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
     - uses: docker/setup-buildx-action@v3
     - uses: docker/login-action@v3
       with:
@@ -46,9 +55,9 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
-          type=ref,event=branch
+          type=ref,event=branch,enable=${{ steps.head.outputs.is_head == 'true' }}
           type=sha
-          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=latest,enable=${{ steps.head.outputs.is_head == 'true' }}
     - name: Build and push
       uses: docker/build-push-action@v5
       with:
