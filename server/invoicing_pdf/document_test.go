@@ -79,6 +79,28 @@ func TestBuild_KleinunternehmerinCarriesEveryParagraph14Field(t *testing.T) {
 	}
 }
 
+// system_3 #9967: the optional issuer phone prints under the email, and only
+// when set (the test above pins the block without it).
+func TestBuild_PhonePrintsUnderTheEmailOnlyWhenSet(t *testing.T) {
+	in := issuedInput(true)
+	in.Profile.Phone = "+49 30 1234567"
+	d, err := Build(in)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	want := []string{"Flower Example", "Beispielstraße 1", "10117 Berlin", "Steuernummer: 12/345/67890", "flower@example.test", "Tel.: +49 30 1234567"}
+	if strings.Join(d.Issuer, "|") != strings.Join(want, "|") {
+		t.Errorf("issuer with a phone: %q", d.Issuer)
+	}
+	in.Profile.Phone = ""
+	d, _ = Build(in)
+	for _, line := range d.Issuer {
+		if strings.HasPrefix(line, "Tel.") {
+			t.Errorf("an empty phone printed a line: %q", d.Issuer)
+		}
+	}
+}
+
 func TestBuild_RegularVatShowsNetRateVatGrossAndNoParagraph19(t *testing.T) {
 	d, err := Build(issuedInput(false))
 	if err != nil {

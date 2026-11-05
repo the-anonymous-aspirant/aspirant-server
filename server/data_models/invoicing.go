@@ -23,11 +23,14 @@ const invoicingProfileID = 1
 // until the first invoice under the current prefix is issued (enforced by the
 // issue path), so a sequence started elsewhere can be continued.
 type InvoicingProfile struct {
-	ID                  uint      `json:"-" gorm:"primary_key"`
-	FullName            string    `json:"full_name" gorm:"type:text;not null;default:''"`
-	Address             string    `json:"address" gorm:"type:text;not null;default:''"`
-	Steuernummer        string    `json:"steuernummer" gorm:"type:text;not null;default:''"`
-	Email               string    `json:"email" gorm:"type:text;not null;default:''"`
+	ID           uint   `json:"-" gorm:"primary_key"`
+	FullName     string `json:"full_name" gorm:"type:text;not null;default:''"`
+	Address      string `json:"address" gorm:"type:text;not null;default:''"`
+	Steuernummer string `json:"steuernummer" gorm:"type:text;not null;default:''"`
+	Email        string `json:"email" gorm:"type:text;not null;default:''"`
+	// Phone is optional; printed on the invoice under the email only when set
+	// (operator c61727, system_3 #9967).
+	Phone               string    `json:"phone" gorm:"type:text;not null;default:''"`
 	IsKleinunternehmer  bool      `json:"is_kleinunternehmer" gorm:"not null;default:true"`
 	InvoiceNumberPrefix string    `json:"invoice_number_prefix" gorm:"type:text;not null;default:''"`
 	NextInvoiceNumber   int       `json:"next_invoice_number" gorm:"not null;default:1"`
