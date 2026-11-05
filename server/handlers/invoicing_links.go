@@ -19,6 +19,12 @@ const maxSocialInputLen = 200
 
 var errSocialLink = errors.New("not a profile link or handle")
 
+// handleWordChar: a handle must hold at least one letter, digit or
+// underscore, so dots alone ("." or "..") are not a profile (security's nit
+// on PR 166, system_3 #10019). Telegram's own pattern already starts with a
+// letter; the check is shared so neither platform can store a dot path.
+var handleWordChar = regexp.MustCompile(`[A-Za-z0-9_]`)
+
 type socialPlatform struct {
 	hosts  map[string]bool
 	handle *regexp.Regexp
@@ -81,7 +87,7 @@ func (p socialPlatform) normalize(raw string) (string, error) {
 		handle = path
 	}
 	handle = strings.TrimPrefix(handle, "@")
-	if !p.handle.MatchString(handle) {
+	if !p.handle.MatchString(handle) || !handleWordChar.MatchString(handle) {
 		return "", errSocialLink
 	}
 	return p.canonical(handle), nil
