@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -293,5 +294,84 @@ func TestParsePayPal_IncomingRefundIsPreCategorised(t *testing.T) {
 	}
 	if res.Skipped["outgoing"] != 1 {
 		t.Errorf("the refund she paid out is skipped as outgoing: %v", res.Skipped)
+	}
+}
+
+// system_3 #10023: PayPal's statement CSV, as the operator's real export has
+// it. The header has 18 columns, names the Type column "Description", carries
+// no Status, and the file opens with a BOM whose bytes were re-encoded as
+// UTF-8 text, inside the first quoted cell. Every value below is invented.
+const statementHeader = "\"\u00ef\u00bb\u00bf\"\"Date\"\"\",\"Time\",\"Time Zone\",\"Description\",\"Currency\",\"Gross\",\"Fee\",\"Net\",\"Balance\",\"Transaction ID\",\"From Email Address\",\"Name\",\"Bank Name\",\"Bank Account\",\"Shipping and Handling Amount\",\"Sales Tax\",\"Invoice ID\",\"Reference Txn ID\"\n"
+
+func statementRow(date, desc, gross, id, ref string) string {
+	return fmt.Sprintf("%q,\"10:00:00\",\"Europe/Berlin\",%q,\"EUR\",%q,\"0,00\",%q,\"100,00\",%q,\"payer@example.test\",\"Erika Beispiel\",\"\",\"\",\"0,00\",\"0,00\",\"\",%q\n", date, desc, gross, gross, id, ref)
+}
+
+func TestParsePayPal_StatementCSVWithMojibakeBOMImports(t *testing.T) {
+	data := statementHeader +
+		statementRow("03.07.2026", "Mobile Payment", "120,00", "S1", "") +
+		statementRow("04.07.2026", "Mass Pay Payment", "45,00", "S2", "") +
+		statementRow("05.07.2026", "Express Checkout Payment", "-30,00", "S3", "") +
+		statementRow("06.07.2026", "User Initiated Withdrawal", "-200,00", "S4", "") +
+		statementRow("09.07.2026", "Reversal of ACH Withdrawal Transaction", "200,00", "S4", "") +
+		statementRow("10.07.2026", "User Initiated Withdrawal", "-50,00", "S5", "") +
+		statementRow("11.07.2026", "Payment Refund", "15,00", "S6", "") +
+		statementRow("12.07.2026", "Bank Deposit to PP Account", "80,00", "S7", "")
+	res, err := ParsePayPalActivityCSV([]byte(data), "")
+	if err != nil {
+		t.Fatalf("the statement CSV was refused: %v", err)
+	}
+	var got []string
+	for _, r := range res.Rows {
+		got = append(got, r.TransactionID+":"+r.Kind+":"+r.Category)
+	}
+	want := []string{"S1:incoming:uncategorised", "S2:incoming:uncategorised", "S5:withdrawal:uncategorised", "S6:incoming:refund"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("rows:\n got %v\nwant %v", got, want)
+	}
+	if res.RowsRead != 8 || res.Skipped["outgoing"] != 1 || res.Skipped["reversal"] != 1 || res.Skipped["bank_topup"] != 1 {
+		t.Errorf("read %d, skipped %v", res.RowsRead, res.Skipped)
+	}
+}
+
+// With a Status column the rule is unchanged: only completed rows import.
+func TestParsePayPal_StatusStillDecidesWhereItExists(t *testing.T) {
+	res := mustParse(t, "Date,Name,Description,Status,Currency,Gross,Transaction ID\n"+
+		"03.07.2026,A,Mobile Payment,Completed,EUR,10.00,T1\n"+
+		"04.07.2026,B,Mobile Payment,Pending,EUR,20.00,T2\n", "")
+	if len(res.Rows) != 1 || res.Rows[0].TransactionID != "T1" || res.Skipped["not_completed"] != 1 {
+		t.Errorf("rows %+v skipped %v", res.Rows, res.Skipped)
+	}
+}
+
+func TestParsePayPal_NeitherTypeNorDescriptionIsRefused(t *testing.T) {
+	_, err := ParsePayPalActivityCSV([]byte("Date,Name,Currency,Gross,Transaction ID,Balance\n03.07.2026,A,EUR,10.00,T1,10.00\n"), "")
+	if err == nil || !strings.Contains(err.Error(), "type") || strings.Contains(err.Error(), "status") {
+		t.Fatalf("got %v, want an error naming type and not status", err)
+	}
+}
+
+// security on PR 168 (c61953): without Status, only a statement (a Balance
+// on every row) may import. An activity export with its Status column cut
+// is refused, so its Pending and Denied rows cannot land as paid.
+func TestParsePayPal_NoStatusAndNoBalanceIsRefused(t *testing.T) {
+	_, err := ParsePayPalActivityCSV([]byte("Date,Name,Type,Currency,Gross,Transaction ID\n"+
+		"03.07.2026,A,Mobile Payment,EUR,10.00,T1\n"), "")
+	if err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("got %v, want a refusal naming status", err)
+	}
+}
+
+func TestNormaliseHeader_PeelsQuotesAndEitherBOM(t *testing.T) {
+	for in, want := range map[string]string{
+		"\ufeffDate":                   "date",
+		"\u00ef\u00bb\u00bf\"Date\"":   "date",
+		"\"\u00ef\u00bb\u00bf\"Date\"": "date",
+		"  Transaction  ID ":           "transaction id",
+		"Description":                  "description",
+	} {
+		if got := normaliseHeader(in); got != want {
+			t.Errorf("normaliseHeader(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
