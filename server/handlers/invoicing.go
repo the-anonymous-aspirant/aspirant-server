@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
 
@@ -219,7 +220,11 @@ type invoicingClientRequest struct {
 	Address     string `json:"address"`
 	Email       string `json:"email"`
 	PayPalEmail string `json:"paypal_email"`
+	Notes       string `json:"notes"`
 }
+
+// maxClientNotesRunes bounds the free-text notes on a client (system_3 #9962).
+const maxClientNotesRunes = 5000
 
 // bindInvoicingClient parses and validates a client body; it writes the 400
 // itself and returns ok=false on any problem. The name is required. The
@@ -235,6 +240,11 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	req.Address = strings.TrimSpace(req.Address)
 	req.Email = strings.TrimSpace(req.Email)
 	req.PayPalEmail = strings.ToLower(strings.TrimSpace(req.PayPalEmail))
+	req.Notes = strings.TrimSpace(req.Notes)
+	if utf8.RuneCountInString(req.Notes) > maxClientNotesRunes {
+		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("notes must be at most %d characters", maxClientNotesRunes))
+		return req, false
+	}
 	if req.Name == "" {
 		RespondWithError(c, http.StatusBadRequest, "name is required")
 		return req, false
@@ -269,6 +279,7 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 		Address:     req.Address,
 		Email:       req.Email,
 		PayPalEmail: req.PayPalEmail,
+		Notes:       req.Notes,
 	}
 
 	tx := db.Begin()
@@ -323,6 +334,7 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 	existing.Address = req.Address
 	existing.Email = req.Email
 	existing.PayPalEmail = req.PayPalEmail
+	existing.Notes = req.Notes
 	if err := tx.Save(existing).Error; err != nil {
 		tx.Rollback()
 		log.Printf("Error updating invoicing client %d: %v", id, err)

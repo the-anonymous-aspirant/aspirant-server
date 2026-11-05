@@ -256,7 +256,8 @@ func IssueInvoiceHandler(c *gin.Context) {
 	inv.InvoiceNumber = &invoiceNumber
 	inv.IssueDate = &issueDate
 	inv.ProfileSnapshot = auditDetails(profile)
-	inv.ClientSnapshot = auditDetails(client)
+	// Frozen without her private notes (system_3 #9962).
+	inv.ClientSnapshot = auditDetails(client.ForInvoice())
 	inv.IssuedAt = &now
 	inv.IssuedBy = userID
 	inv.UpdatedAt = now
