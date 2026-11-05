@@ -37,6 +37,30 @@ var invoicePrefixPattern = regexp.MustCompile(`^[0-9A-Za-z-]{1,20}$`)
 // German number is written with, at most 40 characters, or empty.
 var invoicePhonePattern = regexp.MustCompile(`^[0-9+()/. -]{0,40}$`)
 
+// The refusals the editors key on to mark the field (system_3 #9993, #9971):
+// a dedicated code each, not the generic bad_request.
+const (
+	invalidPhoneMessage = "phone may hold digits, spaces and + - ( ) / . only, at most 40 characters"
+	invalidLinkMessage  = "%s takes a handle (@name) or a link to a profile on %s"
+)
+
+// bindSocialLinks normalises the two profile links in place; it writes the
+// 400 itself and returns false on a refusal.
+func bindSocialLinks(c *gin.Context, instagram, telegram *string) bool {
+	ig, err := instagramPlatform.normalize(*instagram)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_instagram", fmt.Sprintf(invalidLinkMessage, "instagram_url", "instagram.com"))
+		return false
+	}
+	tg, err := telegramPlatform.normalize(*telegram)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_telegram", fmt.Sprintf(invalidLinkMessage, "telegram_url", "t.me"))
+		return false
+	}
+	*instagram, *telegram = ig, tg
+	return true
+}
+
 func invoicingUserID(c *gin.Context) uint {
 	if v, ok := c.Get("user_id"); ok {
 		if id, ok := v.(uint); ok {
@@ -72,6 +96,8 @@ type invoicingProfileRequest struct {
 	Steuernummer        string `json:"steuernummer"`
 	Email               string `json:"email"`
 	Phone               string `json:"phone"`
+	InstagramURL        string `json:"instagram_url"`
+	TelegramURL         string `json:"telegram_url"`
 	IsKleinunternehmer  *bool  `json:"is_kleinunternehmer"`
 	InvoiceNumberPrefix string `json:"invoice_number_prefix"`
 	NextInvoiceNumber   *int   `json:"next_invoice_number"`
@@ -130,7 +156,10 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		return
 	}
 	if !invoicePhonePattern.MatchString(req.Phone) {
-		RespondWithError(c, http.StatusBadRequest, "phone may hold digits, spaces and + - ( ) / . only, at most 40 characters")
+		respondError(c, http.StatusBadRequest, "invalid_phone", invalidPhoneMessage)
+		return
+	}
+	if !bindSocialLinks(c, &req.InstagramURL, &req.TelegramURL) {
 		return
 	}
 	if !invoicePrefixPattern.MatchString(req.InvoiceNumberPrefix) {
@@ -153,6 +182,8 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		Steuernummer:        req.Steuernummer,
 		Email:               req.Email,
 		Phone:               req.Phone,
+		InstagramURL:        req.InstagramURL,
+		TelegramURL:         req.TelegramURL,
 		IsKleinunternehmer:  *req.IsKleinunternehmer,
 		InvoiceNumberPrefix: req.InvoiceNumberPrefix,
 		NextInvoiceNumber:   *req.NextInvoiceNumber,
@@ -227,11 +258,14 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 }
 
 type invoicingClientRequest struct {
-	Name        string `json:"name"`
-	Address     string `json:"address"`
-	Email       string `json:"email"`
-	PayPalEmail string `json:"paypal_email"`
-	Notes       string `json:"notes"`
+	Name         string `json:"name"`
+	Address      string `json:"address"`
+	Email        string `json:"email"`
+	PayPalEmail  string `json:"paypal_email"`
+	Notes        string `json:"notes"`
+	Phone        string `json:"phone"`
+	InstagramURL string `json:"instagram_url"`
+	TelegramURL  string `json:"telegram_url"`
 }
 
 // maxClientNotesRunes bounds the free-text notes on a client (system_3 #9962).
@@ -264,6 +298,15 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 		RespondWithError(c, http.StatusBadRequest, "email and paypal_email must be valid addresses when given")
 		return req, false
 	}
+	// The client's phone takes the issuer phone's rule (system_3 #9971).
+	req.Phone = strings.TrimSpace(req.Phone)
+	if !invoicePhonePattern.MatchString(req.Phone) {
+		respondError(c, http.StatusBadRequest, "invalid_phone", invalidPhoneMessage)
+		return req, false
+	}
+	if !bindSocialLinks(c, &req.InstagramURL, &req.TelegramURL) {
+		return req, false
+	}
 	return req, true
 }
 
@@ -286,11 +329,14 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 	}
 	userID := invoicingUserID(c)
 	cl := data_models.InvoicingClient{
-		Name:        req.Name,
-		Address:     req.Address,
-		Email:       req.Email,
-		PayPalEmail: req.PayPalEmail,
-		Notes:       req.Notes,
+		Name:         req.Name,
+		Address:      req.Address,
+		Email:        req.Email,
+		PayPalEmail:  req.PayPalEmail,
+		Notes:        req.Notes,
+		Phone:        req.Phone,
+		InstagramURL: req.InstagramURL,
+		TelegramURL:  req.TelegramURL,
 	}
 
 	tx := db.Begin()
@@ -346,6 +392,9 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 	existing.Email = req.Email
 	existing.PayPalEmail = req.PayPalEmail
 	existing.Notes = req.Notes
+	existing.Phone = req.Phone
+	existing.InstagramURL = req.InstagramURL
+	existing.TelegramURL = req.TelegramURL
 	if err := tx.Save(existing).Error; err != nil {
 		tx.Rollback()
 		log.Printf("Error updating invoicing client %d: %v", id, err)
