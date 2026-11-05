@@ -92,9 +92,11 @@ type paypalParseResult struct {
 // normalised (lower case, single spaces). English from PayPal's report spec,
 // German from the localised export.
 var paypalColumns = map[string][]string{
-	"date":           {"date", "datum"},
-	"name":           {"name"},
-	"type":           {"type", "typ", "beschreibung"},
+	"date": {"date", "datum"},
+	"name": {"name"},
+	// PayPal's statement CSV names the Type column "Description" (system_3
+	// #10023, the operator's real export).
+	"type":           {"type", "description", "typ", "beschreibung"},
 	"status":         {"status"},
 	"currency":       {"currency", "währung"},
 	"gross":          {"gross", "brutto"},
@@ -109,7 +111,10 @@ var paypalColumns = map[string][]string{
 	"balance_impact": {"balance impact", "auswirkung auf guthaben"},
 }
 
-var paypalRequiredColumns = []string{"date", "name", "type", "status", "currency", "gross", "transaction_id"}
+// Status is not required: PayPal's statement CSV has no Status column, and
+// every row it lists carries a Balance, i.e. is posted (system_3 #10023).
+// Where the column exists, a row must read completed to import.
+var paypalRequiredColumns = []string{"date", "name", "type", "currency", "gross", "transaction_id"}
 
 // Classification vocabularies, matched as lower-cased substrings of Type and
 // Status. PayPal's Type is a free-text T-code description (report spec), so
@@ -147,9 +152,23 @@ var (
 	isoCurrency = regexp.MustCompile(`^[A-Z]{3}$`)
 )
 
+// mojibakeBOM is a UTF-8 BOM whose three bytes were read as Latin-1 and
+// written out again as UTF-8. The operator's real statement CSV begins with
+// it, inside the first quoted header cell (system_3 #10023).
+const mojibakeBOM = "\u00ef\u00bb\u00bf"
+
 func normaliseHeader(h string) string {
-	h = strings.TrimPrefix(h, "\ufeff")
-	h = strings.Trim(h, "\" ")
+	// Peel outer quotes, spaces and a BOM in either spelling until nothing
+	// changes: the real first cell reads `ï»¿"Date"` once CSV-decoded.
+	for {
+		t := strings.Trim(h, "\" \t")
+		t = strings.TrimPrefix(t, "\ufeff")
+		t = strings.TrimPrefix(t, mojibakeBOM)
+		if t == h {
+			break
+		}
+		h = t
+	}
 	return strings.ToLower(spaceRun.ReplaceAllString(strings.TrimSpace(h), " "))
 }
 
@@ -501,6 +520,7 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	// row naming it, by its own id (a reversal can carry the id of the row it
 	// reverses) or by its reference id.
 	reversals := map[string][]int64{}
+	_, hasStatus := col["status"]
 	var candidates []paypalRow
 	textBytes := 0
 	for i, rec := range records {
@@ -534,7 +554,7 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 
 		kind := ""
 		switch {
-		case !containsAny(status, paypalCompletedStatuses):
+		case hasStatus && !containsAny(status, paypalCompletedStatuses):
 			res.Skipped[paypalSkipNotCompleted]++
 		case containsAny(typ, paypalReversalTypes):
 			res.Skipped[paypalSkipReversal]++
