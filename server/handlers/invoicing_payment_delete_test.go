@@ -42,7 +42,7 @@ func TestDeletePayment_ImportedOnNoInvoiceIsDeletedTombstonedAndAudited(t *testi
 	}
 	var ts data_models.InvoicingPaymentTombstone
 	f.db.Where("transaction_id = ?", "TX1").First(&ts)
-	if ts.DeletedBy != 9 || ts.DeletedAt.IsZero() {
+	if ts.DeletedBy != 9 || ts.DeletedOn.IsZero() {
 		t.Errorf("tombstone: %+v", ts)
 	}
 	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", p.ID)
@@ -72,7 +72,7 @@ func TestDeletePayment_OnAnIssuedInvoiceIsRefused(t *testing.T) {
 		t.Fatalf("issue: %d %s", code, body)
 	}
 	code, body := deletePayment(f, f.payments[0].ID)
-	if code != http.StatusConflict || !strings.Contains(body, "payment_on_invoice") || !strings.Contains(body, "cancel that invoice first") {
+	if code != http.StatusConflict || !strings.Contains(body, "payment_on_invoice") || !strings.Contains(body, "cancel that invoice first") || !strings.Contains(body, "2026-") {
 		t.Fatalf("delete a payment on an issued invoice: %d %s", code, body)
 	}
 	if got, _ := data_models.GetInvoicingPayment(f.db, f.payments[0].ID); got == nil {

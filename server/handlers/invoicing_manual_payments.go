@@ -355,11 +355,11 @@ func DeletePaymentHandler(c *gin.Context) {
 		return
 	}
 	if issuedID != 0 {
-		tx.Rollback()
 		label := fmt.Sprintf("%d", issuedID)
 		if inv, err := data_models.GetInvoicingInvoice(tx, issuedID); err == nil && inv != nil {
 			label = invoiceLabel(*inv)
 		}
+		tx.Rollback()
 		respondError(c, http.StatusConflict, "payment_on_invoice",
 			fmt.Sprintf("payment is on issued invoice %s; cancel that invoice first", label))
 		return

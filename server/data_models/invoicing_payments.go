@@ -210,11 +210,16 @@ func InvoicingPaymentExists(db *gorm.DB, source, transactionID string) (bool, er
 // InvoicingPaymentTombstone records that the owner deleted a payment
 // (system_3 #10009), so a re-import of the same file does not bring it back.
 // The deleted row itself is kept in the delete's audit event.
+//
+// The time column is deleted_on, never deleted_at: gorm v1 treats any field
+// whose column is deleted_at as a soft-delete marker and adds
+// `deleted_at IS NULL` to every query, which would hide every tombstone from
+// the very check that reads it.
 type InvoicingPaymentTombstone struct {
 	ID            uint      `json:"id" gorm:"primary_key"`
 	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
 	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
-	DeletedAt     time.Time `json:"deleted_at" gorm:"not null"`
+	DeletedOn     time.Time `json:"deleted_on" gorm:"not null"`
 	DeletedBy     uint      `json:"deleted_by" gorm:"not null"`
 }
 
@@ -238,7 +243,7 @@ func InvoicingPaymentSeen(db *gorm.DB, source, transactionID string) (bool, erro
 // TombstoneInvoicingPayment records the deletion of p. A second tombstone for
 // the same (source, transaction id) is a no-op.
 func TombstoneInvoicingPayment(db *gorm.DB, p InvoicingPayment, deletedBy uint, at time.Time) error {
-	t := InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID, DeletedAt: at, DeletedBy: deletedBy}
+	t := InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID, DeletedOn: at, DeletedBy: deletedBy}
 	return db.Where(InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID}).FirstOrCreate(&t).Error
 }
 
