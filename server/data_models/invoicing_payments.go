@@ -34,7 +34,7 @@ func IsPaymentCategory(s string) bool {
 
 // Payment kinds: money in, or a withdrawal from PayPal to the bank kept as a
 // bank-deposit reference so incoming payments can be grouped under the
-// deposits the Jobcenter listed (spec §4.3).
+// bank deposit they arrived in (spec §4.3).
 const (
 	PaymentKindIncoming   = "incoming"
 	PaymentKindWithdrawal = "withdrawal"
