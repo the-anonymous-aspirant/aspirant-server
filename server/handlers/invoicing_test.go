@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"aspirant-online/server/data_models"
@@ -252,6 +253,53 @@ func TestInvoicingClients_AddressIsOptional(t *testing.T) {
 	}
 	if w := invoicingDo(r, "PUT", fmt.Sprintf("/invoicing/clients/%d", created.Client.ID), `{"name":"","address":""}`); w.Code != http.StatusBadRequest {
 		t.Errorf("PUT without a name: got %d, want 400", w.Code)
+	}
+}
+
+// system_3 #9962: Flower's own notes on a client are stored, returned, edited
+// and cleared like any other field, trimmed, and bounded.
+func TestInvoicingClients_NotesRoundTripAndAreBounded(t *testing.T) {
+	db := setupInvoicingDB(t)
+	r := setupInvoicingRouter(db, 7)
+	w := invoicingDo(r, "POST", "/invoicing/clients", `{"name":"Anna","notes":"  Prefers fine line.\nAllergic to latex.  "}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST with notes: got %d: %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Client data_models.InvoicingClient `json:"client"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+	if created.Client.Notes != "Prefers fine line.\nAllergic to latex." {
+		t.Fatalf("created notes: %q (stored trimmed, line breaks kept)", created.Client.Notes)
+	}
+	if !strings.Contains(w.Body.String(), `"notes":"Prefers fine line.`) {
+		t.Errorf("response JSON carries no notes field: %s", w.Body.String())
+	}
+
+	path := fmt.Sprintf("/invoicing/clients/%d", created.Client.ID)
+	if w := invoicingDo(r, "PUT", path, `{"name":"Anna","notes":"Second session booked."}`); w.Code != http.StatusOK {
+		t.Fatalf("PUT notes: got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := data_models.GetInvoicingClient(db, created.Client.ID)
+	if got == nil || got.Notes != "Second session booked." {
+		t.Fatalf("after PUT: %+v", got)
+	}
+	// A PUT without notes clears them: the form always sends the whole client.
+	if w := invoicingDo(r, "PUT", path, `{"name":"Anna"}`); w.Code != http.StatusOK {
+		t.Fatalf("PUT without notes: got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ = data_models.GetInvoicingClient(db, created.Client.ID)
+	if got.Notes != "" {
+		t.Errorf("notes after a PUT without them: %q, want empty", got.Notes)
+	}
+
+	long := strings.Repeat("ä", maxClientNotesRunes+1)
+	if w := invoicingDo(r, "PUT", path, `{"name":"Anna","notes":"`+long+`"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("notes over the bound: got %d, want 400", w.Code)
+	}
+	atBound := strings.Repeat("ä", maxClientNotesRunes)
+	if w := invoicingDo(r, "PUT", path, `{"name":"Anna","notes":"`+atBound+`"}`); w.Code != http.StatusOK {
+		t.Errorf("notes at the bound (%d runes, %d bytes): got %d, want 200", maxClientNotesRunes, len(atBound), w.Code)
 	}
 }
 

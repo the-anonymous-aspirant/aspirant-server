@@ -71,16 +71,28 @@ func SaveInvoicingProfile(db *gorm.DB, p *InvoicingProfile, userID uint) error {
 // InvoicingClient is someone Flower invoices. PayPalEmail matches imported
 // payments to the client.
 type InvoicingClient struct {
-	ID          uint      `json:"id" gorm:"primary_key"`
-	Name        string    `json:"name" gorm:"type:text;not null"`
-	Address     string    `json:"address" gorm:"type:text;not null;default:''"`
-	Email       string    `json:"email" gorm:"type:text;not null;default:''"`
-	PayPalEmail string    `json:"paypal_email" gorm:"column:paypal_email;type:text;not null;default:''"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          uint   `json:"id" gorm:"primary_key"`
+	Name        string `json:"name" gorm:"type:text;not null"`
+	Address     string `json:"address" gorm:"type:text;not null;default:''"`
+	Email       string `json:"email" gorm:"type:text;not null;default:''"`
+	PayPalEmail string `json:"paypal_email" gorm:"column:paypal_email;type:text;not null;default:''"`
+	// Notes are Flower's own notes on the client (system_3 #9962). They are
+	// hers alone: never on an invoice, its PDF, its frozen client snapshot or
+	// an export (see ForInvoice).
+	Notes     string    `json:"notes" gorm:"type:text;not null;default:''"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (InvoicingClient) TableName() string { return "invoicing_clients" }
+
+// ForInvoice is the client as an invoice may carry it: everything but her
+// private notes. The issue-time ClientSnapshot is built from this, so the
+// notes never reach a stored invoice or anything rendered from one.
+func (cl InvoicingClient) ForInvoice() InvoicingClient {
+	cl.Notes = ""
+	return cl
+}
 
 // KleinbetragLimitCents is the §33 UStDV ceiling: an invoice up to 250.00 EUR
 // gross is a Kleinbetragsrechnung, which need not name the recipient's
