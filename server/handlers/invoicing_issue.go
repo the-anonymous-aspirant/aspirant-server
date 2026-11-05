@@ -256,8 +256,10 @@ func IssueInvoiceHandler(c *gin.Context) {
 	inv.InvoiceNumber = &invoiceNumber
 	inv.IssueDate = &issueDate
 	inv.ProfileSnapshot = auditDetails(profile)
-	// Frozen without her private notes (system_3 #9962).
-	inv.ClientSnapshot = auditDetails(client.ForInvoice())
+	// Frozen without her private notes (system_3 #9962) or her ways of
+	// reaching the client (#9971); the PDF below renders from the same value.
+	frozenClient := client.ForInvoice()
+	inv.ClientSnapshot = auditDetails(frozenClient)
 	inv.IssuedAt = &now
 	inv.IssuedBy = userID
 	inv.UpdatedAt = now
@@ -287,7 +289,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "loading the logo", err)
 		return
 	}
-	pdfSHA, err := storeInvoicePDF(tx, inv, profile, client, items, logo)
+	pdfSHA, err := storeInvoicePDF(tx, inv, profile, &frozenClient, items, logo)
 	if unprintable := asUnprintable(err); unprintable != nil {
 		respondGuard(c, tx, guard(http.StatusUnprocessableEntity, "unprintable_characters",
 			"the invoice would print without %q, which the invoice font cannot show; change those characters in the profile, the client or the line items", string(unprintable.Runes)))

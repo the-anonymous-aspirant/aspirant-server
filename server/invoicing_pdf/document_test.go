@@ -1,6 +1,7 @@
 package invoicing_pdf
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +218,26 @@ func TestBuild_NoClientAddressPrintsNameOnlyAndTheServiceDate(t *testing.T) {
 	}
 	if _, err := Render(d); err != nil {
 		t.Errorf("render without an address: %v", err)
+	}
+}
+
+// system_3 #9971: the issuer's and the client's contact links, and the
+// client's phone, are never printed, even when the builder is handed them.
+func TestBuild_ContactLinksAndClientPhoneNeverPrint(t *testing.T) {
+	in := issuedInput(true)
+	in.Profile.InstagramURL = "https://www.instagram.com/flower.studio/"
+	in.Profile.TelegramURL = "https://t.me/flower_studio"
+	in.Client.Phone = "+49 151 99887766"
+	in.Client.InstagramURL = "https://www.instagram.com/galerie.nord/"
+	in.Client.TelegramURL = "https://t.me/galerie_nord"
+	d, err := Build(in)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	all := fmt.Sprintf("%+v", d)
+	for _, m := range []string{"instagram", "t.me", "99887766", "flower_studio", "galerie_nord"} {
+		if strings.Contains(all, m) {
+			t.Errorf("document carries %q: %s", m, all)
+		}
 	}
 }
