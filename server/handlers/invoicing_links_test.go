@@ -36,6 +36,10 @@ func TestSocialLinks_NormaliseOrRefuse(t *testing.T) {
 			t.Errorf("instagram %q: got %q, %v; want %q", in, got, err, want)
 		}
 	}
+	// Dots are fine beside a letter, digit or underscore (#10019).
+	if got, err := instagramPlatform.normalize("flora..ink."); err != nil || got != "https://www.instagram.com/flora..ink./" {
+		t.Errorf("instagram dotted handle: got %q, %v", got, err)
+	}
 	tg := map[string]string{
 		"":                          "",
 		"flora_ink":                 "https://t.me/flora_ink",
@@ -84,6 +88,11 @@ func TestSocialLinks_NormaliseOrRefuse(t *testing.T) {
 		"https://t.me/flora",                    // the other platform's host
 		"https://www.instagram.com/flora%2Fx/",  // an encoded slash
 		strings.Repeat("a", 31),                 // over Instagram's 30
+		".",                                     // dots alone (#10019)
+		"..",
+		"@...",
+		"https://www.instagram.com/../",
+		"https://www.instagram.com/%2e%2e/",
 	} {
 		if got, err := instagramPlatform.normalize(in); err == nil {
 			t.Errorf("instagram %q accepted as %q", in, got)
