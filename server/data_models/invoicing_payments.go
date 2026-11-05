@@ -88,7 +88,11 @@ type InvoicingPayment struct {
 	Reference      string    `json:"reference" gorm:"type:text;not null;default:''"`
 	// OnInvoice is computed for the list (#8409): whether any invoice, draft
 	// or issued, covers this payment. Not stored.
-	OnInvoice bool      `json:"on_invoice" gorm:"-"`
+	OnInvoice bool `json:"on_invoice" gorm:"-"`
+	// OnIssuedInvoice is computed for the list (system_3 #10009): whether an
+	// issued (not cancelled) invoice covers this payment. Only those payments
+	// refuse a delete. Not stored.
+	OnIssuedInvoice bool      `json:"on_issued_invoice" gorm:"-"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -195,11 +199,83 @@ func GetInvoicingPayment(db *gorm.DB, id uint) (*InvoicingPayment, error) {
 	return &p, nil
 }
 
-// InvoicingPaymentExists reports whether (source, transaction id) is stored.
+// InvoicingPaymentExists reports whether (source, transaction id) is stored
+// now. A deleted payment is not stored; InvoicingPaymentSeen also counts it.
 func InvoicingPaymentExists(db *gorm.DB, source, transactionID string) (bool, error) {
 	var n int
 	err := db.Model(&InvoicingPayment{}).Where("source = ? AND transaction_id = ?", source, transactionID).Count(&n).Error
 	return n > 0, err
+}
+
+// InvoicingPaymentTombstone records that the owner deleted a payment
+// (system_3 #10009), so a re-import of the same file does not bring it back.
+// The deleted row itself is kept in the delete's audit event.
+//
+// The time column is deleted_on, never deleted_at: gorm v1 treats any field
+// whose column is deleted_at as a soft-delete marker and adds
+// `deleted_at IS NULL` to every query, which would hide every tombstone from
+// the very check that reads it.
+type InvoicingPaymentTombstone struct {
+	ID            uint      `json:"id" gorm:"primary_key"`
+	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
+	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
+	DeletedOn     time.Time `json:"deleted_on" gorm:"not null"`
+	DeletedBy     uint      `json:"deleted_by" gorm:"not null"`
+}
+
+func (InvoicingPaymentTombstone) TableName() string { return "invoicing_payment_tombstones" }
+
+// InvoicingPaymentSeen reports whether (source, transaction id) is stored or
+// was deleted by the owner. Every import path asks this, so a deleted row is
+// skipped like a duplicate. A hand-entered payment's duplicate check asks
+// InvoicingPaymentExists instead: a deleted PayPal payment may be entered by
+// hand.
+func InvoicingPaymentSeen(db *gorm.DB, source, transactionID string) (bool, error) {
+	exists, err := InvoicingPaymentExists(db, source, transactionID)
+	if err != nil || exists {
+		return exists, err
+	}
+	var n int
+	err = db.Model(&InvoicingPaymentTombstone{}).Where("source = ? AND transaction_id = ?", source, transactionID).Count(&n).Error
+	return n > 0, err
+}
+
+// TombstoneInvoicingPayment records the deletion of p. A second tombstone for
+// the same (source, transaction id) is a no-op.
+func TombstoneInvoicingPayment(db *gorm.DB, p InvoicingPayment, deletedBy uint, at time.Time) error {
+	t := InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID, DeletedOn: at, DeletedBy: deletedBy}
+	return db.Where(InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID}).FirstOrCreate(&t).Error
+}
+
+// PaymentIDsOnIssuedInvoices returns the ids of every payment an issued (not
+// cancelled) invoice covers.
+func PaymentIDsOnIssuedInvoices(db *gorm.DB) (map[uint]bool, error) {
+	var rows []struct{ PaymentID uint }
+	err := db.Table("invoicing_invoice_payments").Select("invoicing_invoice_payments.payment_id").
+		Joins("JOIN invoicing_invoices i ON i.id = invoicing_invoice_payments.invoice_id").
+		Where("i.status = ?", InvoiceStatusIssued).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint]bool, len(rows))
+	for _, r := range rows {
+		out[r.PaymentID] = true
+	}
+	return out, nil
+}
+
+// InvoiceIDsForPayment returns the ids of every invoice (draft, issued or
+// cancelled) that covers the payment, in id order.
+func InvoiceIDsForPayment(db *gorm.DB, paymentID uint) ([]uint, error) {
+	var links []InvoicingInvoicePayment
+	if err := db.Where("payment_id = ?", paymentID).Order("invoice_id asc").Find(&links).Error; err != nil {
+		return nil, err
+	}
+	out := make([]uint, 0, len(links))
+	for _, l := range links {
+		out = append(out, l.InvoiceID)
+	}
+	return out, nil
 }
 
 // FindInvoicingClientByPayPalEmail returns the client whose PayPal email

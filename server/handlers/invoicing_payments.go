@@ -123,7 +123,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			continue
 		}
 		seen[row.TransactionID] = true
-		exists, err := data_models.InvoicingPaymentExists(tx, invoicingPaymentSourcePayPal, row.TransactionID)
+		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingPaymentSourcePayPal, row.TransactionID)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking payment %s: %v", row.TransactionID, err)
@@ -226,8 +226,15 @@ func ListInvoicingPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
 		return
 	}
+	onIssued, err := data_models.PaymentIDsOnIssuedInvoices(db)
+	if err != nil {
+		log.Printf("Error listing issued-invoice links: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
+		return
+	}
 	for i := range payments {
 		payments[i].OnInvoice = linked[payments[i].ID]
+		payments[i].OnIssuedInvoice = onIssued[payments[i].ID]
 	}
 	c.JSON(http.StatusOK, gin.H{"payments": payments, "categories": data_models.PaymentCategories})
 }
