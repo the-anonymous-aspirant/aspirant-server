@@ -411,6 +411,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.GET("/invoices/:id/pdf", handlers.GetInvoicePDFHandler)
 		invoicing.GET("/export/invoices.csv", handlers.ExportAllInvoicesCSVHandler)
 		invoicing.GET("/export/invoices.zip", handlers.ExportInvoicesZipHandler)
+		invoicing.GET("/export/invoices-merged.pdf", handlers.ExportInvoicesMergedPDFHandler)
 		invoicing.GET("/validation", handlers.GetInvoicingValidationHandler)
 
 		// Jobs overview (proxied to aspirant-browser /api/jobs* — the
