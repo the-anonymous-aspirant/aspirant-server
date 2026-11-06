@@ -211,6 +211,9 @@ func AutoMigrate(db *gorm.DB) {
 	if err := data_models.EnsureInvoicingOwnerIndexes(db); err != nil {
 		log.Printf("invoicing owner indexes: %v", err)
 	}
+	if err := data_models.EnsureInvoicingOwnerLockTable(db); err != nil {
+		log.Printf("invoicing owner lock table: %v", err)
+	}
 
 	// Step 5b: Bootstrap marker (#5264). One row, fixed primary key, recording
 	// that this deployment has been set up — so public admin creation can never

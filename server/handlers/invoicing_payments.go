@@ -161,7 +161,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			Category:       row.Category,
 		}
 		if row.Kind == data_models.PaymentKindIncoming {
-			cl, err := data_models.FindInvoicingClientByPayPalEmail(tx, row.SenderEmail)
+			cl, err := data_models.FindInvoicingClientByPayPalEmail(tx, invoicingUserID(c), row.SenderEmail)
 			if err != nil {
 				tx.Rollback()
 				log.Printf("Error matching client for payment %s: %v", row.TransactionID, err)

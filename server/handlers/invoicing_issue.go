@@ -128,17 +128,21 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 	return profile, client, nil, nil
 }
 
-// lockIssuing takes the issuer-profile row's lock with a no-op UPDATE, so
-// every issue — and every write that could change what an issue checks —
-// runs one at a time. Postgres runs at READ COMMITTED: without this lock two
+// lockIssuing takes the owner's book lock (LockInvoicingBook), so every issue
+// — and every write that could change what an issue checks — runs one at a
+// time within the book. Postgres runs at READ COMMITTED: without this lock two
 // concurrent issues each read their checks before either commits, so one
 // draft could be issued twice or one payment land on two invoices
 // (@security F1, c51467 on #8371). The reads after the lock see every
-// committed issue. It reports whether the profile row exists.
+// committed issue. The lock holds whether or not the owner has saved a
+// profile (security review of PR 172 F1); it reports whether they have.
 func lockIssuing(tx *gorm.DB, owner uint) (bool, error) {
-	res := tx.Model(&data_models.InvoicingProfile{}).Where("owner_user_id = ?", owner).
-		UpdateColumn("next_invoice_number", gorm.Expr("next_invoice_number"))
-	return res.RowsAffected == 1, res.Error
+	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
+		return false, err
+	}
+	var n int
+	err := tx.Model(&data_models.InvoicingProfile{}).Where("owner_user_id = ?", owner).Count(&n).Error
+	return n == 1, err
 }
 
 // lockInvoiceRow takes the invoice row's lock with a no-op UPDATE, so an

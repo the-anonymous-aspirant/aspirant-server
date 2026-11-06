@@ -281,14 +281,15 @@ func InvoiceIDsForPayment(db *gorm.DB, paymentID uint) ([]uint, error) {
 	return out, nil
 }
 
-// FindInvoicingClientByPayPalEmail returns the client whose PayPal email
-// matches (already lower-cased on both sides), or nil.
-func FindInvoicingClientByPayPalEmail(db *gorm.DB, email string) (*InvoicingClient, error) {
+// FindInvoicingClientByPayPalEmail returns the owner's client whose PayPal
+// email matches (already lower-cased on both sides), or nil. Another book's
+// client never matches (security review of PR 172 F2).
+func FindInvoicingClientByPayPalEmail(db *gorm.DB, owner uint, email string) (*InvoicingClient, error) {
 	if email == "" {
 		return nil, nil
 	}
 	var cl InvoicingClient
-	err := db.Where("paypal_email = ?", email).Order("id asc").First(&cl).Error
+	err := db.Where("owner_user_id = ? AND paypal_email = ?", owner, email).Order("id asc").First(&cl).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}

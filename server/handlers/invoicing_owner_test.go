@@ -210,3 +210,80 @@ func TestInvoicingOwner_IndexSwap(t *testing.T) {
 		t.Errorf("2026-1 twice in one book is accepted")
 	}
 }
+
+// Security review of PR 172, F1: the book lock holds for a user who has not
+// saved a profile, which after the per-user change is every user at first.
+// The locked write paths take the lock row, not a profile row.
+func TestInvoicingOwner_BookLockHoldsWithoutAProfile(t *testing.T) {
+	db := setupPaymentsDB(t)
+	lockRows := func(owner uint) int {
+		var n int
+		db.Raw("SELECT count(*) FROM invoicing_owner_locks WHERE owner_user_id = ?", owner).Row().Scan(&n)
+		return n
+	}
+
+	tx := db.Begin()
+	hasProfile, err := lockIssuing(tx, 8)
+	if err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	if hasProfile {
+		t.Errorf("lockIssuing reports a profile for a user who saved none")
+	}
+	if err := tx.Commit().Error; err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if n := lockRows(8); n != 1 {
+		t.Fatalf("lock rows for user 8 = %d, want 1", n)
+	}
+	// A second lock reuses the row.
+	tx = db.Begin()
+	if _, err := lockIssuing(tx, 8); err != nil {
+		t.Fatalf("relock: %v", err)
+	}
+	tx.Commit()
+	if n := lockRows(8); n != 1 {
+		t.Errorf("lock rows for user 8 after a relock = %d, want 1", n)
+	}
+
+	// A write path that discards lockIssuing's bool still locks: the PayPal
+	// import, by a user with no profile and no lock row yet.
+	if n := lockRows(9); n != 0 {
+		t.Fatalf("precondition: user 9 already has a lock row")
+	}
+	r := setupPaymentsRouter(db, 9)
+	if w := uploadCSV(t, r, paypalFixtureEN, ""); w.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", w.Code, w.Body.String())
+	}
+	if n := lockRows(9); n != 1 {
+		t.Errorf("the import ran without taking user 9's book lock (lock rows = %d)", n)
+	}
+	if p, _ := data_models.GetInvoicingProfile(db, 9); p != nil {
+		t.Errorf("the lock created a profile row; GET would read it as saved")
+	}
+}
+
+// Security review of PR 172, F2: an import attaches a client only from the
+// importer's own book, matched on the sender's PayPal email.
+func TestInvoicingOwner_ImportMatchesOnlyTheImportersClients(t *testing.T) {
+	clientOf := func(t *testing.T, clientBook uint) *uint {
+		db := setupPaymentsDB(t)
+		if err := db.Create(&data_models.InvoicingClient{OwnerUserID: clientBook, Name: "Galerie Nord", PayPalEmail: "pay@galerie.test"}).Error; err != nil {
+			t.Fatalf("seed client: %v", err)
+		}
+		if w := uploadCSV(t, setupPaymentsRouter(db, 8), paypalFixtureEN, ""); w.Code != http.StatusOK {
+			t.Fatalf("import: %d %s", w.Code, w.Body.String())
+		}
+		var p data_models.InvoicingPayment
+		if err := db.Where("transaction_id = ?", "1AA11111AA1111111").First(&p).Error; err != nil {
+			t.Fatalf("imported payment: %v", err)
+		}
+		return p.ClientID
+	}
+	if cid := clientOf(t, 7); cid != nil {
+		t.Errorf("user 8's import attached client %d from user 7's book", *cid)
+	}
+	if cid := clientOf(t, 8); cid == nil {
+		t.Errorf("positive control: user 8's import did not attach user 8's own client")
+	}
+}
