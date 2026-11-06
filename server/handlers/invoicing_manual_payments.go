@@ -239,9 +239,9 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	// A PayPal payment entered by hand and later imported (or the other way
 	// round) must not become two payments.
 	if method == "paypal" && reference != "" {
-		exists, err := data_models.InvoicingPaymentExists(tx, invoicingPaymentSourcePayPal, reference)
+		exists, err := data_models.InvoicingPaymentExists(tx, invoicingUserID(c), invoicingPaymentSourcePayPal, reference)
 		if err == nil && !exists {
-			exists, err = data_models.ManualPayPalPaymentWithReference(tx, reference)
+			exists, err = data_models.ManualPayPalPaymentWithReference(tx, invoicingUserID(c), reference)
 		}
 		if err != nil {
 			tx.Rollback()
@@ -264,6 +264,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		return
 	}
 	p := data_models.InvoicingPayment{
+		OwnerUserID:   invoicingUserID(c),
 		Source:        data_models.PaymentSourceManual,
 		TransactionID: txnID,
 		Kind:          data_models.PaymentKindIncoming,
@@ -335,7 +336,7 @@ func DeletePaymentHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
 		return
 	}
-	p, err := data_models.GetInvoicingPayment(tx, uint(id))
+	p, err := data_models.GetInvoicingPayment(tx, invoicingUserID(c), uint(id))
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error reading payment %d: %v", id, err)

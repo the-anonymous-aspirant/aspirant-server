@@ -202,7 +202,7 @@ func TestN26FlagCandidates(t *testing.T) {
 	db := setupPaymentsDB(t)
 	paidOn, _ := time.Parse("2006-01-02", "2026-07-14")
 	if err := db.Create(&data_models.InvoicingPayment{
-		Source: "manual", TransactionID: "M-1", Kind: data_models.PaymentKindIncoming,
+		OwnerUserID: 5, Source: "manual", TransactionID: "M-1", Kind: data_models.PaymentKindIncoming,
 		PaidOn: paidOn, Currency: "EUR", GrossCents: 123456, NetCents: 123456,
 		Category: data_models.PaymentCategoryUncategorised, Entry: data_models.PaymentEntryManual,
 	}).Error; err != nil {
@@ -212,7 +212,15 @@ func TestN26FlagCandidates(t *testing.T) {
 		{TransactionID: "a1b2c3d4-0e15-4a6f-9bd0-123456789abc", PaidOn: "2026-07-14", GrossCents: 123456},
 		{TransactionID: "stmt-0000", PaidOn: "2026-09-01", GrossCents: 555},
 	}
-	if err := flagN26Candidates(db, cands); err != nil {
+	// Another book's payment is never named as a twin (system_3 #10054).
+	other := []n26Candidate{{TransactionID: "a1b2c3d4-0e15-4a6f-9bd0-123456789abc", PaidOn: "2026-07-14", GrossCents: 123456}}
+	if err := flagN26Candidates(db, 6, other); err != nil {
+		t.Fatalf("flag as another owner: %v", err)
+	}
+	if other[0].PossibleDuplicateOf != 0 {
+		t.Errorf("another owner's candidate names payment %d as its twin", other[0].PossibleDuplicateOf)
+	}
+	if err := flagN26Candidates(db, 5, cands); err != nil {
 		t.Fatalf("flag: %v", err)
 	}
 	if cands[0].PossibleDuplicateOf == 0 {
@@ -573,7 +581,8 @@ func TestPayPalTransferIntoN26_NeverPaidWorkNeverInvoiced(t *testing.T) {
 		t.Helper()
 		cid := f.clientID
 		p := data_models.InvoicingPayment{
-			Source: invoicingPaymentSourceN26, TransactionID: txn, Kind: data_models.PaymentKindIncoming,
+			OwnerUserID: invoiceFixtureUser,
+			Source:      invoicingPaymentSourceN26, TransactionID: txn, Kind: data_models.PaymentKindIncoming,
 			PaidOn: time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC), Currency: "EUR", GrossCents: 50000, NetCents: 50000,
 			SenderName: sender, Category: category, Entry: data_models.PaymentEntryImport, ClientID: &cid,
 		}
@@ -592,7 +601,7 @@ func TestPayPalTransferIntoN26_NeverPaidWorkNeverInvoiced(t *testing.T) {
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "paypal_transfer_not_paid_work") {
 		t.Fatalf("paid_work on a PayPal transfer: %d %s", w.Code, w.Body.String())
 	}
-	if got, _ := data_models.GetInvoicingPayment(f.db, fresh.ID); got.Category != data_models.PaymentCategoryUncategorised {
+	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, fresh.ID); got.Category != data_models.PaymentCategoryUncategorised {
 		t.Fatalf("refused patch changed the category: %q", got.Category)
 	}
 	if after := countAuditEvents(t, f.db); after != before {

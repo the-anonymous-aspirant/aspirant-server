@@ -287,3 +287,71 @@ func TestInvoicingOwner_ImportMatchesOnlyTheImportersClients(t *testing.T) {
 		t.Errorf("positive control: user 8's import did not attach user 8's own client")
 	}
 }
+
+// system_3 #10054-A2: payments, tombstones and imports belong to one book.
+// The same PayPal file imports in full into a second book (communicator
+// c62288, point 2), another book's payment cannot be edited or deleted, and a
+// deletion in one book does not hide the row from another's import.
+func TestInvoicingOwner_PaymentsAreSeparate(t *testing.T) {
+	db := setupPaymentsDB(t)
+	a, b := setupPaymentsRouter(db, 5), setupPaymentsRouter(db, 6)
+
+	sa := decodeSummary(t, uploadCSV(t, a, paypalFixtureEN, ""))
+	sb := decodeSummary(t, uploadCSV(t, b, paypalFixtureEN, ""))
+	if sa.Imported == 0 || sb.Imported != sa.Imported || sb.Duplicates != 0 {
+		t.Fatalf("second book's import: %+v, first: %+v; want the same rows imported, no duplicates", sb, sa)
+	}
+	if again := decodeSummary(t, uploadCSV(t, a, paypalFixtureEN, "")); again.Imported != 0 || again.Duplicates != sa.Imported {
+		t.Errorf("re-import into the same book: %+v, want all %d as duplicates", again, sa.Imported)
+	}
+
+	list := func(r *gin.Engine) []data_models.InvoicingPayment {
+		var out struct {
+			Payments []data_models.InvoicingPayment `json:"payments"`
+		}
+		w := invoicingDo(r, "GET", "/invoicing/payments", "")
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("list: %v %s", err, w.Body.String())
+		}
+		return out.Payments
+	}
+	la, lb := list(a), list(b)
+	if len(la) == 0 || len(la) != len(lb) {
+		t.Fatalf("lists: %d and %d rows, want the same non-zero count", len(la), len(lb))
+	}
+	ids := map[uint]bool{}
+	for _, p := range la {
+		ids[p.ID] = true
+	}
+	for _, p := range lb {
+		if ids[p.ID] {
+			t.Errorf("payment %d is in both books", p.ID)
+		}
+	}
+
+	victim := la[0].ID
+	if w := invoicingDo(b, "PATCH", fmt.Sprintf("/invoicing/payments/%d", victim), `{"category":"gift"}`); w.Code != http.StatusNotFound {
+		t.Errorf("another book edits payment %d: %d, want 404", victim, w.Code)
+	}
+	if w := invoicingDo(b, "DELETE", fmt.Sprintf("/invoicing/payments/%d", victim), ""); w.Code != http.StatusNotFound {
+		t.Errorf("another book deletes payment %d: %d, want 404", victim, w.Code)
+	}
+	if p, _ := data_models.GetInvoicingPayment(db, 5, victim); p == nil || p.Category != la[0].Category {
+		t.Errorf("payment %d changed or vanished: %+v", victim, p)
+	}
+
+	// A delete tombstones the row in its own book only.
+	if w := invoicingDo(a, "DELETE", fmt.Sprintf("/invoicing/payments/%d", victim), ""); w.Code != http.StatusOK && w.Code != http.StatusNoContent {
+		t.Fatalf("own delete: %d %s", w.Code, w.Body.String())
+	}
+	if seen, _ := data_models.InvoicingPaymentSeen(db, 5, la[0].Source, la[0].TransactionID); !seen {
+		t.Errorf("positive control: the deleting book does not see its tombstone")
+	}
+	if seen, _ := data_models.InvoicingPaymentSeen(db, 7, la[0].Source, la[0].TransactionID); seen {
+		t.Errorf("a third book sees the first book's tombstone")
+	}
+	c := setupPaymentsRouter(db, 7)
+	if sc := decodeSummary(t, uploadCSV(t, c, paypalFixtureEN, "")); sc.Imported != sa.Imported {
+		t.Errorf("a third book's import after the delete: %+v, want all %d rows", sc, sa.Imported)
+	}
+}

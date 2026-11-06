@@ -34,7 +34,7 @@ func TestDeletePayment_ImportedOnNoInvoiceIsDeletedTombstonedAndAudited(t *testi
 	if code, body := deletePayment(f, p.ID); code != http.StatusNoContent {
 		t.Fatalf("delete an imported payment: %d %s", code, body)
 	}
-	if got, _ := data_models.GetInvoicingPayment(f.db, p.ID); got != nil {
+	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, p.ID); got != nil {
 		t.Fatal("payment still stored after delete")
 	}
 	if !tombstoned(t, f, "paypal", "TX1") {
@@ -75,7 +75,7 @@ func TestDeletePayment_OnAnIssuedInvoiceIsRefused(t *testing.T) {
 	if code != http.StatusConflict || !strings.Contains(body, "payment_on_invoice") || !strings.Contains(body, "cancel that invoice first") || !strings.Contains(body, "2026-") {
 		t.Fatalf("delete a payment on an issued invoice: %d %s", code, body)
 	}
-	if got, _ := data_models.GetInvoicingPayment(f.db, f.payments[0].ID); got == nil {
+	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, f.payments[0].ID); got == nil {
 		t.Fatal("refused delete removed the payment")
 	}
 	if tombstoned(t, f, "paypal", "TX1") {
@@ -262,7 +262,7 @@ func TestDeletePayment_ManualDeleteIsUnchanged(t *testing.T) {
 	if code, body := deletePayment(f, loose.ID); code != http.StatusNoContent {
 		t.Fatalf("delete a loose manual payment: %d %s", code, body)
 	}
-	if got, _ := data_models.GetInvoicingPayment(f.db, loose.ID); got != nil {
+	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, loose.ID); got != nil {
 		t.Fatal("manual payment still stored")
 	}
 	if code, _ := deletePayment(f, loose.ID); code != http.StatusNotFound {

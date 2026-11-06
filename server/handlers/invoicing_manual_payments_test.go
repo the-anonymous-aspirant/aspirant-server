@@ -184,7 +184,7 @@ func TestManualPayment_DeleteAndTheOnInvoiceFlag(t *testing.T) {
 	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", loose.ID), ""); w.Code != http.StatusNoContent {
 		t.Fatalf("delete a loose manual payment: %d %s", w.Code, w.Body.String())
 	}
-	if got, _ := data_models.GetInvoicingPayment(f.db, loose.ID); got != nil {
+	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, loose.ID); got != nil {
 		t.Errorf("payment still stored after delete")
 	}
 	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", loose.ID)

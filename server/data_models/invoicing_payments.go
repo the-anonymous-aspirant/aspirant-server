@@ -163,20 +163,20 @@ func PaymentIDsOnInvoices(db *gorm.DB) (map[uint]bool, error) {
 
 // ManualPayPalPaymentWithReference reports whether a hand-entered PayPal
 // payment already carries this PayPal transaction id as its reference.
-func ManualPayPalPaymentWithReference(db *gorm.DB, reference string) (bool, error) {
+func ManualPayPalPaymentWithReference(db *gorm.DB, owner uint, reference string) (bool, error) {
 	if reference == "" {
 		return false, nil
 	}
 	var n int
 	err := db.Model(&InvoicingPayment{}).
-		Where("entry = ? AND method = ? AND reference = ?", PaymentEntryManual, "paypal", reference).Count(&n).Error
+		Where("owner_user_id = ? AND entry = ? AND method = ? AND reference = ?", owner, PaymentEntryManual, "paypal", reference).Count(&n).Error
 	return n > 0, err
 }
 
-// ListInvoicingPayments returns payments oldest first, optionally filtered by
-// kind and category (empty means any).
-func ListInvoicingPayments(db *gorm.DB, kind, category string) ([]InvoicingPayment, error) {
-	q := db.Order("paid_on asc, id asc")
+// ListInvoicingPayments returns the owner's payments oldest first, optionally
+// filtered by kind and category (empty means any).
+func ListInvoicingPayments(db *gorm.DB, owner uint, kind, category string) ([]InvoicingPayment, error) {
+	q := db.Where("owner_user_id = ?", owner).Order("paid_on asc, id asc")
 	if kind != "" {
 		q = q.Where("kind = ?", kind)
 	}
@@ -188,10 +188,11 @@ func ListInvoicingPayments(db *gorm.DB, kind, category string) ([]InvoicingPayme
 	return payments, err
 }
 
-// GetInvoicingPayment returns the payment, or nil when the id is unknown.
-func GetInvoicingPayment(db *gorm.DB, id uint) (*InvoicingPayment, error) {
+// GetInvoicingPayment returns the owner's payment, or nil when the id is
+// unknown or belongs to another book.
+func GetInvoicingPayment(db *gorm.DB, owner, id uint) (*InvoicingPayment, error) {
 	var p InvoicingPayment
-	err := db.Where("id = ?", id).First(&p).Error
+	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&p).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
@@ -201,11 +202,13 @@ func GetInvoicingPayment(db *gorm.DB, id uint) (*InvoicingPayment, error) {
 	return &p, nil
 }
 
-// InvoicingPaymentExists reports whether (source, transaction id) is stored
-// now. A deleted payment is not stored; InvoicingPaymentSeen also counts it.
-func InvoicingPaymentExists(db *gorm.DB, source, transactionID string) (bool, error) {
+// InvoicingPaymentExists reports whether (source, transaction id) is stored in
+// the owner's book now. A deleted payment is not stored; InvoicingPaymentSeen
+// also counts it. Another book's copy of the same transaction does not count
+// (system_3 #10054): two books can import the same file in full.
+func InvoicingPaymentExists(db *gorm.DB, owner uint, source, transactionID string) (bool, error) {
 	var n int
-	err := db.Model(&InvoicingPayment{}).Where("source = ? AND transaction_id = ?", source, transactionID).Count(&n).Error
+	err := db.Model(&InvoicingPayment{}).Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, source, transactionID).Count(&n).Error
 	return n > 0, err
 }
 
@@ -233,21 +236,21 @@ func (InvoicingPaymentTombstone) TableName() string { return "invoicing_payment_
 // skipped like a duplicate. A hand-entered payment's duplicate check asks
 // InvoicingPaymentExists instead: a deleted PayPal payment may be entered by
 // hand.
-func InvoicingPaymentSeen(db *gorm.DB, source, transactionID string) (bool, error) {
-	exists, err := InvoicingPaymentExists(db, source, transactionID)
+func InvoicingPaymentSeen(db *gorm.DB, owner uint, source, transactionID string) (bool, error) {
+	exists, err := InvoicingPaymentExists(db, owner, source, transactionID)
 	if err != nil || exists {
 		return exists, err
 	}
 	var n int
-	err = db.Model(&InvoicingPaymentTombstone{}).Where("source = ? AND transaction_id = ?", source, transactionID).Count(&n).Error
+	err = db.Model(&InvoicingPaymentTombstone{}).Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, source, transactionID).Count(&n).Error
 	return n > 0, err
 }
 
-// TombstoneInvoicingPayment records the deletion of p. A second tombstone for
-// the same (source, transaction id) is a no-op.
+// TombstoneInvoicingPayment records the deletion of p in p's book. A second
+// tombstone for the same (owner, source, transaction id) is a no-op.
 func TombstoneInvoicingPayment(db *gorm.DB, p InvoicingPayment, deletedBy uint, at time.Time) error {
-	t := InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID, DeletedOn: at, DeletedBy: deletedBy}
-	return db.Where(InvoicingPaymentTombstone{Source: p.Source, TransactionID: p.TransactionID}).FirstOrCreate(&t).Error
+	t := InvoicingPaymentTombstone{OwnerUserID: p.OwnerUserID, Source: p.Source, TransactionID: p.TransactionID, DeletedOn: at, DeletedBy: deletedBy}
+	return db.Where("owner_user_id = ? AND source = ? AND transaction_id = ?", p.OwnerUserID, p.Source, p.TransactionID).FirstOrCreate(&t).Error
 }
 
 // PaymentIDsOnIssuedInvoices returns the ids of every payment an issued (not
