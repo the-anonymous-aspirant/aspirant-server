@@ -61,6 +61,24 @@ func bindSocialLinks(c *gin.Context, instagram, telegram *string) bool {
 	return true
 }
 
+// RequireInvoicingUser refuses a request with no signed-in user (system_3
+// #10054). Every invoicing read and write is scoped to invoicingUserID, and
+// rows from before the owner column have owner 0, so a request that reached
+// a handler as user 0 would read them. The route gate always sets a user;
+// this keeps that true for every route in the group, whatever is added later.
+func RequireInvoicingUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if invoicingUserID(c) == 0 {
+			RespondWithError(c, http.StatusUnauthorized, "Sign in to use the invoicing app")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// invoicingUserID is the signed-in user, who is also the owner of the book
+// every handler reads and writes (system_3 #10054).
 func invoicingUserID(c *gin.Context) uint {
 	if v, ok := c.Get("user_id"); ok {
 		if id, ok := v.(uint); ok {
@@ -107,13 +125,14 @@ type invoicingProfileRequest struct {
 // none has been saved yet (saved=false tells the UI it is unseeded).
 func GetInvoicingProfileHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	p, err := data_models.GetInvoicingProfile(db)
+	owner := invoicingUserID(c)
+	p, err := data_models.GetInvoicingProfile(db, owner)
 	if err != nil {
 		log.Printf("Error retrieving invoicing profile: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
 		return
 	}
-	logo, err := data_models.GetInvoicingProfileLogo(db)
+	logo, err := data_models.GetInvoicingProfileLogo(db, owner)
 	if err != nil {
 		log.Printf("Error retrieving invoicing logo: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
@@ -193,13 +212,13 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	// Wait for any issue in flight before reading the profile and the issued numbers, so a
 	// save cannot write back a next number an issue has just moved past
 	// (@security N4, c51472 on #8371).
-	if _, err := lockIssuing(tx); err != nil {
+	if _, err := lockIssuing(tx, userID); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking the issuer profile: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
 		return
 	}
-	existing, err := data_models.GetInvoicingProfile(tx)
+	existing, err := data_models.GetInvoicingProfile(tx, userID)
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error reading invoicing profile: %v", err)
@@ -312,7 +331,7 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 
 func ListInvoicingClientsHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	clients, err := data_models.ListInvoicingClients(db)
+	clients, err := data_models.ListInvoicingClients(db, invoicingUserID(c))
 	if err != nil {
 		log.Printf("Error listing invoicing clients: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing clients")
@@ -329,6 +348,7 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 	}
 	userID := invoicingUserID(c)
 	cl := data_models.InvoicingClient{
+		OwnerUserID:  userID,
 		Name:         req.Name,
 		Address:      req.Address,
 		Email:        req.Email,
@@ -374,7 +394,7 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 	userID := invoicingUserID(c)
 
 	tx := db.Begin()
-	existing, err := data_models.GetInvoicingClient(tx, uint(id))
+	existing, err := data_models.GetInvoicingClient(tx, userID, uint(id))
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error reading invoicing client %d: %v", id, err)

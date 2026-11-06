@@ -29,6 +29,9 @@ func setupInvoicingDB(t *testing.T) *gorm.DB {
 	db.AutoMigrate(&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{},
 		&data_models.InvoicingInvoice{}, &data_models.InvoicingLineItem{}, &data_models.InvoicingInvoicePayment{},
 		&data_models.InvoicingInvoicePDF{}, &data_models.InvoicingProfileLogo{})
+	if err := data_models.EnsureInvoicingOwnerLockTable(db); err != nil {
+		t.Fatalf("lock table: %v", err)
+	}
 	t.Cleanup(func() { db.Close() })
 	return db
 }
@@ -312,7 +315,7 @@ func TestInvoicingClients_NotesRoundTripAndAreBounded(t *testing.T) {
 	if w := invoicingDo(r, "PUT", path, `{"name":"Anna","notes":"Second session booked."}`); w.Code != http.StatusOK {
 		t.Fatalf("PUT notes: got %d: %s", w.Code, w.Body.String())
 	}
-	got, _ := data_models.GetInvoicingClient(db, created.Client.ID)
+	got, _ := data_models.GetInvoicingClient(db, 7, created.Client.ID)
 	if got == nil || got.Notes != "Second session booked." {
 		t.Fatalf("after PUT: %+v", got)
 	}
@@ -320,7 +323,7 @@ func TestInvoicingClients_NotesRoundTripAndAreBounded(t *testing.T) {
 	if w := invoicingDo(r, "PUT", path, `{"name":"Anna"}`); w.Code != http.StatusOK {
 		t.Fatalf("PUT without notes: got %d: %s", w.Code, w.Body.String())
 	}
-	got, _ = data_models.GetInvoicingClient(db, created.Client.ID)
+	got, _ = data_models.GetInvoicingClient(db, 7, created.Client.ID)
 	if got.Notes != "" {
 		t.Errorf("notes after a PUT without them: %q, want empty", got.Notes)
 	}

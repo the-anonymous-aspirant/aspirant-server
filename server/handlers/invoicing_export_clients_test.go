@@ -16,8 +16,12 @@ import (
 
 // system_3 #10012 (from #9978, operator c61628): her client list as a CSV.
 
+// clientsCSVUser signs in to the export and owns every seeded client unless a
+// test names another owner (system_3 #10054).
+const clientsCSVUser uint = 7
+
 func clientsCSVRouter(db *gorm.DB) *gin.Engine {
-	r := setupInvoicingRouter(db, 7)
+	r := setupInvoicingRouter(db, clientsCSVUser)
 	r.GET("/invoicing/export/clients.csv", ExportClientsCSVHandler)
 	return r
 }
@@ -38,6 +42,9 @@ func readClientsCSV(t *testing.T, body string) [][]string {
 
 func seedClient(t *testing.T, db *gorm.DB, cl data_models.InvoicingClient, created, updated time.Time) {
 	t.Helper()
+	if cl.OwnerUserID == 0 {
+		cl.OwnerUserID = clientsCSVUser
+	}
 	if err := db.Create(&cl).Error; err != nil {
 		t.Fatalf("seed %s: %v", cl.Name, err)
 	}

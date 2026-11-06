@@ -71,7 +71,7 @@ func PutInvoicingLogoHandler(c *gin.Context) {
 
 	userID := invoicingUserID(c)
 	tx := db.Begin()
-	before, err := data_models.GetInvoicingProfileLogo(tx)
+	before, err := data_models.GetInvoicingProfileLogo(tx, userID)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "saving the logo", err)
 		return
@@ -102,7 +102,7 @@ func PutInvoicingLogoHandler(c *gin.Context) {
 // GetInvoicingLogoHandler serves the stored logo PNG.
 func GetInvoicingLogoHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	logo, err := data_models.GetInvoicingProfileLogo(db)
+	logo, err := data_models.GetInvoicingProfileLogo(db, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading the logo", err)
 		return
@@ -122,7 +122,7 @@ func DeleteInvoicingLogoHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	userID := invoicingUserID(c)
 	tx := db.Begin()
-	before, err := data_models.GetInvoicingProfileLogo(tx)
+	before, err := data_models.GetInvoicingProfileLogo(tx, userID)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "removing the logo", err)
 		return
@@ -132,7 +132,7 @@ func DeleteInvoicingLogoHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusNotFound, "No logo is set")
 		return
 	}
-	if _, err := data_models.DeleteInvoicingProfileLogo(tx); err != nil {
+	if _, err := data_models.DeleteInvoicingProfileLogo(tx, userID); err != nil {
 		respondInvoicingInternal(c, tx, "removing the logo", err)
 		return
 	}
@@ -149,8 +149,8 @@ func DeleteInvoicingLogoHandler(c *gin.Context) {
 }
 
 // invoiceLogo loads the logo for an invoice being issued, ready to print.
-func invoiceLogo(tx *gorm.DB) (*invoicing_pdf.Logo, string, error) {
-	stored, err := data_models.GetInvoicingProfileLogo(tx)
+func invoiceLogo(tx *gorm.DB, owner uint) (*invoicing_pdf.Logo, string, error) {
+	stored, err := data_models.GetInvoicingProfileLogo(tx, owner)
 	if err != nil || stored == nil {
 		return nil, "", err
 	}

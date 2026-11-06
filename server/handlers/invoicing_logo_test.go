@@ -206,7 +206,7 @@ func TestInvoicingLogo_PrintedOnIssueAndFrozenInTheStoredPDF(t *testing.T) {
 	if w := uploadLogo(f.r, "logo", testLogoPNG(t, 1600, 800)); w.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
 	}
-	logo, _ := data_models.GetInvoicingProfileLogo(f.db)
+	logo, _ := data_models.GetInvoicingProfileLogo(f.db, invoiceFixtureUser)
 
 	id := f.draft(t, 1)
 	if code, _, body := f.issue(id); code != http.StatusOK {

@@ -628,7 +628,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	// Dedupe runs under the issuing lock like the PayPal import's, so two
 	// concurrent confirms of the same rows cannot both pass the exists check
 	// (#8409 security F2).
-	if _, err := lockIssuing(tx); err != nil {
+	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for an N26 confirm: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error storing payments")

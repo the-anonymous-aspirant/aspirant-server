@@ -206,7 +206,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	tx := db.Begin()
 	// The duplicate check and the insert run under the issuing lock, so two
 	// hand entries of the same PayPal id cannot both pass the check.
-	if _, err := lockIssuing(tx); err != nil {
+	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for a manual payment: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
@@ -221,7 +221,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 			return
 		}
 		if cid != nil {
-			cl, err := data_models.GetInvoicingClient(tx, *cid)
+			cl, err := data_models.GetInvoicingClient(tx, invoicingUserID(c), *cid)
 			if err != nil {
 				tx.Rollback()
 				log.Printf("Error reading client %d: %v", *cid, err)
@@ -323,7 +323,7 @@ func DeletePaymentHandler(c *gin.Context) {
 	// The issuing lock orders this against a draft create, a payment_ids edit
 	// or an issue that would link or freeze the payment while it is deleted:
 	// all take the same lock before reading the payment (#8409 security F1).
-	if _, err := lockIssuing(tx); err != nil {
+	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for payment %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
