@@ -126,7 +126,7 @@ func TestInvoicingLogo_UploadServeReplaceDelete(t *testing.T) {
 	}
 
 	// Upload, replace and delete are audited, with hashes and never bytes.
-	events, err := data_models.ListInvoicingAuditEvents(db, "profile_logo", 0)
+	events, err := data_models.ListInvoicingAuditEvents(db, 42, "profile_logo", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestInvoicingLogo_PrintedOnIssueAndFrozenInTheStoredPDF(t *testing.T) {
 			t.Errorf("the issued PDF has no %s", want)
 		}
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "invoice", id)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "invoice", id)
 	if !strings.Contains(events[0].Details, fmt.Sprintf(`"logo_sha256":%q`, logo.SHA256)) {
 		t.Errorf("the issue audit does not record the logo's hash: %s", events[0].Details)
 	}

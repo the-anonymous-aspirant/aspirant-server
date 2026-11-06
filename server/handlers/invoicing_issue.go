@@ -117,7 +117,7 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 		return nil, nil, g, err
 	}
 
-	latest, err := data_models.LatestIssueDate(tx)
+	latest, err := data_models.LatestIssueDate(tx, owner)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -224,7 +224,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 			"the issuer profile needs a name, an address and a Steuernummer before an invoice can be issued"))
 		return
 	}
-	inv, err := data_models.GetInvoicingInvoice(tx, id)
+	inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
@@ -342,7 +342,7 @@ func CancelInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "cancelling invoice", err)
 		return
 	}
-	inv, err := data_models.GetInvoicingInvoice(tx, id)
+	inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "cancelling invoice", err)
 		return

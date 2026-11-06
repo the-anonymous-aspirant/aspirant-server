@@ -233,7 +233,7 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	// the server: it must read one past the highest number issued, so the
 	// sequence stays gap-free and unique (spec §5). A new prefix may start
 	// wherever an earlier, outside sequence left off (spec §8 Q3).
-	issuedUnderPrefix, err := data_models.CountInvoicesWithPrefix(tx, p.InvoiceNumberPrefix)
+	issuedUnderPrefix, err := data_models.CountInvoicesWithPrefix(tx, userID, p.InvoiceNumberPrefix)
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error counting invoices for prefix %q: %v", p.InvoiceNumberPrefix, err)
@@ -241,7 +241,7 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		return
 	}
 	if issuedUnderPrefix > 0 {
-		maxNumber, err := data_models.MaxInvoiceNumberWithPrefix(tx, p.InvoiceNumberPrefix)
+		maxNumber, err := data_models.MaxInvoiceNumberWithPrefix(tx, userID, p.InvoiceNumberPrefix)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error reading max invoice number for prefix %q: %v", p.InvoiceNumberPrefix, err)
@@ -448,7 +448,7 @@ func ListInvoicingAuditEventsHandler(c *gin.Context) {
 		}
 		entityID = uint(v)
 	}
-	events, err := data_models.ListInvoicingAuditEvents(db, c.Query("entity_type"), entityID)
+	events, err := data_models.ListInvoicingAuditEvents(db, invoicingUserID(c), c.Query("entity_type"), entityID)
 	if err != nil {
 		log.Printf("Error listing invoicing audit events: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing audit events")

@@ -82,10 +82,11 @@ type InvoicingInvoicePayment struct {
 
 func (InvoicingInvoicePayment) TableName() string { return "invoicing_invoice_payments" }
 
-// GetInvoicingInvoice returns the invoice, or nil when the id is unknown.
-func GetInvoicingInvoice(db *gorm.DB, id uint) (*InvoicingInvoice, error) {
+// GetInvoicingInvoice returns the owner's invoice, or nil when the id is
+// unknown or belongs to another book.
+func GetInvoicingInvoice(db *gorm.DB, owner, id uint) (*InvoicingInvoice, error) {
 	var inv InvoicingInvoice
-	err := db.Where("id = ?", id).First(&inv).Error
+	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&inv).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
@@ -126,10 +127,11 @@ func IssuedInvoiceForPayment(db *gorm.DB, paymentID, exceptInvoiceID uint) (uint
 }
 
 // LatestIssueDate returns the most recent issue date among issued and
-// cancelled invoices (a cancelled invoice was issued too), or nil.
-func LatestIssueDate(db *gorm.DB) (*time.Time, error) {
+// cancelled invoices (a cancelled invoice was issued too) in the owner's
+// book, or nil.
+func LatestIssueDate(db *gorm.DB, owner uint) (*time.Time, error) {
 	var inv InvoicingInvoice
-	err := db.Where("issue_date IS NOT NULL").Order("issue_date desc").First(&inv).Error
+	err := db.Where("owner_user_id = ? AND issue_date IS NOT NULL", owner).Order("issue_date desc").First(&inv).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
@@ -140,18 +142,19 @@ func LatestIssueDate(db *gorm.DB) (*time.Time, error) {
 }
 
 // CountInvoicesWithPrefix counts invoices that ever received a number under
-// the prefix (issued or cancelled).
-func CountInvoicesWithPrefix(db *gorm.DB, prefix string) (int, error) {
+// the prefix (issued or cancelled) in the owner's book.
+func CountInvoicesWithPrefix(db *gorm.DB, owner uint, prefix string) (int, error) {
 	var n int
-	err := db.Model(&InvoicingInvoice{}).Where("prefix = ? AND number IS NOT NULL", prefix).Count(&n).Error
+	err := db.Model(&InvoicingInvoice{}).Where("owner_user_id = ? AND prefix = ? AND number IS NOT NULL", owner, prefix).Count(&n).Error
 	return n, err
 }
 
 // MaxInvoiceNumberWithPrefix returns the highest number issued under the
-// prefix, or 0.
-func MaxInvoiceNumberWithPrefix(db *gorm.DB, prefix string) (int, error) {
+// prefix in the owner's book, or 0. Each book numbers on its own, so the
+// owner's first invoice is <prefix>-1 whatever another book holds.
+func MaxInvoiceNumberWithPrefix(db *gorm.DB, owner uint, prefix string) (int, error) {
 	var rows []struct{ N *int }
-	err := db.Model(&InvoicingInvoice{}).Select("MAX(number) AS n").Where("prefix = ? AND number IS NOT NULL", prefix).Scan(&rows).Error
+	err := db.Model(&InvoicingInvoice{}).Select("MAX(number) AS n").Where("owner_user_id = ? AND prefix = ? AND number IS NOT NULL", owner, prefix).Scan(&rows).Error
 	if err != nil || len(rows) == 0 || rows[0].N == nil {
 		return 0, err
 	}
