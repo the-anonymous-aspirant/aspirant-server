@@ -410,6 +410,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.POST("/invoices/:id/cancel", handlers.CancelInvoiceHandler)
 		invoicing.GET("/invoices/:id/pdf", handlers.GetInvoicePDFHandler)
 		invoicing.GET("/export/invoices.csv", handlers.ExportAllInvoicesCSVHandler)
+		invoicing.GET("/export/clients.csv", handlers.ExportClientsCSVHandler)
 		invoicing.GET("/export/invoices.zip", handlers.ExportInvoicesZipHandler)
 		invoicing.GET("/export/invoices-merged.pdf", handlers.ExportInvoicesMergedPDFHandler)
 		invoicing.GET("/validation", handlers.GetInvoicingValidationHandler)
