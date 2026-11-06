@@ -110,7 +110,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	tx := db.Begin()
 	// The import's duplicate checks against hand-entered PayPal payments run
 	// under the issuing lock, like a hand entry's (#8409 security F2).
-	if _, err := lockIssuing(tx); err != nil {
+	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for a payment import: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
@@ -317,7 +317,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 			// issuing lock makes this check and an issue run one at a
 			// time, so a payment cannot change category while an issue
 			// that covers it is in flight.
-			if _, err := lockIssuing(tx); err != nil {
+			if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 				tx.Rollback()
 				log.Printf("Error locking for payment %d: %v", id, err)
 				RespondWithError(c, http.StatusInternalServerError, "Error updating payment")
@@ -346,7 +346,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 			return
 		}
 		if cid != nil {
-			cl, err := data_models.GetInvoicingClient(tx, *cid)
+			cl, err := data_models.GetInvoicingClient(tx, invoicingUserID(c), *cid)
 			if err != nil {
 				tx.Rollback()
 				log.Printf("Error reading client %d: %v", *cid, err)

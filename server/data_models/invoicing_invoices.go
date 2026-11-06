@@ -20,6 +20,7 @@ const (
 // snapshots stay empty until issue and never change after it.
 type InvoicingInvoice struct {
 	ID              uint       `json:"id" gorm:"primary_key"`
+	OwnerUserID     uint       `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_invoices_owner_number"`
 	Status          string     `json:"status" gorm:"type:text;not null;default:'draft';index"`
 	ClientID        *uint      `json:"client_id"`
 	ServiceDateFrom *time.Time `json:"service_date_from" gorm:"type:date"`
@@ -30,7 +31,7 @@ type InvoicingInvoice struct {
 	Currency        string     `json:"currency" gorm:"type:text;not null;default:'EUR'"`
 	Prefix          string     `json:"prefix" gorm:"type:text;not null;default:''"`
 	Number          *int       `json:"number"`
-	InvoiceNumber   *string    `json:"invoice_number" gorm:"type:text;unique_index:idx_invoicing_invoices_number"`
+	InvoiceNumber   *string    `json:"invoice_number" gorm:"type:text;unique_index:idx_invoicing_invoices_owner_number"`
 	IssueDate       *time.Time `json:"issue_date" gorm:"type:date"`
 	NetCents        int64      `json:"net_cents" gorm:"not null;default:0"`
 	VatCents        int64      `json:"vat_cents" gorm:"not null;default:0"`

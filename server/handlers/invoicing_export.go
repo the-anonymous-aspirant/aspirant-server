@@ -114,14 +114,14 @@ func serveCSV(c *gin.Context, db *gorm.DB, filename string, content []byte, deta
 
 // clientNameFor prefers the name frozen at issue, so an export shows what
 // the invoice says, not what the client row says today.
-func clientNameFor(db *gorm.DB, inv data_models.InvoicingInvoice) (string, string, error) {
+func clientNameFor(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice) (string, string, error) {
 	if snap, ok := decodeClientSnapshot(inv.ClientSnapshot); ok {
 		return snap.Name, snap.Address, nil
 	}
 	if inv.ClientID == nil {
 		return "", "", nil
 	}
-	cl, err := data_models.GetInvoicingClient(db, *inv.ClientID)
+	cl, err := data_models.GetInvoicingClient(db, owner, *inv.ClientID)
 	if err != nil || cl == nil {
 		return "", "", err
 	}
@@ -147,7 +147,7 @@ func ExportAllInvoicesCSVHandler(c *gin.Context) {
 	}
 	rows := make([][]string, 0, len(invs))
 	for _, inv := range invs {
-		row, err := invoiceCSVRow(db, inv)
+		row, err := invoiceCSVRow(db, invoicingUserID(c), inv)
 		if err != nil {
 			respondInvoicingInternal(c, nil, "exporting invoices", err)
 			return
@@ -162,8 +162,8 @@ func ExportAllInvoicesCSVHandler(c *gin.Context) {
 	serveCSV(c, db, exportFilename("Rechnungen", "csv"), content, gin.H{"kind": "invoices_csv", "invoices": len(rows)})
 }
 
-func invoiceCSVRow(db *gorm.DB, inv data_models.InvoicingInvoice) ([]string, error) {
-	name, address, err := clientNameFor(db, inv)
+func invoiceCSVRow(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice) ([]string, error) {
+	name, address, err := clientNameFor(db, owner, inv)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func clientsCSVStamp(t time.Time) string {
 // no validation gate: a client list has no integrity rules to check.
 func ExportClientsCSVHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	clients, err := data_models.ListInvoicingClients(db)
+	clients, err := data_models.ListInvoicingClients(db, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, nil, "exporting clients", err)
 		return

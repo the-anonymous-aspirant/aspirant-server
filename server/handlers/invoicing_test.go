@@ -312,7 +312,7 @@ func TestInvoicingClients_NotesRoundTripAndAreBounded(t *testing.T) {
 	if w := invoicingDo(r, "PUT", path, `{"name":"Anna","notes":"Second session booked."}`); w.Code != http.StatusOK {
 		t.Fatalf("PUT notes: got %d: %s", w.Code, w.Body.String())
 	}
-	got, _ := data_models.GetInvoicingClient(db, created.Client.ID)
+	got, _ := data_models.GetInvoicingClient(db, 7, created.Client.ID)
 	if got == nil || got.Notes != "Second session booked." {
 		t.Fatalf("after PUT: %+v", got)
 	}
@@ -320,7 +320,7 @@ func TestInvoicingClients_NotesRoundTripAndAreBounded(t *testing.T) {
 	if w := invoicingDo(r, "PUT", path, `{"name":"Anna"}`); w.Code != http.StatusOK {
 		t.Fatalf("PUT without notes: got %d: %s", w.Code, w.Body.String())
 	}
-	got, _ = data_models.GetInvoicingClient(db, created.Client.ID)
+	got, _ = data_models.GetInvoicingClient(db, 7, created.Client.ID)
 	if got.Notes != "" {
 		t.Errorf("notes after a PUT without them: %q, want empty", got.Notes)
 	}

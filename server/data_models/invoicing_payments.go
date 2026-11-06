@@ -65,12 +65,14 @@ var PaymentMethodLabels = map[string]string{
 var PaymentMethods = []string{"bank_transfer", "paypal", "stripe", "cash", "other"}
 
 // InvoicingPayment is one received payment or bank withdrawal, imported or
-// entered by hand. (Source, TransactionID) is unique, which is what makes
-// re-uploading a file a no-op.
+// entered by hand. (OwnerUserID, Source, TransactionID) is unique, which is
+// what makes re-uploading a file a no-op within one book while another book
+// can import the same file in full (system_3 #10054).
 type InvoicingPayment struct {
 	ID             uint      `json:"id" gorm:"primary_key"`
-	Source         string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payments_source_txn"`
-	TransactionID  string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payments_source_txn"`
+	OwnerUserID    uint      `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_payments_owner_source_txn"`
+	Source         string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payments_owner_source_txn"`
+	TransactionID  string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payments_owner_source_txn"`
 	ReferenceTxnID string    `json:"reference_txn_id" gorm:"type:text;not null;default:''"`
 	Kind           string    `json:"kind" gorm:"type:text;not null"`
 	PaidOn         time.Time `json:"paid_on" gorm:"type:date;not null"`
@@ -217,8 +219,9 @@ func InvoicingPaymentExists(db *gorm.DB, source, transactionID string) (bool, er
 // the very check that reads it.
 type InvoicingPaymentTombstone struct {
 	ID            uint      `json:"id" gorm:"primary_key"`
-	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
-	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
+	OwnerUserID   uint      `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_payment_tombstone_owner"`
+	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone_owner"`
+	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone_owner"`
 	DeletedOn     time.Time `json:"deleted_on" gorm:"not null"`
 	DeletedBy     uint      `json:"deleted_by" gorm:"not null"`
 }

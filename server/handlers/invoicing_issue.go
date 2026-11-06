@@ -40,12 +40,12 @@ func dateOnly(t time.Time) time.Time {
 
 // checkIssuable runs every guardrail that does not depend on the number. It
 // returns the profile and client to snapshot.
-func checkIssuable(tx *gorm.DB, inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem, issueDate time.Time) (*data_models.InvoicingProfile, *data_models.InvoicingClient, *invoicingGuardError, error) {
+func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem, issueDate time.Time) (*data_models.InvoicingProfile, *data_models.InvoicingClient, *invoicingGuardError, error) {
 	if inv.Status != data_models.InvoiceStatusDraft {
 		return nil, nil, guard(http.StatusConflict, "not_a_draft", "invoice %d is already %s", inv.ID, inv.Status), nil
 	}
 
-	profile, err := data_models.GetInvoicingProfile(tx)
+	profile, err := data_models.GetInvoicingProfile(tx, owner)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -57,7 +57,7 @@ func checkIssuable(tx *gorm.DB, inv *data_models.InvoicingInvoice, items []data_
 	if inv.ClientID == nil {
 		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the invoice has no client"), nil
 	}
-	client, err := data_models.GetInvoicingClient(tx, *inv.ClientID)
+	client, err := data_models.GetInvoicingClient(tx, owner, *inv.ClientID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -135,8 +135,8 @@ func checkIssuable(tx *gorm.DB, inv *data_models.InvoicingInvoice, items []data_
 // draft could be issued twice or one payment land on two invoices
 // (@security F1, c51467 on #8371). The reads after the lock see every
 // committed issue. It reports whether the profile row exists.
-func lockIssuing(tx *gorm.DB) (bool, error) {
-	res := tx.Model(&data_models.InvoicingProfile{}).Where("id = ?", 1).
+func lockIssuing(tx *gorm.DB, owner uint) (bool, error) {
+	res := tx.Model(&data_models.InvoicingProfile{}).Where("owner_user_id = ?", owner).
 		UpdateColumn("next_invoice_number", gorm.Expr("next_invoice_number"))
 	return res.RowsAffected == 1, res.Error
 }
@@ -156,8 +156,8 @@ func lockInvoiceRow(tx *gorm.DB, id uint) (bool, error) {
 // Postgres, so a concurrent issue waits for this transaction and then reads
 // the advanced counter: two issues cannot draw the same number. A rollback
 // rolls the counter back too, so a refused issue leaves no gap.
-func nextInvoiceNumber(tx *gorm.DB) (int, error) {
-	res := tx.Model(&data_models.InvoicingProfile{}).Where("id = ?", 1).
+func nextInvoiceNumber(tx *gorm.DB, owner uint) (int, error) {
+	res := tx.Model(&data_models.InvoicingProfile{}).Where("owner_user_id = ?", owner).
 		UpdateColumn("next_invoice_number", gorm.Expr("next_invoice_number + 1"))
 	if res.Error != nil {
 		return 0, res.Error
@@ -166,7 +166,7 @@ func nextInvoiceNumber(tx *gorm.DB) (int, error) {
 		return 0, fmt.Errorf("issuer profile row missing")
 	}
 	var p data_models.InvoicingProfile
-	if err := tx.Where("id = ?", 1).First(&p).Error; err != nil {
+	if err := tx.Where("owner_user_id = ?", owner).First(&p).Error; err != nil {
 		return 0, err
 	}
 	return p.NextInvoiceNumber - 1, nil
@@ -200,7 +200,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 	tx := db.Begin()
 	// Locks first, reads after: profile row (serialises all issues), then
 	// this invoice's row. Every check below reads committed state.
-	hasProfile, err := lockIssuing(tx)
+	hasProfile, err := lockIssuing(tx, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
@@ -230,7 +230,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
 	}
-	profile, client, g, err := checkIssuable(tx, inv, items, issueDate)
+	profile, client, g, err := checkIssuable(tx, invoicingUserID(c), inv, items, issueDate)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
@@ -240,7 +240,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		return
 	}
 
-	number, err := nextInvoiceNumber(tx)
+	number, err := nextInvoiceNumber(tx, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
@@ -284,7 +284,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 	// The PDF is rendered from the snapshots just frozen and stored in the
 	// same transaction: an issued invoice always has its document, and a
 	// render failure leaves the draft (and the number) untouched.
-	logo, logoSHA, err := invoiceLogo(tx)
+	logo, logoSHA, err := invoiceLogo(tx, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, tx, "loading the logo", err)
 		return
@@ -308,7 +308,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "issuing invoice", err)
 		return
 	}
-	detail, err := loadInvoiceDetail(db, *inv)
+	detail, err := loadInvoiceDetail(db, invoicingUserID(c), *inv)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return
@@ -378,7 +378,7 @@ func CancelInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "cancelling invoice", err)
 		return
 	}
-	detail, err := loadInvoiceDetail(db, *inv)
+	detail, err := loadInvoiceDetail(db, invoicingUserID(c), *inv)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return

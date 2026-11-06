@@ -11,19 +11,23 @@ import (
 // The invoicing app (system_3 #8367) issues retroactive German invoices for a
 // single freelance user. Its tables are prefixed invoicing_ and share nothing
 // with the retired finance service (operator decision 1, c51421): this is a
-// third party's personal and financial data, kept apart by design. Like the
-// Pappas logs it carries no owner column — the log is one user's, and that is
-// enforced by the route gate in routes.go, not by the schema.
+// third party's personal and financial data, kept apart by design.
+//
+// Each signed-in user keeps their own book (system_3 #10054, operator c62279:
+// "a separate book per user"): every root row carries OwnerUserID, the user
+// who made it, and every read is scoped to the signed-in user, so an Admin
+// testing the app never shows up in the owner's book. Rows from before the
+// column existed have owner 0, which no login has. The route gate in
+// routes.go still decides who may open the app at all.
 
-// invoicingProfileID is the fixed primary key of the single issuer-profile row.
-const invoicingProfileID = 1
-
-// InvoicingProfile is the issuer header printed on every invoice. One row.
+// InvoicingProfile is the issuer header printed on every invoice. One row per
+// owner.
 // NextInvoiceNumber is the counter issuing draws from; it stays editable only
 // until the first invoice under the current prefix is issued (enforced by the
 // issue path), so a sequence started elsewhere can be continued.
 type InvoicingProfile struct {
 	ID           uint   `json:"-" gorm:"primary_key"`
+	OwnerUserID  uint   `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_profiles_owner"`
 	FullName     string `json:"full_name" gorm:"type:text;not null;default:''"`
 	Address      string `json:"address" gorm:"type:text;not null;default:''"`
 	Steuernummer string `json:"steuernummer" gorm:"type:text;not null;default:''"`
@@ -48,17 +52,17 @@ func (InvoicingProfile) TableName() string { return "invoicing_profiles" }
 // DefaultInvoicingProfile is what GET returns before anyone has saved a profile.
 func DefaultInvoicingProfile() InvoicingProfile {
 	return InvoicingProfile{
-		ID:                  invoicingProfileID,
 		IsKleinunternehmer:  true,
 		InvoiceNumberPrefix: time.Now().In(BerlinLocation()).Format("2006"),
 		NextInvoiceNumber:   1,
 	}
 }
 
-// GetInvoicingProfile returns the saved profile, or nil when none exists yet.
-func GetInvoicingProfile(db *gorm.DB) (*InvoicingProfile, error) {
+// GetInvoicingProfile returns the owner's saved profile, or nil when they have
+// none yet.
+func GetInvoicingProfile(db *gorm.DB, owner uint) (*InvoicingProfile, error) {
 	var p InvoicingProfile
-	err := db.Where("id = ?", invoicingProfileID).First(&p).Error
+	err := db.Where("owner_user_id = ?", owner).First(&p).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
@@ -68,9 +72,18 @@ func GetInvoicingProfile(db *gorm.DB) (*InvoicingProfile, error) {
 	return &p, nil
 }
 
-// SaveInvoicingProfile upserts the single profile row.
+// SaveInvoicingProfile upserts the owner's profile row. The signed-in user is
+// both the owner and the editor.
 func SaveInvoicingProfile(db *gorm.DB, p *InvoicingProfile, userID uint) error {
-	p.ID = invoicingProfileID
+	existing, err := GetInvoicingProfile(db, userID)
+	if err != nil {
+		return err
+	}
+	p.ID = 0
+	if existing != nil {
+		p.ID = existing.ID
+	}
+	p.OwnerUserID = userID
 	p.UpdatedAt = time.Now().UTC()
 	p.UpdatedBy = userID
 	return db.Save(p).Error
@@ -80,6 +93,7 @@ func SaveInvoicingProfile(db *gorm.DB, p *InvoicingProfile, userID uint) error {
 // payments to the client.
 type InvoicingClient struct {
 	ID          uint   `json:"id" gorm:"primary_key"`
+	OwnerUserID uint   `json:"-" gorm:"column:owner_user_id;not null;default:0;index"`
 	Name        string `json:"name" gorm:"type:text;not null"`
 	Address     string `json:"address" gorm:"type:text;not null;default:''"`
 	Email       string `json:"email" gorm:"type:text;not null;default:''"`
@@ -135,16 +149,18 @@ func InvoiceNeedsRecipientAddress(totalCents int64, currency string) bool {
 	return totalCents > KleinbetragLimitCents
 }
 
-func ListInvoicingClients(db *gorm.DB) ([]InvoicingClient, error) {
+// ListInvoicingClients is the owner's clients.
+func ListInvoicingClients(db *gorm.DB, owner uint) ([]InvoicingClient, error) {
 	var clients []InvoicingClient
-	err := db.Order("name asc, id asc").Find(&clients).Error
+	err := db.Where("owner_user_id = ?", owner).Order("name asc, id asc").Find(&clients).Error
 	return clients, err
 }
 
-// GetInvoicingClient returns the client, or nil when the id is unknown.
-func GetInvoicingClient(db *gorm.DB, id uint) (*InvoicingClient, error) {
+// GetInvoicingClient returns the owner's client, or nil when the id is unknown
+// or belongs to someone else: another book's client does not exist here.
+func GetInvoicingClient(db *gorm.DB, owner, id uint) (*InvoicingClient, error) {
 	var cl InvoicingClient
-	err := db.Where("id = ?", id).First(&cl).Error
+	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&cl).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}

@@ -206,6 +206,11 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.InvoicingPaymentTombstone{}) // #10009: deleted payments stay out of re-imports
 	db.AutoMigrate(&data_models.InvoicingInvoicePDF{})
 	db.AutoMigrate(&data_models.InvoicingProfileLogo{}) // #9858: the issuer's logo
+	// #10054: a book per user. The tags above create the per-owner unique
+	// indexes; this drops the shared-book ones AutoMigrate leaves behind.
+	if err := data_models.EnsureInvoicingOwnerIndexes(db); err != nil {
+		log.Printf("invoicing owner indexes: %v", err)
+	}
 
 	// Step 5b: Bootstrap marker (#5264). One row, fixed primary key, recording
 	// that this deployment has been set up — so public admin creation can never
