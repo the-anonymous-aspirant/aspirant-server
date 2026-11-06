@@ -190,3 +190,53 @@ func decodeClientSnapshot(s string) (data_models.InvoicingClient, bool) {
 	}
 	return cl, true
 }
+
+var clientsCSVHeader = []string{
+	"Name", "Adresse", "E-Mail", "PayPal-E-Mail", "Telefon", "Instagram", "Telegram", "Angelegt am", "Geändert am",
+}
+
+// clientsCSVStampLayout prints a moment as the export's ISO day plus the
+// time, in Berlin (the invoicing app's calendar, spec §6).
+const clientsCSVStampLayout = "2006-01-02 15:04"
+
+func clientsCSVStamp(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.In(data_models.BerlinLocation()).Format(clientsCSVStampLayout)
+}
+
+// ExportClientsCSVHandler exports her client list, one row per client in
+// name order (system_3 #10012, from #9978, operator c61628). Her notes are
+// never a column: they are hers alone, never on an invoice or an export
+// (#9978 decision 1, #9962). Every text cell goes through spreadsheetSafe,
+// so a phone like "+49 …" is written as "'+49 …" and stays text. There is
+// no validation gate: a client list has no integrity rules to check.
+func ExportClientsCSVHandler(c *gin.Context) {
+	db := c.MustGet("db").(*gorm.DB)
+	clients, err := data_models.ListInvoicingClients(db)
+	if err != nil {
+		respondInvoicingInternal(c, nil, "exporting clients", err)
+		return
+	}
+	rows := make([][]string, 0, len(clients))
+	for _, cl := range clients {
+		rows = append(rows, []string{
+			spreadsheetSafe(cl.Name),
+			spreadsheetSafe(strings.ReplaceAll(cl.Address, "\n", ", ")),
+			spreadsheetSafe(cl.Email),
+			spreadsheetSafe(cl.PayPalEmail),
+			spreadsheetSafe(cl.Phone),
+			spreadsheetSafe(cl.InstagramURL),
+			spreadsheetSafe(cl.TelegramURL),
+			clientsCSVStamp(cl.CreatedAt),
+			clientsCSVStamp(cl.UpdatedAt),
+		})
+	}
+	content, err := writeCSV(clientsCSVHeader, rows)
+	if err != nil {
+		respondInvoicingInternal(c, nil, "exporting clients", err)
+		return
+	}
+	serveCSV(c, db, "Kunden.csv", content, gin.H{"kind": "clients_csv", "clients": len(rows)})
+}
