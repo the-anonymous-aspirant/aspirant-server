@@ -213,7 +213,7 @@ func TestPatchPayment_CategoryAndClient(t *testing.T) {
 	if w := invoicingDo(r, "PATCH", path, `{"client_id":null}`); w.Code != http.StatusOK {
 		t.Fatalf("clear client: %d %s", w.Code, w.Body.String())
 	}
-	after, _ := data_models.GetInvoicingPayment(db, p.ID)
+	after, _ := data_models.GetInvoicingPayment(db, 5, p.ID)
 	if after.ClientID != nil || after.Category != "paid_work" {
 		t.Errorf("partial patch: %+v", after)
 	}

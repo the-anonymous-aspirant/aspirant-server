@@ -418,10 +418,10 @@ func detectN26Document(text string) (n26Strategy, bool) {
 // flagN26Candidates marks candidates already stored under their id, or
 // colliding on date+amount with any stored payment (the statement-overlaps-
 // confirmation case, and manual entries of the same transfer).
-func flagN26Candidates(db *gorm.DB, cands []n26Candidate) error {
+func flagN26Candidates(db *gorm.DB, owner uint, cands []n26Candidate) error {
 	for i := range cands {
 		c := &cands[i]
-		exists, err := data_models.InvoicingPaymentSeen(db, invoicingPaymentSourceN26, c.TransactionID)
+		exists, err := data_models.InvoicingPaymentSeen(db, owner, invoicingPaymentSourceN26, c.TransactionID)
 		if err != nil {
 			return err
 		}
@@ -434,7 +434,7 @@ func flagN26Candidates(db *gorm.DB, cands []n26Candidate) error {
 			return err
 		}
 		var twin data_models.InvoicingPayment
-		err = db.Where("paid_on = ? AND gross_cents = ?", paidOn, c.GrossCents).
+		err = db.Where("owner_user_id = ? AND paid_on = ? AND gross_cents = ?", owner, paidOn, c.GrossCents).
 			Order("id asc").First(&twin).Error
 		if err == gorm.ErrRecordNotFound {
 			continue
@@ -514,7 +514,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 			continue
 		}
 		cands, entry.Skipped = dropPayPalTransfers(cands)
-		if err := flagN26Candidates(db, cands); err != nil {
+		if err := flagN26Candidates(db, invoicingUserID(c), cands); err != nil {
 			log.Printf("N26 import: flagging candidates of %q: %v", fh.Filename, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error checking candidates against stored payments")
 			return
@@ -641,7 +641,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			continue
 		}
 		seen[v.row.TransactionID] = true
-		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingPaymentSourceN26, v.row.TransactionID)
+		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingUserID(c), invoicingPaymentSourceN26, v.row.TransactionID)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking N26 payment %s: %v", v.row.TransactionID, err)
@@ -653,6 +653,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			continue
 		}
 		p := data_models.InvoicingPayment{
+			OwnerUserID:   invoicingUserID(c),
 			Source:        invoicingPaymentSourceN26,
 			TransactionID: v.row.TransactionID,
 			Kind:          data_models.PaymentKindIncoming,

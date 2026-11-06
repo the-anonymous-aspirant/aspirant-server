@@ -113,7 +113,7 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 	for _, p := range payments {
 		ids = append(ids, p.ID)
 	}
-	if _, g, err := checkInvoiceablePayments(tx, ids, inv.ID); err != nil || g != nil {
+	if _, g, err := checkInvoiceablePayments(tx, owner, ids, inv.ID); err != nil || g != nil {
 		return nil, nil, g, err
 	}
 

@@ -74,7 +74,8 @@ func newInvoiceFixture(t *testing.T) *invoiceFixture {
 	for i, cat := range []string{"paid_work", "paid_work", "paid_work", "gift"} {
 		cid := cl.Client.ID
 		p := data_models.InvoicingPayment{
-			Source: "paypal", TransactionID: fmt.Sprintf("TX%d", i+1), Kind: "incoming",
+			OwnerUserID: invoiceFixtureUser,
+			Source:      "paypal", TransactionID: fmt.Sprintf("TX%d", i+1), Kind: "incoming",
 			PaidOn: time.Date(2026, 7, 10+i, 0, 0, 0, 0, time.UTC), Currency: "EUR",
 			GrossCents: int64(10000 * (i + 1)), Note: fmt.Sprintf("Work %d", i+1), Category: cat, ClientID: &cid,
 		}
