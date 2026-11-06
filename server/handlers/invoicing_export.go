@@ -94,6 +94,15 @@ func runExportValidation(c *gin.Context, db *gorm.DB) bool {
 	return true
 }
 
+// exportFilename names an export with the time it was made, in Europe/Berlin
+// (the app's calendar, spec §6), as <base>-YYYY-MM-DD-HHMM.<ext>. Every export
+// used to carry one fixed name, so an older download and a newer one could not
+// be told apart in the Downloads folder (system_3 #9990, from #9964). There
+// is no colon, so the name is valid on every OS.
+func exportFilename(base, ext string) string {
+	return base + "-" + invoicingNow().In(data_models.BerlinLocation()).Format("2006-01-02-1504") + "." + ext
+}
+
 func serveCSV(c *gin.Context, db *gorm.DB, filename string, content []byte, details gin.H) {
 	if err := data_models.RecordInvoicingAuditEvent(db, invoicingUserID(c), invoicingActionExport, invoicingEntityExport, 0, auditDetails(details)); err != nil {
 		respondInvoicingInternal(c, nil, "recording the export", err)
@@ -150,7 +159,7 @@ func ExportAllInvoicesCSVHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "exporting invoices", err)
 		return
 	}
-	serveCSV(c, db, "Rechnungen.csv", content, gin.H{"kind": "invoices_csv", "invoices": len(rows)})
+	serveCSV(c, db, exportFilename("Rechnungen", "csv"), content, gin.H{"kind": "invoices_csv", "invoices": len(rows)})
 }
 
 func invoiceCSVRow(db *gorm.DB, inv data_models.InvoicingInvoice) ([]string, error) {
@@ -238,5 +247,5 @@ func ExportClientsCSVHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "exporting clients", err)
 		return
 	}
-	serveCSV(c, db, "Kunden.csv", content, gin.H{"kind": "clients_csv", "clients": len(rows)})
+	serveCSV(c, db, exportFilename("Kunden", "csv"), content, gin.H{"kind": "clients_csv", "clients": len(rows)})
 }

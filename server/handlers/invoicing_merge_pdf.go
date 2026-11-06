@@ -27,9 +27,11 @@ import (
 // reason rather than being silently skipped, so a stale client can never get
 // a shorter file than it asked for (ack D13).
 
-const invoicesMergedPDFFilename = "Rechnungen.pdf"
+// invoicesMergedPDFBase is the merged PDF's name before exportFilename adds
+// the export time.
+const invoicesMergedPDFBase = "Rechnungen"
 
-// ExportInvoicesMergedPDFHandler serves Rechnungen.pdf: the comma-separated
+// ExportInvoicesMergedPDFHandler serves Rechnungen-<export time>.pdf: the comma-separated
 // invoice ids in ?ids= are fetched, ordered by (prefix, number) ascending,
 // and their stored PDF pages are concatenated into one document.
 func ExportInvoicesMergedPDFHandler(c *gin.Context) {
@@ -76,7 +78,7 @@ func ExportInvoicesMergedPDFHandler(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Disposition", `attachment; filename="`+invoicesMergedPDFFilename+`"`)
+	c.Header("Content-Disposition", `attachment; filename="`+exportFilename(invoicesMergedPDFBase, "pdf")+`"`)
 	c.Data(http.StatusOK, "application/pdf", pdf.GetBytesPdf())
 }
 
