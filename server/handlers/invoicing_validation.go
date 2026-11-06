@@ -36,14 +36,14 @@ type validationReport struct {
 
 // validateInvoicing runs every §5 check over the numbered (issued and
 // cancelled) invoices.
-func validateInvoicing(db *gorm.DB) (*validationReport, error) {
+func validateInvoicing(db *gorm.DB, owner uint) (*validationReport, error) {
 	rep := &validationReport{Violations: []validationItem{}, Warnings: []validationItem{}}
 	add := func(code string, invID, payID uint, format string, args ...interface{}) {
 		rep.Violations = append(rep.Violations, validationItem{code, invID, payID, fmt.Sprintf(format, args...)})
 	}
 
 	var numbered []data_models.InvoicingInvoice
-	if err := db.Where("number IS NOT NULL").Order("prefix asc, number asc, id asc").Find(&numbered).Error; err != nil {
+	if err := db.Where("owner_user_id = ? AND number IS NOT NULL", owner).Order("prefix asc, number asc, id asc").Find(&numbered).Error; err != nil {
 		return nil, err
 	}
 	today := berlinToday()
@@ -207,7 +207,7 @@ func categoryLabel(c string) string {
 // GetInvoicingValidationHandler serves the §5 report.
 func GetInvoicingValidationHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	rep, err := validateInvoicing(db)
+	rep, err := validateInvoicing(db, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, nil, "validating invoices", err)
 		return

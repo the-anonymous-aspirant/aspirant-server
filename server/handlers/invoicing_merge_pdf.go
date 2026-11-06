@@ -44,7 +44,7 @@ func ExportInvoicesMergedPDFHandler(c *gin.Context) {
 		return
 	}
 
-	invoices, gerr := invoicesForMerge(db, ids)
+	invoices, gerr := invoicesForMerge(db, invoicingUserID(c), ids)
 	if gerr != nil {
 		respondGuard(c, nil, gerr)
 		return
@@ -88,9 +88,9 @@ func ExportInvoicesMergedPDFHandler(c *gin.Context) {
 // against the list"). It refuses the whole request, rather than silently
 // dropping a row, on the first id that does not exist or is not issued, so
 // a stale client can never get a shorter file than it asked for (ack D13).
-func invoicesForMerge(db *gorm.DB, ids []uint) ([]data_models.InvoicingInvoice, *invoicingGuardError) {
+func invoicesForMerge(db *gorm.DB, owner uint, ids []uint) ([]data_models.InvoicingInvoice, *invoicingGuardError) {
 	var invoices []data_models.InvoicingInvoice
-	if err := db.Where("id IN (?)", ids).Order("prefix asc, number asc").Find(&invoices).Error; err != nil {
+	if err := db.Where("owner_user_id = ? AND id IN (?)", owner, ids).Order("prefix asc, number asc").Find(&invoices).Error; err != nil {
 		return nil, guard(http.StatusInternalServerError, "lookup_failed", "%v", err)
 	}
 	byID := make(map[uint]data_models.InvoicingInvoice, len(invoices))

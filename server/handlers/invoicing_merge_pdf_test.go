@@ -104,11 +104,11 @@ func TestInvoicesForMerge_OrdersByInvoiceNumberNotRequestOrder(t *testing.T) {
 		t.Fatalf("issue 2: %d %s", code, body)
 	}
 
-	forward, gerr := invoicesForMerge(f.db, []uint{id1, id2})
+	forward, gerr := invoicesForMerge(f.db, invoiceFixtureUser, []uint{id1, id2})
 	if gerr != nil {
 		t.Fatalf("forward: %v", gerr)
 	}
-	reverse, gerr := invoicesForMerge(f.db, []uint{id2, id1})
+	reverse, gerr := invoicesForMerge(f.db, invoiceFixtureUser, []uint{id2, id1})
 	if gerr != nil {
 		t.Fatalf("reverse: %v", gerr)
 	}

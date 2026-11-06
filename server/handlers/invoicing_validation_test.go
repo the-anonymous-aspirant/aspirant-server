@@ -211,7 +211,7 @@ func TestExport_AllInvoicesCSV(t *testing.T) {
 	if rows[2][1] != "cancelled" || rows[2][13] != "Storno" || rows[2][12] == "" {
 		t.Errorf("cancelled row: %v", rows[2])
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "export", 0)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "export", 0)
 	if len(events) != 1 || events[0].Action != "export" {
 		t.Errorf("export audit: %+v", events)
 	}
@@ -301,7 +301,7 @@ func TestExport_InvoicesZip(t *testing.T) {
 
 	// Issued invoices 1 and 3 (2 was cancelled), byte for byte as stored.
 	for i, id := range []uint{ids[0], ids[2]} {
-		inv, _ := data_models.GetInvoicingInvoice(f.db, id)
+		inv, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 		stored, _ := data_models.GetInvoicePDF(f.db, id)
 		got, ok := files["Rechnung-"+*inv.InvoiceNumber+".pdf"]
 		if !ok || !bytes.Equal(got, stored.Content) {
@@ -318,7 +318,7 @@ func TestExport_InvoicesZip(t *testing.T) {
 		}
 		t.Errorf("ZIP holds %v, want the 2 issued PDFs only", names)
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "export", 0)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "export", 0)
 	if len(events) != 1 || !strings.Contains(events[0].Details, "invoices_zip") {
 		t.Errorf("audit: %+v", events)
 	}

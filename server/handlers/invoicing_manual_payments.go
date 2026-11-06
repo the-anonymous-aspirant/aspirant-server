@@ -357,7 +357,7 @@ func DeletePaymentHandler(c *gin.Context) {
 	}
 	if issuedID != 0 {
 		label := fmt.Sprintf("%d", issuedID)
-		if inv, err := data_models.GetInvoicingInvoice(tx, issuedID); err == nil && inv != nil {
+		if inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), issuedID); err == nil && inv != nil {
 			label = invoiceLabel(*inv)
 		}
 		tx.Rollback()

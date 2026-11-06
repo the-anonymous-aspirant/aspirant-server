@@ -355,3 +355,100 @@ func TestInvoicingOwner_PaymentsAreSeparate(t *testing.T) {
 		t.Errorf("a third book's import after the delete: %+v, want all %d rows", sc, sa.Imported)
 	}
 }
+
+// system_3 #10054-A3: invoices, their numbers, PDFs, exports, the export check
+// and the audit trail belong to one book. Each book numbers from <prefix>-001,
+// and another book's invoice reads as 404 everywhere.
+func TestInvoicingOwner_InvoicesAreSeparate(t *testing.T) {
+	f := newInvoiceFixture(t) // user 9's book: profile, "Galerie Nord", payments
+	withExports := func(r *gin.Engine) *gin.Engine {
+		r.GET("/invoicing/export/invoices.zip", ExportInvoicesZipHandler)
+		r.GET("/invoicing/export/invoices-merged.pdf", ExportInvoicesMergedPDFHandler)
+		return r
+	}
+	withExports(f.r)
+	id9 := f.draft(t, 0)
+	if code, d, body := f.issue(id9); code != http.StatusOK || d.Invoice.InvoiceNumber == nil || *d.Invoice.InvoiceNumber != "2026-001" {
+		t.Fatalf("user 9 issue: %d %s", code, body)
+	}
+
+	// User 10 sets up a book of their own in the same database.
+	const other uint = 10
+	r10 := withExports(setupInvoiceRouter(f.db, other))
+	if w := invoicingDo(r10, "PUT", "/invoicing/profile", validProfileBody); w.Code != http.StatusOK {
+		t.Fatalf("user 10 profile: %d %s", w.Code, w.Body.String())
+	}
+	w := invoicingDo(r10, "POST", "/invoicing/clients", `{"name":"Zehn Kunde","address":"Zehnweg 10\n10115 Berlin"}`)
+	var cl struct {
+		Client data_models.InvoicingClient `json:"client"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &cl)
+	cid := cl.Client.ID
+	pay := data_models.InvoicingPayment{OwnerUserID: other, Source: "paypal", TransactionID: "TX10", Kind: "incoming",
+		PaidOn: f.payments[0].PaidOn, Currency: "EUR", GrossCents: 10000, Note: "Work 10", Category: "paid_work", ClientID: &cid}
+	if err := f.db.Create(&pay).Error; err != nil {
+		t.Fatalf("seed user 10 payment: %v", err)
+	}
+	w = invoicingDo(r10, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, pay.ID))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("user 10 draft: %d %s", w.Code, w.Body.String())
+	}
+	id10 := decodeDetail(t, w.Body.Bytes()).Invoice.ID
+	w = invoicingDo(r10, "POST", fmt.Sprintf("/invoicing/invoices/%d/issue", id10), "")
+	if d := decodeDetail(t, w.Body.Bytes()); w.Code != http.StatusOK || d.Invoice.InvoiceNumber == nil || *d.Invoice.InvoiceNumber != "2026-001" {
+		t.Fatalf("user 10's first invoice: %d %s, want number 2026-001 in its own book", w.Code, w.Body.String())
+	}
+
+	// List, detail, PDF, cancel.
+	if w := invoicingDo(r10, "GET", "/invoicing/invoices", ""); !strings.Contains(w.Body.String(), "Zehn Kunde") || strings.Contains(w.Body.String(), "Galerie Nord") {
+		t.Errorf("user 10's list: %s", w.Body.String())
+	}
+	for _, req := range []struct{ method, path, body string }{
+		{"GET", fmt.Sprintf("/invoicing/invoices/%d", id9), ""},
+		{"GET", fmt.Sprintf("/invoicing/invoices/%d/pdf", id9), ""},
+		{"POST", fmt.Sprintf("/invoicing/invoices/%d/cancel", id9), `{"reason":"Falsche Adresse"}`},
+		{"DELETE", fmt.Sprintf("/invoicing/invoices/%d", id9), ""},
+	} {
+		if w := invoicingDo(r10, req.method, req.path, req.body); w.Code != http.StatusNotFound {
+			t.Errorf("user 10 %s %s: %d, want 404", req.method, req.path, w.Code)
+		}
+	}
+	if inv, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id9); inv == nil || inv.Status != "issued" {
+		t.Errorf("user 9's invoice changed: %+v", inv)
+	}
+
+	// Exports and the export check.
+	if body := invoicingDo(r10, "GET", "/invoicing/export/invoices.csv", "").Body.String(); strings.Contains(body, "Galerie Nord") || !strings.Contains(body, "Zehn Kunde") {
+		t.Errorf("user 10's invoice CSV holds the wrong book: %q", body)
+	}
+	if w := invoicingDo(r10, "GET", "/invoicing/export/invoices.zip", ""); w.Code != http.StatusOK || len(unzipXLSX(t, w.Body.Bytes())) != 1 {
+		t.Errorf("user 10's ZIP: %d, want exactly its one PDF", w.Code)
+	}
+	if w := invoicingDo(r10, "GET", fmt.Sprintf("/invoicing/export/invoices-merged.pdf?ids=%d", id9), ""); w.Code == http.StatusOK {
+		t.Errorf("user 10 merged user 9's invoice into a PDF")
+	}
+	if w := invoicingDo(r10, "GET", "/invoicing/validation", ""); w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"code"`) {
+		t.Errorf("user 10's export check: %d %s, want clean", w.Code, w.Body.String())
+	}
+
+	// The audit trail.
+	if w := invoicingDo(r10, "GET", fmt.Sprintf("/invoicing/audit-events?entity_type=invoice&entity_id=%d", id9), ""); strings.Contains(w.Body.String(), `"action"`) {
+		t.Errorf("user 10 reads user 9's invoice history: %s", w.Body.String())
+	}
+	if w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/audit-events?entity_type=invoice&entity_id=%d", id9), ""); !strings.Contains(w.Body.String(), `"issue"`) {
+		t.Errorf("positive control: user 9 lacks its own invoice history: %s", w.Body.String())
+	}
+
+	// A draft in user 10's book pointing at user 9's client id: the list shows
+	// no name for it and ?q= does not match it (security c62302).
+	foreign := f.clientID
+	if err := f.db.Create(&data_models.InvoicingInvoice{OwnerUserID: other, Status: "draft", ClientID: &foreign, Currency: "EUR", VatRateBP: 1900}).Error; err != nil {
+		t.Fatalf("seed foreign-client draft: %v", err)
+	}
+	if body := invoicingDo(r10, "GET", "/invoicing/invoices?q=galerie", "").Body.String(); strings.Contains(body, `"id"`) {
+		t.Errorf("?q= matched another book's client name: %s", body)
+	}
+	if body := invoicingDo(r10, "GET", "/invoicing/invoices", "").Body.String(); strings.Contains(body, "Galerie Nord") {
+		t.Errorf("the list shows another book's client name: %s", body)
+	}
+}

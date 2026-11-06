@@ -60,7 +60,7 @@ func GetInvoicePDFHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	inv, err := data_models.GetInvoicingInvoice(db, id)
+	inv, err := data_models.GetInvoicingInvoice(db, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return

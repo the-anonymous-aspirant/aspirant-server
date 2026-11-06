@@ -112,7 +112,7 @@ func TestImportPayPal_SummaryAndReuploadIsANoOp(t *testing.T) {
 			t.Errorf("payment %s starts as %q, want uncategorised", p.TransactionID, p.Category)
 		}
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(db, "import", 0)
+	events, _ := data_models.ListInvoicingAuditEvents(db, 5, "import", 0)
 	if len(events) != 2 || events[0].UserID != 5 || events[0].Action != "import" {
 		t.Errorf("import audit: %+v", events)
 	}
@@ -218,7 +218,7 @@ func TestPatchPayment_CategoryAndClient(t *testing.T) {
 		t.Errorf("partial patch: %+v", after)
 	}
 
-	events, _ := data_models.ListInvoicingAuditEvents(db, "payment", p.ID)
+	events, _ := data_models.ListInvoicingAuditEvents(db, 5, "payment", p.ID)
 	if len(events) != 2 || events[0].Action != "categorise" {
 		t.Errorf("payment audit: %+v", events)
 	}

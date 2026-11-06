@@ -127,7 +127,7 @@ func TestInvoicingProfile_PutThenGetRoundTripsAndAudits(t *testing.T) {
 		t.Errorf("profile rows: got %d, want 1", rows)
 	}
 
-	events, _ := data_models.ListInvoicingAuditEvents(db, "profile", 0)
+	events, _ := data_models.ListInvoicingAuditEvents(db, 42, "profile", 0)
 	if len(events) != 2 {
 		t.Fatalf("audit events: got %d, want 2", len(events))
 	}
@@ -236,7 +236,7 @@ func TestInvoicingClients_CreateListUpdateRoundTripsAndAudits(t *testing.T) {
 		t.Fatalf("list after update: %+v", list.Clients)
 	}
 
-	events, _ := data_models.ListInvoicingAuditEvents(db, "client", created.Client.ID)
+	events, _ := data_models.ListInvoicingAuditEvents(db, 7, "client", created.Client.ID)
 	if len(events) != 2 || events[0].Action != "update" || events[1].Action != "create" || events[0].UserID != 7 {
 		t.Fatalf("client audit: %+v", events)
 	}

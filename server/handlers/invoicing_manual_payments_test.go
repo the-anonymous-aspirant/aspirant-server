@@ -34,7 +34,7 @@ func TestManualPayment_DraftIssueAndExportsPrintTheReference(t *testing.T) {
 		p.Kind != "incoming" || p.Currency != "EUR" || p.Method != "bank_transfer" || p.Reference != "RE-2026-17" || p.ClientID == nil {
 		t.Fatalf("stored payment: %+v", p)
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", p.ID)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "payment", p.ID)
 	if len(events) != 1 || events[0].Action != "create_manual" || !strings.Contains(events[0].Details, "RE-2026-17") {
 		t.Errorf("audit: %+v", events)
 	}
@@ -187,7 +187,7 @@ func TestManualPayment_DeleteAndTheOnInvoiceFlag(t *testing.T) {
 	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, loose.ID); got != nil {
 		t.Errorf("payment still stored after delete")
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", loose.ID)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "payment", loose.ID)
 	if len(events) != 2 || events[0].Action != "delete" {
 		t.Errorf("delete audit: %+v", events)
 	}

@@ -26,7 +26,7 @@ func ExportInvoicesZipHandler(c *gin.Context) {
 		return
 	}
 	var issued []data_models.InvoicingInvoice
-	if err := db.Where("status = ?", data_models.InvoiceStatusIssued).Order("prefix asc, number asc").Find(&issued).Error; err != nil {
+	if err := db.Where("owner_user_id = ? AND status = ?", invoicingUserID(c), data_models.InvoiceStatusIssued).Order("prefix asc, number asc").Find(&issued).Error; err != nil {
 		respondInvoicingInternal(c, nil, "building the invoices ZIP", err)
 		return
 	}

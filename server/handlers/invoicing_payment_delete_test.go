@@ -45,7 +45,7 @@ func TestDeletePayment_ImportedOnNoInvoiceIsDeletedTombstonedAndAudited(t *testi
 	if ts.DeletedBy != 9 || ts.DeletedOn.IsZero() {
 		t.Errorf("tombstone: %+v", ts)
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", p.ID)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "payment", p.ID)
 	if len(events) == 0 || events[0].Action != "delete" {
 		t.Fatalf("delete audit: %+v", events)
 	}
@@ -130,7 +130,7 @@ func TestDeletePayment_OnADraftUnlinksItAndTheDraftSaysItsTotalIsUncovered(t *te
 	if len(last.Warnings) != 1 || !strings.HasPrefix(last.Warnings[0], "total_mismatch") {
 		t.Errorf("a draft with no payments left must warn: %v", last.Warnings)
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "payment", f.payments[0].ID)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "payment", f.payments[0].ID)
 	if len(events) == 0 || !strings.Contains(events[0].Details, fmt.Sprintf(`"unlinked_invoice_ids":[%d]`, id)) {
 		t.Errorf("audit does not name the draft it unlinked: %+v", events)
 	}
@@ -149,7 +149,7 @@ func TestDeletePayment_OnACancelledInvoiceLeavesItsPDFUntouched(t *testing.T) {
 	if pdfBefore == nil {
 		t.Fatal("cancelled invoice has no stored PDF")
 	}
-	invBefore, _ := data_models.GetInvoicingInvoice(f.db, id)
+	invBefore, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 
 	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusNoContent {
 		t.Fatalf("delete a payment on a cancelled invoice: %d %s", code, body)
@@ -162,7 +162,7 @@ func TestDeletePayment_OnACancelledInvoiceLeavesItsPDFUntouched(t *testing.T) {
 	if served.Code != http.StatusOK || !bytes.Equal(served.Body.Bytes(), pdfBefore.Content) {
 		t.Fatalf("served PDF after delete: %d, equal %v", served.Code, bytes.Equal(served.Body.Bytes(), pdfBefore.Content))
 	}
-	invAfter, _ := data_models.GetInvoicingInvoice(f.db, id)
+	invAfter, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 	if invAfter.Status != data_models.InvoiceStatusCancelled || *invAfter.InvoiceNumber != *invBefore.InvoiceNumber || invAfter.TotalCents != invBefore.TotalCents {
 		t.Errorf("cancelled invoice changed: %+v", invAfter)
 	}

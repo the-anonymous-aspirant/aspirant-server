@@ -79,7 +79,7 @@ func writeCSV(header []string, rows [][]string) ([]byte, error) {
 // runExportValidation answers false (and writes the 409 report) when the
 // data has violations.
 func runExportValidation(c *gin.Context, db *gorm.DB) bool {
-	rep, err := validateInvoicing(db)
+	rep, err := validateInvoicing(db, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, nil, "validating before export", err)
 		return false
@@ -141,7 +141,7 @@ func ExportAllInvoicesCSVHandler(c *gin.Context) {
 		return
 	}
 	var invs []data_models.InvoicingInvoice
-	if err := db.Where("number IS NOT NULL").Order("prefix asc, number asc").Find(&invs).Error; err != nil {
+	if err := db.Where("owner_user_id = ? AND number IS NOT NULL", invoicingUserID(c)).Order("prefix asc, number asc").Find(&invs).Error; err != nil {
 		respondInvoicingInternal(c, nil, "exporting invoices", err)
 		return
 	}
