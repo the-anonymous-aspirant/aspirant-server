@@ -77,7 +77,7 @@ func checkFieldAllowlist(body map[string]json.RawMessage, allowed map[string]boo
 
 // checkInvoiceablePayments loads the payments and refuses any that is not an
 // incoming paid-work payment or already sits on another issued invoice.
-func checkInvoiceablePayments(tx *gorm.DB, ids []uint, invoiceID uint) ([]data_models.InvoicingPayment, *invoicingGuardError, error) {
+func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uint) ([]data_models.InvoicingPayment, *invoicingGuardError, error) {
 	if len(ids) == 0 {
 		return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work", "an invoice needs at least one paid-work payment"), nil
 	}
@@ -100,7 +100,7 @@ func checkInvoiceablePayments(tx *gorm.DB, ids []uint, invoiceID uint) ([]data_m
 			return nil, guard(http.StatusBadRequest, "duplicate_payment", "payment %d is listed twice", id), nil
 		}
 		seen[id] = true
-		p, err := data_models.GetInvoicingPayment(tx, id)
+		p, err := data_models.GetInvoicingPayment(tx, owner, id)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -287,7 +287,7 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
 		return
 	}
-	payments, g, err := checkInvoiceablePayments(tx, req.PaymentIDs, 0)
+	payments, g, err := checkInvoiceablePayments(tx, invoicingUserID(c), req.PaymentIDs, 0)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
 		return
@@ -532,7 +532,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 			bad("payment_ids", fmt.Errorf("must be a list of ids"))
 			return
 		}
-		if _, g, err := checkInvoiceablePayments(tx, ids, inv.ID); err != nil {
+		if _, g, err := checkInvoiceablePayments(tx, invoicingUserID(c), ids, inv.ID); err != nil {
 			respondInvoicingInternal(c, tx, "updating invoice", err)
 			return
 		} else if g != nil {

@@ -123,7 +123,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			continue
 		}
 		seen[row.TransactionID] = true
-		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingPaymentSourcePayPal, row.TransactionID)
+		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingUserID(c), invoicingPaymentSourcePayPal, row.TransactionID)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking payment %s: %v", row.TransactionID, err)
@@ -133,7 +133,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		if !exists {
 			// The same PayPal payment may already have been entered by hand
 			// with its transaction id as the reference (#8409).
-			exists, err = data_models.ManualPayPalPaymentWithReference(tx, row.TransactionID)
+			exists, err = data_models.ManualPayPalPaymentWithReference(tx, invoicingUserID(c), row.TransactionID)
 			if err != nil {
 				tx.Rollback()
 				log.Printf("Error checking manual payments for %s: %v", row.TransactionID, err)
@@ -146,6 +146,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			continue
 		}
 		p := data_models.InvoicingPayment{
+			OwnerUserID:    invoicingUserID(c),
 			Source:         invoicingPaymentSourcePayPal,
 			TransactionID:  row.TransactionID,
 			ReferenceTxnID: row.ReferenceTxnID,
@@ -214,7 +215,7 @@ func ListInvoicingPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusBadRequest, "Unknown category")
 		return
 	}
-	payments, err := data_models.ListInvoicingPayments(db, kind, category)
+	payments, err := data_models.ListInvoicingPayments(db, invoicingUserID(c), kind, category)
 	if err != nil {
 		log.Printf("Error listing payments: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
@@ -273,7 +274,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
-	p, err := data_models.GetInvoicingPayment(tx, uint(id))
+	p, err := data_models.GetInvoicingPayment(tx, invoicingUserID(c), uint(id))
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error reading payment %d: %v", id, err)
