@@ -147,8 +147,8 @@ func recomputeTotals(inv *data_models.InvoicingInvoice, items []data_models.Invo
 	inv.TotalCents = inv.NetCents + inv.VatCents
 }
 
-func profileIsKleinunternehmer(tx *gorm.DB) (bool, error) {
-	p, err := data_models.GetInvoicingProfile(tx)
+func profileIsKleinunternehmer(tx *gorm.DB, owner uint) (bool, error) {
+	p, err := data_models.GetInvoicingProfile(tx, owner)
 	if err != nil {
 		return false, err
 	}
@@ -198,7 +198,7 @@ func invoiceClientName(inv data_models.InvoicingInvoice, live string) string {
 	return live
 }
 
-func loadInvoiceDetail(db *gorm.DB, inv data_models.InvoicingInvoice) (*invoiceDetail, error) {
+func loadInvoiceDetail(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice) (*invoiceDetail, error) {
 	items, err := data_models.ListInvoiceLineItems(db, inv.ID)
 	if err != nil {
 		return nil, err
@@ -215,7 +215,7 @@ func loadInvoiceDetail(db *gorm.DB, inv data_models.InvoicingInvoice) (*invoiceD
 	}
 	live := ""
 	if inv.ClientID != nil {
-		cl, err := data_models.GetInvoicingClient(db, *inv.ClientID)
+		cl, err := data_models.GetInvoicingClient(db, owner, *inv.ClientID)
 		if err != nil {
 			return nil, err
 		}
@@ -283,7 +283,7 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 	// Linking payments takes the issuing lock, the same one a payment delete
 	// takes (#8409 security F1): a delete and a draft that links the same
 	// payment run one at a time, so no link can outlive its payment.
-	if _, err := lockIssuing(tx); err != nil {
+	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
 		return
 	}
@@ -296,7 +296,7 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 		respondGuard(c, tx, g)
 		return
 	}
-	klein, err := profileIsKleinunternehmer(tx)
+	klein, err := profileIsKleinunternehmer(tx, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
 		return
@@ -356,7 +356,7 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "creating invoice", err)
 		return
 	}
-	detail, err := loadInvoiceDetail(db, inv)
+	detail, err := loadInvoiceDetail(db, invoicingUserID(c), inv)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return
@@ -409,7 +409,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	// draft create (#8409 security F1), and before the row lock, in the same
 	// order the issue handler takes them.
 	if _, linksPayments := body["payment_ids"]; linksPayments {
-		if _, err := lockIssuing(tx); err != nil {
+		if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
 			respondInvoicingInternal(c, tx, "updating invoice", err)
 			return
 		}
@@ -445,7 +445,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 			return
 		}
 		if cid != nil {
-			cl, err := data_models.GetInvoicingClient(tx, *cid)
+			cl, err := data_models.GetInvoicingClient(tx, invoicingUserID(c), *cid)
 			if err != nil {
 				respondInvoicingInternal(c, tx, "updating invoice", err)
 				return
@@ -551,7 +551,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 		}
 	}
 
-	klein, err := profileIsKleinunternehmer(tx)
+	klein, err := profileIsKleinunternehmer(tx, invoicingUserID(c))
 	if err != nil {
 		respondInvoicingInternal(c, tx, "updating invoice", err)
 		return
@@ -575,7 +575,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "updating invoice", err)
 		return
 	}
-	detail, err := loadInvoiceDetail(db, *inv)
+	detail, err := loadInvoiceDetail(db, invoicingUserID(c), *inv)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return
@@ -650,7 +650,7 @@ func GetInvoiceHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusNotFound, "Invoice not found")
 		return
 	}
-	detail, err := loadInvoiceDetail(db, *inv)
+	detail, err := loadInvoiceDetail(db, invoicingUserID(c), *inv)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return

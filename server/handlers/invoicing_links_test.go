@@ -229,7 +229,7 @@ func TestInvoicing_UpdatedAtMovesOnContactAndNotesEdits(t *testing.T) {
 		if w := invoicingDo(r, "PUT", fmt.Sprintf("/invoicing/clients/%d", id), `{"name":"Anna",`+field+`}`); w.Code != http.StatusOK {
 			t.Fatalf("PUT %s: %d %s", field, w.Code, w.Body.String())
 		}
-		cl, _ := data_models.GetInvoicingClient(db, id)
+		cl, _ := data_models.GetInvoicingClient(db, 7, id)
 		if cl == nil || !cl.UpdatedAt.After(old) {
 			t.Errorf("client updated_at after editing %s: %v, want later than %v", field, cl, old)
 		}
@@ -242,7 +242,7 @@ func TestInvoicing_UpdatedAtMovesOnContactAndNotesEdits(t *testing.T) {
 		if w := invoicingDo(r, "PUT", "/invoicing/profile", `{"full_name":"F","address":"A","is_kleinunternehmer":true,"invoice_number_prefix":"2026","next_invoice_number":1}`); w.Code != http.StatusOK {
 			t.Fatalf("profile PUT clearing %s: %d %s", field, w.Code, w.Body.String())
 		}
-		p, _ := data_models.GetInvoicingProfile(db)
+		p, _ := data_models.GetInvoicingProfile(db, 7)
 		if p == nil || !p.UpdatedAt.After(old) {
 			t.Errorf("profile updated_at after clearing %s: %v", field, p)
 		}
@@ -314,7 +314,7 @@ func TestIssue_ContactFieldsReachNoInvoiceOutput(t *testing.T) {
 		}
 	}
 
-	live, _ := data_models.GetInvoicingClient(f.db, f.clientID)
+	live, _ := data_models.GetInvoicingClient(f.db, invoiceFixtureUser, f.clientID)
 	if live == nil || live.Phone != "+49 151 99887766" || live.InstagramURL == "" || live.TelegramURL == "" {
 		t.Errorf("live client lost its contact fields: %+v", live)
 	}

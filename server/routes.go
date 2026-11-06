@@ -384,7 +384,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		trustedRoutes.PATCH("/situps/entries/:date", handlers.ValidateUserOrAdmin(situpsOwnerUsername), handlers.PatchSitupEntryHandler)
 
 		// Invoicing (#8367) — owner + Admin only, gated once at the group.
-		invoicing := trustedRoutes.Group("/invoicing", handlers.ValidateUserOrAdmin(invoicesOwnerUsername))
+		// Each signed-in user keeps their own book (#10054): RequireInvoicingUser
+		// refuses a request with no user, whose reads would reach unowned rows.
+		invoicing := trustedRoutes.Group("/invoicing", handlers.ValidateUserOrAdmin(invoicesOwnerUsername), handlers.RequireInvoicingUser())
 		invoicing.GET("/profile", handlers.GetInvoicingProfileHandler)
 		invoicing.PUT("/profile", handlers.PutInvoicingProfileHandler)
 		invoicing.GET("/profile/logo", handlers.GetInvoicingLogoHandler)

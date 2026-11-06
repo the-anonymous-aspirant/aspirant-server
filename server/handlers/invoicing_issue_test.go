@@ -54,10 +54,13 @@ func withInvoicingClock(t *testing.T, at time.Time) {
 	t.Cleanup(func() { invoicingNow = orig })
 }
 
+// invoiceFixtureUser signs in to every invoiceFixture request and owns its rows.
+const invoiceFixtureUser uint = 9
+
 func newInvoiceFixture(t *testing.T) *invoiceFixture {
 	t.Helper()
 	db := setupPaymentsDB(t)
-	r := setupInvoiceRouter(db, 9)
+	r := setupInvoiceRouter(db, invoiceFixtureUser)
 	withInvoicingClock(t, time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
 	if w := invoicingDo(r, "PUT", "/invoicing/profile", validProfileBody); w.Code != http.StatusOK {
 		t.Fatalf("seed profile: %d %s", w.Code, w.Body.String())
@@ -115,7 +118,7 @@ func (f *invoiceFixture) issue(id uint) (int, invoiceDetail, string) {
 
 func (f *invoiceFixture) profileNext(t *testing.T) int {
 	t.Helper()
-	p, err := data_models.GetInvoicingProfile(f.db)
+	p, err := data_models.GetInvoicingProfile(f.db, invoiceFixtureUser)
 	if err != nil || p == nil {
 		t.Fatalf("profile: %v", err)
 	}
@@ -349,7 +352,7 @@ func TestIssue_Guardrails(t *testing.T) {
 			id := f.draft(t, 0)
 			tc.break_(t, f, id)
 			nextBefore := 0
-			if p, _ := data_models.GetInvoicingProfile(f.db); p != nil {
+			if p, _ := data_models.GetInvoicingProfile(f.db, invoiceFixtureUser); p != nil {
 				nextBefore = p.NextInvoiceNumber
 			}
 			auditBefore := countAuditEvents(t, f.db)
@@ -358,7 +361,7 @@ func TestIssue_Guardrails(t *testing.T) {
 			if code != tc.code || !strings.Contains(body, tc.want) {
 				t.Fatalf("got %d %s, want %d %s", code, body, tc.code, tc.want)
 			}
-			if p, _ := data_models.GetInvoicingProfile(f.db); p != nil && p.NextInvoiceNumber != nextBefore {
+			if p, _ := data_models.GetInvoicingProfile(f.db, invoiceFixtureUser); p != nil && p.NextInvoiceNumber != nextBefore {
 				t.Errorf("a refused issue consumed a number: %d → %d", nextBefore, p.NextInvoiceNumber)
 			}
 			if after := countAuditEvents(t, f.db); after != auditBefore {
@@ -633,7 +636,7 @@ func TestIssue_ClientSnapshotLeavesOutNotes(t *testing.T) {
 	if strings.Contains(stored.ClientSnapshot, "touch-up") || strings.Contains(body, "touch-up") {
 		t.Errorf("notes reached the stored invoice or the issue response")
 	}
-	live, _ := data_models.GetInvoicingClient(f.db, f.clientID)
+	live, _ := data_models.GetInvoicingClient(f.db, invoiceFixtureUser, f.clientID)
 	if live == nil || live.Notes != secret {
 		t.Errorf("live client lost its notes: %+v", live)
 	}

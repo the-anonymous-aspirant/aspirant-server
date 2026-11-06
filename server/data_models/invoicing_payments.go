@@ -65,12 +65,14 @@ var PaymentMethodLabels = map[string]string{
 var PaymentMethods = []string{"bank_transfer", "paypal", "stripe", "cash", "other"}
 
 // InvoicingPayment is one received payment or bank withdrawal, imported or
-// entered by hand. (Source, TransactionID) is unique, which is what makes
-// re-uploading a file a no-op.
+// entered by hand. (OwnerUserID, Source, TransactionID) is unique, which is
+// what makes re-uploading a file a no-op within one book while another book
+// can import the same file in full (system_3 #10054).
 type InvoicingPayment struct {
 	ID             uint      `json:"id" gorm:"primary_key"`
-	Source         string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payments_source_txn"`
-	TransactionID  string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payments_source_txn"`
+	OwnerUserID    uint      `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_payments_owner_source_txn"`
+	Source         string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payments_owner_source_txn"`
+	TransactionID  string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payments_owner_source_txn"`
 	ReferenceTxnID string    `json:"reference_txn_id" gorm:"type:text;not null;default:''"`
 	Kind           string    `json:"kind" gorm:"type:text;not null"`
 	PaidOn         time.Time `json:"paid_on" gorm:"type:date;not null"`
@@ -217,8 +219,9 @@ func InvoicingPaymentExists(db *gorm.DB, source, transactionID string) (bool, er
 // the very check that reads it.
 type InvoicingPaymentTombstone struct {
 	ID            uint      `json:"id" gorm:"primary_key"`
-	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
-	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone"`
+	OwnerUserID   uint      `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_payment_tombstone_owner"`
+	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone_owner"`
+	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_payment_tombstone_owner"`
 	DeletedOn     time.Time `json:"deleted_on" gorm:"not null"`
 	DeletedBy     uint      `json:"deleted_by" gorm:"not null"`
 }
@@ -278,14 +281,15 @@ func InvoiceIDsForPayment(db *gorm.DB, paymentID uint) ([]uint, error) {
 	return out, nil
 }
 
-// FindInvoicingClientByPayPalEmail returns the client whose PayPal email
-// matches (already lower-cased on both sides), or nil.
-func FindInvoicingClientByPayPalEmail(db *gorm.DB, email string) (*InvoicingClient, error) {
+// FindInvoicingClientByPayPalEmail returns the owner's client whose PayPal
+// email matches (already lower-cased on both sides), or nil. Another book's
+// client never matches (security review of PR 172 F2).
+func FindInvoicingClientByPayPalEmail(db *gorm.DB, owner uint, email string) (*InvoicingClient, error) {
 	if email == "" {
 		return nil, nil
 	}
 	var cl InvoicingClient
-	err := db.Where("paypal_email = ?", email).Order("id asc").First(&cl).Error
+	err := db.Where("owner_user_id = ? AND paypal_email = ?", owner, email).Order("id asc").First(&cl).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
