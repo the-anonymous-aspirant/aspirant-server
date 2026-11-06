@@ -198,10 +198,12 @@ func RecordInvoicingAuditEvent(tx *gorm.DB, userID uint, action, entityType stri
 	}).Error
 }
 
-// ListInvoicingAuditEvents returns events newest first, optionally narrowed to
-// one entity type and (when entityID > 0) one entity.
-func ListInvoicingAuditEvents(db *gorm.DB, entityType string, entityID uint) ([]InvoicingAuditEvent, error) {
-	q := db.Order("created_at desc, id desc")
+// ListInvoicingAuditEvents returns the owner's events newest first, optionally
+// narrowed to one entity type and (when entityID > 0) one entity. Every write
+// records the signed-in user, who owns the book written to, so a book's trail
+// is the events its owner recorded (system_3 #10054).
+func ListInvoicingAuditEvents(db *gorm.DB, owner uint, entityType string, entityID uint) ([]InvoicingAuditEvent, error) {
+	q := db.Where("user_id = ?", owner).Order("created_at desc, id desc")
 	if entityType != "" {
 		q = q.Where("entity_type = ?", entityType)
 	}

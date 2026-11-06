@@ -253,14 +253,14 @@ func TestIssue_GoldenPath(t *testing.T) {
 	if f.profileNext(t) != 2 {
 		t.Errorf("counter after one issue: %d, want 2", f.profileNext(t))
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "invoice", id)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "invoice", id)
 	if len(events) != 2 || events[0].Action != "issue" || !strings.Contains(events[0].Details, "2026-001") {
 		t.Errorf("issue audit: %+v", events)
 	}
 
 	// The snapshot does not follow later profile edits.
 	invoicingDo(f.r, "PUT", "/invoicing/profile", strings.Replace(validProfileBody, "Flower Example", "Renamed", 1))
-	got, _ := data_models.GetInvoicingInvoice(f.db, id)
+	got, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 	if strings.Contains(got.ProfileSnapshot, "Renamed") {
 		t.Errorf("issued snapshot changed with the profile")
 	}
@@ -368,7 +368,7 @@ func TestIssue_Guardrails(t *testing.T) {
 			if after := countAuditEvents(t, f.db); after != auditBefore {
 				t.Errorf("a refused issue wrote %d audit rows", after-auditBefore)
 			}
-			if inv, _ := data_models.GetInvoicingInvoice(f.db, id); tc.want != "not_a_draft" && (inv.Status != "draft" || inv.InvoiceNumber != nil) {
+			if inv, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id); tc.want != "not_a_draft" && (inv.Status != "draft" || inv.InvoiceNumber != nil) {
 				t.Errorf("a refused issue changed the draft: %+v", inv)
 			}
 		})
@@ -720,7 +720,7 @@ func TestIssue_SecondIssueOfTheSameInvoiceIs409AndKeepsTheCounter(t *testing.T) 
 	if f.profileNext(t) != next {
 		t.Errorf("a refused second issue moved the counter %d → %d", next, f.profileNext(t))
 	}
-	inv, _ := data_models.GetInvoicingInvoice(f.db, id)
+	inv, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 	if *inv.InvoiceNumber != "2026-001" {
 		t.Errorf("the second issue renumbered the invoice: %s", *inv.InvoiceNumber)
 	}
@@ -820,7 +820,7 @@ func TestInvoicePDF_StoredAtIssueAndServedUnchanged(t *testing.T) {
 	if hex.EncodeToString(sum[:]) != stored[0].SHA256 || w.Header().Get("X-Content-SHA256") != stored[0].SHA256 {
 		t.Errorf("sha256 mismatch")
 	}
-	events, _ := data_models.ListInvoicingAuditEvents(f.db, "invoice", id)
+	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "invoice", id)
 	if !strings.Contains(events[0].Details, stored[0].SHA256) {
 		t.Errorf("issue audit does not record the PDF hash: %s", events[0].Details)
 	}

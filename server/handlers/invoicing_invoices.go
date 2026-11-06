@@ -302,7 +302,7 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 		return
 	}
 
-	inv := data_models.InvoicingInvoice{Status: data_models.InvoiceStatusDraft, VatRateBP: 1900, Currency: payments[0].Currency}
+	inv := data_models.InvoicingInvoice{OwnerUserID: invoicingUserID(c), Status: data_models.InvoiceStatusDraft, VatRateBP: 1900, Currency: payments[0].Currency}
 	sameClient := payments[0].ClientID
 	earliest, latest := payments[0].PaidOn, payments[0].PaidOn
 	for _, p := range payments[1:] {
@@ -420,7 +420,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "updating invoice", err)
 		return
 	}
-	inv, err := data_models.GetInvoicingInvoice(tx, id)
+	inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "updating invoice", err)
 		return
@@ -598,7 +598,7 @@ func DeleteInvoiceDraftHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "deleting invoice", err)
 		return
 	}
-	inv, err := data_models.GetInvoicingInvoice(tx, id)
+	inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "deleting invoice", err)
 		return
@@ -641,7 +641,7 @@ func GetInvoiceHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	inv, err := data_models.GetInvoicingInvoice(db, id)
+	inv, err := data_models.GetInvoicingInvoice(db, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, nil, "loading invoice", err)
 		return
@@ -670,9 +670,12 @@ type invoiceListRow struct {
 // chosen rather than against the live client row.
 func ListInvoicesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
+	// The join carries the owner too: a draft pointing at another book's client
+	// id must not show that client's name or match ?q= (security c62302).
 	q := db.Table("invoicing_invoices").
 		Select("invoicing_invoices.*, COALESCE(invoicing_clients.name, '') AS client_name").
-		Joins("LEFT JOIN invoicing_clients ON invoicing_clients.id = invoicing_invoices.client_id").
+		Joins("LEFT JOIN invoicing_clients ON invoicing_clients.id = invoicing_invoices.client_id AND invoicing_clients.owner_user_id = invoicing_invoices.owner_user_id").
+		Where("invoicing_invoices.owner_user_id = ?", invoicingUserID(c)).
 		Order("invoicing_invoices.issue_date desc, invoicing_invoices.id desc")
 	if s := c.Query("status"); s != "" {
 		if s != data_models.InvoiceStatusDraft && s != data_models.InvoiceStatusIssued && s != data_models.InvoiceStatusCancelled {
