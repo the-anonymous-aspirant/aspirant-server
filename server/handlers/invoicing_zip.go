@@ -16,9 +16,10 @@ import (
 // out: its stored PDF is the original, which carries no cancellation mark, so
 // in the ZIP it would read as valid. The invoice list CSV still lists it.
 
-const invoicesZipFilename = "Rechnungen.zip"
+// invoicesZipBase is the ZIP's name before exportFilename adds the export time.
+const invoicesZipBase = "Rechnungen"
 
-// ExportInvoicesZipHandler serves Rechnungen.zip.
+// ExportInvoicesZipHandler serves Rechnungen-<export time>.zip.
 func ExportInvoicesZipHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	if !runExportValidation(c, db) {
@@ -64,7 +65,7 @@ func ExportInvoicesZipHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "recording the export", err)
 		return
 	}
-	c.Header("Content-Disposition", `attachment; filename="`+invoicesZipFilename+`"`)
+	c.Header("Content-Disposition", `attachment; filename="`+exportFilename(invoicesZipBase, "zip")+`"`)
 	c.Data(http.StatusOK, "application/zip", buf.Bytes())
 }
 
