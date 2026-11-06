@@ -28,9 +28,13 @@ func TestExportInvoicesMergedPDF_TwoIssuedInvoicesConcatenate(t *testing.T) {
 		t.Fatalf("issue 2: %d %s", code, body)
 	}
 
+	withInvoicingClock(t, exportClock)
 	w := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/export/invoices-merged.pdf?ids=%d,%d", id1, id2), "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("merge: %d %s", w.Code, w.Body.String())
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="Rechnungen-2026-11-06-1049.pdf"` {
+		t.Errorf("disposition %q", cd)
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/pdf" {
 		t.Errorf("content-type: %s", ct)

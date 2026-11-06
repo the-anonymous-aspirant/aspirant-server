@@ -59,6 +59,7 @@ func TestExportClientsCSV_HeaderRowsAndOrder(t *testing.T) {
 	}, summer, winter)
 	seedClient(t, db, data_models.InvoicingClient{Name: "Anna Example", PayPalEmail: "anna@pay.test"}, winter, winter)
 
+	withInvoicingClock(t, exportClock)
 	w := invoicingDo(r, "GET", "/invoicing/export/clients.csv", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("export: %d %s", w.Code, w.Body.String())
@@ -66,7 +67,7 @@ func TestExportClientsCSV_HeaderRowsAndOrder(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
 		t.Errorf("content type %q", ct)
 	}
-	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="Kunden.csv"` {
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="Kunden-2026-11-06-1049.csv"` {
 		t.Errorf("disposition %q", cd)
 	}
 	rows := readClientsCSV(t, w.Body.String())

@@ -191,8 +191,9 @@ func readCSV(t *testing.T, body []byte) [][]string {
 
 func TestExport_AllInvoicesCSV(t *testing.T) {
 	f, _ := issuedFixture(t)
+	withInvoicingClock(t, exportClock) // after issuing: the name carries the export time
 	w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.csv", "")
-	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Rechnungen.csv"` {
+	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Rechnungen-2026-11-06-1049.csv"` {
 		t.Fatalf("export: %d %v", w.Code, w.Header())
 	}
 	rows := readCSV(t, w.Body.Bytes())
@@ -291,8 +292,9 @@ func TestExport_InvoicesZip(t *testing.T) {
 	f, ids := issuedFixture(t)
 	f.r.GET("/invoicing/export/invoices.zip", ExportInvoicesZipHandler)
 
+	withInvoicingClock(t, exportClock)
 	w := invoicingDo(f.r, "GET", "/invoicing/export/invoices.zip", "")
-	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Rechnungen.zip"` {
+	if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != `attachment; filename="Rechnungen-2026-11-06-1049.zip"` {
 		t.Fatalf("zip: %d %v %s", w.Code, w.Header(), w.Body.String())
 	}
 	files := unzipXLSX(t, w.Body.Bytes())
