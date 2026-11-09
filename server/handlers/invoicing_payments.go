@@ -8,7 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
 
@@ -200,7 +204,18 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"summary": summary})
+	// The file's outgoing rows are offered for review, never stored here:
+	// the owner confirms the work expenses among them through
+	// ImportPayPalExpensesConfirmHandler (system_3 #10414-B2).
+	// The payments are committed by now, so a failure here must not read as
+	// a failed import. The flags are advice for the review; the confirm
+	// dedupes on its own. So the candidates go back unflagged instead.
+	expenses := paypalExpenseCandidates(parsed.Expenses)
+	if err := flagPayPalExpenseCandidates(db, userID, expenses); err != nil {
+		log.Printf("Error flagging PayPal expense candidates, returning them unflagged: %v", err)
+		expenses = paypalExpenseCandidates(parsed.Expenses)
+	}
+	c.JSON(http.StatusOK, gin.H{"summary": summary, "expense_candidates": expenses})
 }
 
 // ListInvoicingPaymentsHandler lists payments, filtered by ?kind= and ?category=.
@@ -384,4 +399,253 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"payment": p})
+}
+
+// paypalExpenseCandidate is one outgoing PayPal row offered as a work expense
+// (system_3 #10414-B2). Its JSON field names match the N26 import's expense
+// candidates, so the client reviews both sources the same way.
+type paypalExpenseCandidate struct {
+	TransactionID       string `json:"transaction_id"`
+	PaidOn              string `json:"paid_on"`
+	Currency            string `json:"currency"`
+	AmountCents         int64  `json:"amount_cents"`
+	PayeeName           string `json:"payee_name"`
+	Note                string `json:"note"`
+	AlreadyImported     bool   `json:"already_imported"`
+	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
+}
+
+func paypalExpenseCandidates(rows []paypalExpenseRow) []paypalExpenseCandidate {
+	out := make([]paypalExpenseCandidate, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, paypalExpenseCandidate{
+			TransactionID: r.TransactionID,
+			PaidOn:        r.PaidOn.Format(invoicingDateLayout),
+			Currency:      r.Currency,
+			AmountCents:   r.AmountCents,
+			PayeeName:     r.PayeeName,
+			Note:          r.Note,
+		})
+	}
+	return out
+}
+
+// flagPayPalExpenseCandidates marks a candidate already stored as a PayPal
+// expense under its transaction id, or colliding on date and amount with any
+// of the owner's expenses (one she entered by hand, typically).
+func flagPayPalExpenseCandidates(db *gorm.DB, owner uint, cands []paypalExpenseCandidate) error {
+	for i := range cands {
+		c := &cands[i]
+		var n int
+		if err := db.Model(&data_models.InvoicingExpense{}).
+			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourcePayPal, c.TransactionID).
+			Count(&n).Error; err != nil {
+			return err
+		}
+		c.AlreadyImported = n > 0
+		if c.AlreadyImported {
+			continue
+		}
+		paidOn, err := time.Parse(invoicingDateLayout, c.PaidOn)
+		if err != nil {
+			return err
+		}
+		var twin data_models.InvoicingExpense
+		err = db.Where("owner_user_id = ? AND paid_on = ? AND amount_cents = ?", owner, paidOn, c.AmountCents).
+			Order("id asc").First(&twin).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		c.PossibleDuplicateOf = twin.ID
+	}
+	return nil
+}
+
+// maxPayPalExpenseConfirmRows bounds one confirm request, as the N26
+// confirm's does: each row runs an existence query under the book lock.
+const maxPayPalExpenseConfirmRows = 500
+
+// paypalTransactionIDPattern is a PayPal transaction id as the import keeps
+// it: PayPal's own code, never a derived one.
+var paypalTransactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// paypalExpenseConfirmRow is one outgoing row the owner confirmed: the
+// candidate's fields plus the category she picked (empty means "other").
+type paypalExpenseConfirmRow struct {
+	TransactionID string `json:"transaction_id"`
+	PaidOn        string `json:"paid_on"`
+	Currency      string `json:"currency"`
+	AmountCents   int64  `json:"amount_cents"`
+	PayeeName     string `json:"payee_name"`
+	Note          string `json:"note"`
+	Category      string `json:"category"`
+}
+
+type paypalExpenseConfirmSummary struct {
+	Confirmed  int `json:"confirmed"`
+	Duplicates int `json:"duplicates"`
+}
+
+// ImportPayPalExpensesConfirmHandler stores the outgoing PayPal rows the owner
+// confirmed as work expenses (system_3 #10414-B2): POST
+// /invoicing/expenses/import-paypal/confirm with {rows: [...]}. Each becomes
+// an InvoicingExpense with source "paypal", entry "import", the payee in
+// Reference and the category she picked (one of her own, default "other").
+// Rows already stored under their (source, transaction id) count as
+// duplicates. An invalid row fails the whole request, because the client
+// only posts back rows the import offered.
+func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
+	db := c.MustGet("db").(*gorm.DB)
+
+	var req struct {
+		Rows []paypalExpenseConfirmRow `json:"rows"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondWithError(c, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.Rows) == 0 {
+		RespondWithError(c, http.StatusBadRequest, "rows is empty")
+		return
+	}
+	if len(req.Rows) > maxPayPalExpenseConfirmRows {
+		respondError(c, http.StatusBadRequest, "too_many_rows",
+			fmt.Sprintf("confirm at most %d rows per request", maxPayPalExpenseConfirmRows))
+		return
+	}
+	type validated struct {
+		row    paypalExpenseConfirmRow
+		paidOn time.Time
+	}
+	rows := make([]validated, 0, len(req.Rows))
+	for i, row := range req.Rows {
+		bad := func(msg string) {
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, msg))
+		}
+		row.TransactionID = strings.TrimSpace(row.TransactionID)
+		row.PayeeName = strings.TrimSpace(row.PayeeName)
+		row.Note = strings.TrimSpace(row.Note)
+		row.Currency = strings.ToUpper(strings.TrimSpace(row.Currency))
+		row.Category = strings.TrimSpace(row.Category)
+		if row.Category == "" {
+			row.Category = data_models.ExpenseCategoryOther
+		}
+		if !paypalTransactionIDPattern.MatchString(row.TransactionID) {
+			bad("transaction_id is not a PayPal transaction id")
+			return
+		}
+		// An outgoing PayPal row may name no payee; when it does, it is one line.
+		if utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes ||
+			strings.Contains(row.PayeeName, "\n") || hasControlChars(row.PayeeName) || hasFormatChars(row.PayeeName) {
+			bad(fmt.Sprintf("payee_name must be one line of at most %d characters", maxManualReferenceRunes))
+			return
+		}
+		if utf8.RuneCountInString(row.Note) > maxManualNoteRunes || hasControlChars(row.Note) {
+			bad(fmt.Sprintf("note is longer than %d characters", maxManualNoteRunes))
+			return
+		}
+		if !isoCurrency.MatchString(row.Currency) {
+			bad("currency must be a three-letter ISO code")
+			return
+		}
+		paidOn, err := time.Parse(invoicingDateLayout, row.PaidOn)
+		if err != nil {
+			bad("paid_on is not a yyyy-mm-dd date")
+			return
+		}
+		if paidOn.After(berlinToday()) || paidOn.Before(earliestPaymentDate) {
+			bad("paid_on is in the future or before 2000-01-01")
+			return
+		}
+		if row.AmountCents <= 0 || row.AmountCents > maxUnitPriceCents {
+			bad("amount_cents must be a whole number of cents above zero")
+			return
+		}
+		rows = append(rows, validated{row: row, paidOn: paidOn})
+	}
+
+	owner := invoicingUserID(c)
+	summary := paypalExpenseConfirmSummary{}
+	tx := db.Begin()
+	// The book lock every expense write takes: two concurrent confirms of the
+	// same rows cannot both pass the exists check.
+	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking for a PayPal expense confirm: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+		return
+	}
+	categoryOK := map[string]bool{}
+	seen := map[string]bool{}
+	for i, v := range rows {
+		ok, checked := categoryOK[v.row.Category]
+		if !checked {
+			valid, err := data_models.IsExpenseCategoryForOwner(tx, owner, v.row.Category)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error checking expense category %q: %v", v.row.Category, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+				return
+			}
+			ok, categoryOK[v.row.Category] = valid, valid
+		}
+		if !ok {
+			tx.Rollback()
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: category is not one of your expense categories", i))
+			return
+		}
+		if seen[v.row.TransactionID] {
+			summary.Duplicates++
+			continue
+		}
+		seen[v.row.TransactionID] = true
+		var n int
+		if err := tx.Model(&data_models.InvoicingExpense{}).
+			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourcePayPal, v.row.TransactionID).
+			Count(&n).Error; err != nil {
+			tx.Rollback()
+			log.Printf("Error checking PayPal expense %s: %v", v.row.TransactionID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+			return
+		}
+		if n > 0 {
+			summary.Duplicates++
+			continue
+		}
+		e := data_models.InvoicingExpense{
+			OwnerUserID:   owner,
+			Source:        invoicingPaymentSourcePayPal,
+			TransactionID: v.row.TransactionID,
+			PaidOn:        v.paidOn,
+			Currency:      v.row.Currency,
+			AmountCents:   v.row.AmountCents,
+			Note:          v.row.Note,
+			Category:      v.row.Category,
+			Entry:         data_models.ExpenseEntryImport,
+			Reference:     v.row.PayeeName,
+		}
+		if err := tx.Create(&e).Error; err != nil {
+			tx.Rollback()
+			log.Printf("Error storing PayPal expense %s: %v", v.row.TransactionID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+			return
+		}
+		summary.Confirmed++
+	}
+	details := auditDetails(gin.H{"source": invoicingPaymentSourcePayPal, "entity": invoicingEntityExpense, "summary": summary})
+	if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionImport, invoicingEntityExpense, 0, details); err != nil {
+		tx.Rollback()
+		log.Printf("Error auditing PayPal expense confirm: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("Error committing PayPal expense confirm: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"summary": summary})
 }
