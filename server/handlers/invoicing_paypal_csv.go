@@ -82,10 +82,27 @@ type paypalRow struct {
 	Category string
 }
 
+// paypalExpenseRow is an outgoing payment the owner made from PayPal: a
+// would-be work expense, offered for review and never stored by the import
+// itself (system_3 #10414-B2). AmountCents is positive. PayeeName is the
+// counterparty.
+type paypalExpenseRow struct {
+	TransactionID  string
+	ReferenceTxnID string
+	PaidOn         time.Time
+	Currency       string
+	AmountCents    int64
+	PayeeName      string
+	Note           string
+}
+
 type paypalParseResult struct {
 	Rows     []paypalRow
 	RowsRead int
 	Skipped  map[string]int
+	// Expenses are the outgoing rows offered as expense candidates. Each is
+	// also counted in Skipped[outgoing], since none is imported as a payment.
+	Expenses []paypalExpenseRow
 }
 
 // paypalColumns maps each field to the header spellings it may carry, already
@@ -534,6 +551,7 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	reversals := map[string][]int64{}
 	_, hasStatus := col["status"]
 	var candidates []paypalRow
+	var expenses []paypalExpenseRow
 	textBytes := 0
 	for i, rec := range records {
 		line := i + 2 // 1-based, after the header
@@ -593,6 +611,21 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 			res.Skipped[paypalSkipFee]++
 		default:
 			res.Skipped[paypalSkipOutgoing]++
+			// Money she paid out is a would-be work expense. A refund she
+			// paid a buyer is reduced income, not an expense, so it stays
+			// skip-only. A row the file cannot describe cleanly is left out
+			// of the candidates rather than failing the file: outgoing rows
+			// were never validated before #10414-B2, and a file that
+			// imported then must still import.
+			if debit && gross < 0 && !containsAny(typ, paypalRefundTypes) {
+				if e, ok := paypalExpenseFromRecord(get, rec, order, gross); ok {
+					textBytes += len(e.TransactionID) + len(e.ReferenceTxnID) + len(e.Currency) + len(e.PayeeName) + len(e.Note)
+					if textBytes > paypalMaxRowTextBytes {
+						return nil, fmt.Errorf("the file's rows carry more than %d MB of text", paypalMaxRowTextBytes>>20)
+					}
+					expenses = append(expenses, e)
+				}
+			}
 		}
 		if kind == "" {
 			continue
@@ -672,5 +705,51 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 		}
 		res.Rows = append(res.Rows, row)
 	}
+	// An outgoing payment that was reversed (the same amount coming back
+	// under its id) is no expense either.
+	for _, e := range expenses {
+		undone := false
+		for _, g := range reversals[e.TransactionID] {
+			if g == e.AmountCents {
+				undone = true
+			}
+		}
+		if !undone {
+			res.Expenses = append(res.Expenses, e)
+		}
+	}
 	return res, nil
+}
+
+// paypalExpenseFromRecord builds the expense candidate for one outgoing
+// record, or reports false when the record lacks a transaction id, a
+// readable date or an ISO currency.
+func paypalExpenseFromRecord(get func([]string, string) string, rec []string, order string, gross int64) (paypalExpenseRow, bool) {
+	txnID := get(rec, "transaction_id")
+	if txnID == "" {
+		return paypalExpenseRow{}, false
+	}
+	paidOn, err := parsePayPalDate(get(rec, "date"), order)
+	if err != nil {
+		return paypalExpenseRow{}, false
+	}
+	currency := strings.ToUpper(get(rec, "currency"))
+	if !isoCurrency.MatchString(currency) {
+		return paypalExpenseRow{}, false
+	}
+	var notes []string
+	for _, f := range []string{"item_title", "subject", "note"} {
+		if v := get(rec, f); v != "" {
+			notes = append(notes, v)
+		}
+	}
+	return paypalExpenseRow{
+		TransactionID:  txnID,
+		ReferenceTxnID: get(rec, "reference_id"),
+		PaidOn:         paidOn,
+		Currency:       currency,
+		AmountCents:    -gross,
+		PayeeName:      get(rec, "name"),
+		Note:           strings.Join(notes, " | "),
+	}, true
 }

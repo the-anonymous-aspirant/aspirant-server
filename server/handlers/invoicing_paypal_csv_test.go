@@ -1,11 +1,19 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"aspirant-online/server/data_models"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/gorm"
 )
 
 // #8367-B1: the PayPal activity CSV parser. The fixtures follow PayPal's
@@ -373,5 +381,260 @@ func TestNormaliseHeader_PeelsQuotesAndEitherBOM(t *testing.T) {
 		if got := normaliseHeader(in); got != want {
 			t.Errorf("normaliseHeader(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// --- #10414-B2: outgoing PayPal rows become expense candidates ---
+
+// The fixture's one outgoing purchase is now an expense candidate. Every other
+// row resolves to the bucket it always did: the same rows import, the same
+// skip counts, and the purchase is still counted as outgoing because it is not
+// imported as a payment.
+func TestParsePayPal_OutgoingPurchaseIsAnExpenseCandidate(t *testing.T) {
+	for name, fixture := range map[string]string{"en": paypalFixtureEN, "de": paypalFixtureDE} {
+		res := mustParse(t, fixture, "")
+		if len(res.Rows) != 3 || res.Rows[0].Kind != "incoming" || res.Rows[1].Kind != "incoming" || res.Rows[2].Kind != "withdrawal" {
+			t.Fatalf("%s: payment rows changed: %+v", name, res.Rows)
+		}
+		want := map[string]int{"fee": 1, "currency_conversion": 2, "bank_topup": 1, "not_completed": 1, "outgoing": 1}
+		for reason, n := range want {
+			if res.Skipped[reason] != n {
+				t.Errorf("%s: skipped[%s] = %d, want %d", name, reason, res.Skipped[reason], n)
+			}
+		}
+		if len(res.Expenses) != 1 {
+			t.Fatalf("%s: expenses: %+v", name, res.Expenses)
+		}
+		e := res.Expenses[0]
+		if e.TransactionID != "8HH88888HH8888888" || e.AmountCents != 2500 || e.PayeeName != "Some Shop" || e.Currency != "EUR" ||
+			!e.PaidOn.Equal(time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)) {
+			t.Errorf("%s: expense: %+v", name, e)
+		}
+	}
+}
+
+// A mixed file: each row lands in its own bucket. Only a debit that is neither
+// a fee, a withdrawal nor a refund paid out is offered as an expense; a
+// reversed purchase is not; an outgoing row the file cannot describe cleanly
+// is left out instead of failing the whole file.
+func TestParsePayPal_MixedFileEachRowInItsOwnBucket(t *testing.T) {
+	const header = "Date,Name,Type,Status,Currency,Gross,Transaction ID,Reference Txn ID,Item Title,Balance Impact\n"
+	res := mustParse(t, header+
+		"01.07.2026,Client,Mobile Payment,Completed,EUR,200.00,IN1,,,Credit\n"+
+		"01.07.2026,PayPal,Fee,Completed,EUR,-0.35,FEE1,,,Debit\n"+
+		"02.07.2026,,General Withdrawal,Completed,EUR,-150.00,W1,,,Debit\n"+
+		"03.07.2026,Colorificio,Express Checkout Payment,Completed,EUR,-89.90,OUT1,,Pigmenti,Debit\n"+
+		"04.07.2026,Print Shop,PreApproved Payment Bill User Payment,Completed,USD,-40.00,OUT2,,,Debit\n"+
+		"05.07.2026,Buyer,Payment Refund,Completed,EUR,-15.00,RF1,,,Debit\n"+
+		"06.07.2026,Some Shop,Express Checkout Payment,Completed,EUR,-30.00,OUT3,,,Debit\n"+
+		"07.07.2026,Some Shop,Payment Reversal,Completed,EUR,30.00,RV1,OUT3,,Credit\n"+
+		"08.07.2026,No Id Shop,Express Checkout Payment,Completed,EUR,-12.00,,,,Debit\n"+
+		"09.07.2026,Odd Shop,Express Checkout Payment,Completed,EURO,-9.00,OUT4,,,Debit\n", "")
+
+	if len(res.Rows) != 2 || res.Rows[0].TransactionID != "IN1" || res.Rows[1].TransactionID != "W1" || res.Rows[1].Kind != "withdrawal" {
+		t.Fatalf("payment rows: %+v", res.Rows)
+	}
+	if res.Skipped["fee"] != 1 || res.Skipped["reversal"] != 1 {
+		t.Errorf("skipped: %v", res.Skipped)
+	}
+	// OUT1, OUT2, RF1, OUT3, the id-less row and OUT4 all fall through to outgoing.
+	if res.Skipped["outgoing"] != 6 {
+		t.Errorf("skipped[outgoing] = %d, want 6: %v", res.Skipped["outgoing"], res.Skipped)
+	}
+	got := map[string]paypalExpenseRow{}
+	for _, e := range res.Expenses {
+		got[e.TransactionID] = e
+	}
+	if len(got) != 2 {
+		t.Fatalf("expense candidates: want OUT1 and OUT2 only, got %+v", res.Expenses)
+	}
+	if e := got["OUT1"]; e.AmountCents != 8990 || e.PayeeName != "Colorificio" || e.Note != "Pigmenti" {
+		t.Errorf("OUT1: %+v", e)
+	}
+	if e := got["OUT2"]; e.AmountCents != 4000 || e.Currency != "USD" {
+		t.Errorf("OUT2 (a foreign-currency purchase keeps its currency): %+v", e)
+	}
+}
+
+func setupPayPalExpensesRouter(t *testing.T, userID uint) (*gorm.DB, *gin.Engine) {
+	t.Helper()
+	db := setupPaymentsDB(t)
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	r := setupPaymentsRouter(db, userID)
+	r.POST("/invoicing/expenses/import-paypal/confirm", ImportPayPalExpensesConfirmHandler)
+	r.POST("/invoicing/expense-categories", CreateExpenseCategoryHandler)
+	return db, r
+}
+
+func decodePayPalExpenseCandidates(t *testing.T, w *httptest.ResponseRecorder) []paypalExpenseCandidate {
+	t.Helper()
+	var resp struct {
+		ExpenseCandidates []paypalExpenseCandidate `json:"expense_candidates"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	return resp.ExpenseCandidates
+}
+
+func confirmPayPalExpenses(r *gin.Engine, cands []paypalExpenseCandidate, category string) *httptest.ResponseRecorder {
+	rows := make([]paypalExpenseConfirmRow, 0, len(cands))
+	for _, c := range cands {
+		rows = append(rows, paypalExpenseConfirmRow{
+			TransactionID: c.TransactionID, PaidOn: c.PaidOn, Currency: c.Currency,
+			AmountCents: c.AmountCents, PayeeName: c.PayeeName, Note: c.Note, Category: category,
+		})
+	}
+	body, _ := json.Marshal(map[string]any{"rows": rows})
+	return invoicingDo(r, "POST", "/invoicing/expenses/import-paypal/confirm", string(body))
+}
+
+// The upload offers the outgoing purchase for review and stores no expense;
+// the confirm stores it once, in the owner's own book, never as a payment;
+// a re-upload flags it as already imported.
+func TestImportPayPal_OutgoingRowsAreOfferedThenConfirmed(t *testing.T) {
+	db, r := setupPayPalExpensesRouter(t, 7)
+	w := uploadCSV(t, r, paypalFixtureEN, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", w.Code, w.Body.String())
+	}
+	if s := decodeSummary(t, w); s.Imported != 3 || s.SkippedReasons["outgoing"] != 1 {
+		t.Fatalf("payment import changed: %+v", s)
+	}
+	cands := decodePayPalExpenseCandidates(t, w)
+	if len(cands) != 1 || cands[0].TransactionID != "8HH88888HH8888888" || cands[0].AmountCents != 2500 ||
+		cands[0].PaidOn != "2026-07-25" || cands[0].PayeeName != "Some Shop" || cands[0].AlreadyImported {
+		t.Fatalf("candidates: %+v", cands)
+	}
+	var n int
+	db.Model(&data_models.InvoicingExpense{}).Count(&n)
+	if n != 0 {
+		t.Fatalf("the upload stored %d expenses; it must only offer them", n)
+	}
+
+	w = confirmPayPalExpenses(r, cands, "materials and supplies")
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
+	}
+	var cresp struct {
+		Summary paypalExpenseConfirmSummary `json:"summary"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &cresp)
+	if cresp.Summary.Confirmed != 1 || cresp.Summary.Duplicates != 0 {
+		t.Fatalf("summary: %+v", cresp.Summary)
+	}
+	var stored []data_models.InvoicingExpense
+	db.Where("owner_user_id = ?", 7).Find(&stored)
+	if len(stored) != 1 {
+		t.Fatalf("stored: %+v", stored)
+	}
+	if e := stored[0]; e.Source != invoicingPaymentSourcePayPal || e.Entry != data_models.ExpenseEntryImport ||
+		e.AmountCents != 2500 || e.Category != "materials and supplies" || e.Reference != "Some Shop" ||
+		e.TransactionID != "8HH88888HH8888888" {
+		t.Fatalf("stored expense: %+v", e)
+	}
+	var payments int
+	db.Model(&data_models.InvoicingPayment{}).Where("transaction_id = ?", "8HH88888HH8888888").Count(&payments)
+	if payments != 0 {
+		t.Fatal("the purchase was stored as a payment")
+	}
+
+	// Re-confirm dedupes; a re-upload flags the stored row.
+	w = confirmPayPalExpenses(r, cands, "")
+	json.Unmarshal(w.Body.Bytes(), &cresp)
+	if cresp.Summary.Confirmed != 0 || cresp.Summary.Duplicates != 1 {
+		t.Fatalf("re-confirm: %+v", cresp.Summary)
+	}
+	if again := decodePayPalExpenseCandidates(t, uploadCSV(t, r, paypalFixtureEN, "")); len(again) != 1 || !again[0].AlreadyImported {
+		t.Fatalf("re-upload flags: %+v", again)
+	}
+
+	// Another owner's import is flagged against her own book only, and her
+	// confirm stores into it with the default category.
+	_, r8 := setupPayPalExpensesRouterOn(db, 8)
+	theirs := decodePayPalExpenseCandidates(t, uploadCSV(t, r8, paypalFixtureEN, ""))
+	if len(theirs) != 1 || theirs[0].AlreadyImported || theirs[0].PossibleDuplicateOf != 0 {
+		t.Fatalf("another owner sees this owner's expense: %+v", theirs)
+	}
+	if w := confirmPayPalExpenses(r8, theirs, ""); w.Code != http.StatusOK {
+		t.Fatalf("owner 8 confirm: %d %s", w.Code, w.Body.String())
+	}
+	var e8 data_models.InvoicingExpense
+	db.Where("owner_user_id = ?", 8).First(&e8)
+	if e8.Category != data_models.ExpenseCategoryOther {
+		t.Errorf("default category: %q", e8.Category)
+	}
+
+	var events int
+	db.Model(&data_models.InvoicingAuditEvent{}).Where("action = ? AND entity_type = ?", invoicingActionImport, invoicingEntityExpense).Count(&events)
+	if events == 0 {
+		t.Fatal("no audit event for the expense confirm")
+	}
+}
+
+func setupPayPalExpensesRouterOn(db *gorm.DB, userID uint) (*gorm.DB, *gin.Engine) {
+	r := setupPaymentsRouter(db, userID)
+	r.POST("/invoicing/expenses/import-paypal/confirm", ImportPayPalExpensesConfirmHandler)
+	r.POST("/invoicing/expense-categories", CreateExpenseCategoryHandler)
+	return db, r
+}
+
+// A hand-entered expense of the same date and amount is named as a possible
+// duplicate.
+func TestImportPayPal_ExpenseCandidateFlagsAHandEnteredTwin(t *testing.T) {
+	db, r := setupPayPalExpensesRouter(t, 7)
+	paidOn := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
+	twin := data_models.InvoicingExpense{OwnerUserID: 7, Source: "manual", TransactionID: "M-1", PaidOn: paidOn,
+		Currency: "EUR", AmountCents: 2500, Category: "other", Entry: "manual"}
+	if err := db.Create(&twin).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cands := decodePayPalExpenseCandidates(t, uploadCSV(t, r, paypalFixtureEN, ""))
+	if len(cands) != 1 || cands[0].PossibleDuplicateOf != twin.ID || cands[0].AlreadyImported {
+		t.Fatalf("candidates: %+v (twin %d)", cands, twin.ID)
+	}
+}
+
+func TestImportPayPalExpensesConfirm_Refusals(t *testing.T) {
+	db, r := setupPayPalExpensesRouter(t, 7)
+	_, r8 := setupPayPalExpensesRouterOn(db, 8)
+	if w := invoicingDo(r8, "POST", "/invoicing/expense-categories", `{"name":"pigments","counts_as":"materials and supplies"}`); w.Code != http.StatusCreated {
+		t.Fatalf("seed owner 8's category: %d %s", w.Code, w.Body.String())
+	}
+	good := paypalExpenseCandidate{TransactionID: "8HH88888HH8888888", PaidOn: "2026-07-25", Currency: "EUR", AmountCents: 2500, PayeeName: "Some Shop"}
+	cases := map[string]func(*paypalExpenseCandidate, *string){
+		"empty id":         func(c *paypalExpenseCandidate, _ *string) { c.TransactionID = "" },
+		"id with spaces":   func(c *paypalExpenseCandidate, _ *string) { c.TransactionID = "8HH 888" },
+		"multi-line payee": func(c *paypalExpenseCandidate, _ *string) { c.PayeeName = "a\nb" },
+		"non-ISO currency": func(c *paypalExpenseCandidate, _ *string) { c.Currency = "EURO" },
+		"bad date":         func(c *paypalExpenseCandidate, _ *string) { c.PaidOn = "25.07.2026" },
+		"future date": func(c *paypalExpenseCandidate, _ *string) {
+			c.PaidOn = time.Now().AddDate(0, 0, 3).Format("2006-01-02")
+		},
+		"zero amount":              func(c *paypalExpenseCandidate, _ *string) { c.AmountCents = 0 },
+		"negative amount":          func(c *paypalExpenseCandidate, _ *string) { c.AmountCents = -2500 },
+		"unknown category":         func(_ *paypalExpenseCandidate, cat *string) { *cat = "holidays" },
+		"another owner's category": func(_ *paypalExpenseCandidate, cat *string) { *cat = "pigments" },
+	}
+	for name, mutate := range cases {
+		c, cat := good, ""
+		mutate(&c, &cat)
+		w := confirmPayPalExpenses(r, []paypalExpenseCandidate{c}, cat)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_row") {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if w := confirmPayPalExpenses(r, nil, ""); w.Code != http.StatusBadRequest {
+		t.Errorf("empty rows: %d", w.Code)
+	}
+	var n int
+	db.Model(&data_models.InvoicingExpense{}).Count(&n)
+	if n != 0 {
+		t.Fatalf("a refused confirm stored %d expenses", n)
+	}
+	noPayee := good
+	noPayee.PayeeName = ""
+	if w := confirmPayPalExpenses(r, []paypalExpenseCandidate{noPayee}, ""); w.Code != http.StatusOK {
+		t.Fatalf("an outgoing row with no payee is still a valid expense: %d %s", w.Code, w.Body.String())
 	}
 }
