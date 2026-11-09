@@ -188,6 +188,17 @@ func TestManualExpense_OwnerIsolation(t *testing.T) {
 	if got, _ := data_models.GetInvoicingExpense(db, 7, expA.ID); got == nil {
 		t.Errorf("owner A's expense was deleted by B's refused request")
 	}
+
+	// Security review of PR 175 F1: the category-validity check itself must
+	// be owner-scoped, not just the expense rows. Owner A adds her own
+	// category; owner B must not be able to file an expense under it.
+	if w := invoicingDo(a, "POST", "/invoicing/expense-categories", `{"name":"A's own category"}`); w.Code != http.StatusCreated {
+		t.Fatalf("create category for A: %d %s", w.Code, w.Body.String())
+	}
+	code, _, body := createExpense(t, b, `{"paid_on":"2026-07-14","amount_cents":1000,"category":"A's own category"}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "invalid_field") {
+		t.Errorf("owner B used owner A's category: %d %s", code, body)
+	}
 }
 
 // #10414-A/#10424: a fresh book is seeded with the operator-confirmed ten
@@ -213,7 +224,7 @@ func TestExpenseCategories_SeededOnFirstUse(t *testing.T) {
 // the starting list, and it is then usable on an expense. Its counts_as
 // defaults to "other" (design_agent, c63823) when not given.
 func TestExpenseCategories_AddAndUse(t *testing.T) {
-	_, r := newExpenseFixture(t)
+	db, r := newExpenseFixture(t)
 	w := invoicingDo(r, "POST", "/invoicing/expense-categories", `{"name":"Studio snacks"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create category: %d %s", w.Code, w.Body.String())
@@ -222,6 +233,12 @@ func TestExpenseCategories_AddAndUse(t *testing.T) {
 	last := got[len(got)-1]
 	if len(got) != len(data_models.DefaultExpenseCategories)+1 || last.Name != "Studio snacks" || last.CountsAs != "other" {
 		t.Fatalf("categories after add: %+v", got)
+	}
+	// Security review of PR 175 F4: a category add is audited like an
+	// expense create/delete.
+	events, _ := data_models.ListInvoicingAuditEvents(db, expenseFixtureUser, "expense_category", last.ID)
+	if len(events) != 1 || events[0].Action != "create_manual" || !strings.Contains(events[0].Details, "Studio snacks") {
+		t.Errorf("category audit: %+v", events)
 	}
 	code, e, body := createExpense(t, r, `{"paid_on":"2026-07-14","amount_cents":500,"category":"Studio snacks"}`)
 	if code != http.StatusCreated || e.Category != "Studio snacks" {
