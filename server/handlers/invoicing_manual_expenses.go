@@ -25,7 +25,8 @@ import (
 // payment-on-invoice checks entirely.
 
 const (
-	invoicingEntityExpense = "expense"
+	invoicingEntityExpense         = "expense"
+	invoicingEntityExpenseCategory = "expense_category"
 
 	maxExpenseCategoryNameRunes = 100
 )
@@ -48,9 +49,11 @@ func newManualExpenseTransactionID() (string, error) {
 }
 
 // lockExpenseRow takes the expense row's lock with a no-op UPDATE, so a
-// concurrent delete of the same expense waits rather than racing.
-func lockExpenseRow(tx *gorm.DB, id uint) error {
-	return tx.Model(&data_models.InvoicingExpense{}).Where("id = ?", id).
+// concurrent delete of the same expense waits rather than racing. Scoped to
+// the owner (security review of PR 175 F2) so it never locks a row in
+// another book.
+func lockExpenseRow(tx *gorm.DB, owner, id uint) error {
+	return tx.Model(&data_models.InvoicingExpense{}).Where("id = ? AND owner_user_id = ?", id, owner).
 		UpdateColumn("category", gorm.Expr("category")).Error
 }
 
@@ -244,7 +247,7 @@ func ListInvoicingExpensesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	category := c.Query("category")
 	if category != "" {
-		valid, err := data_models.IsExpenseCategoryForOwner(db, invoicingUserID(c), category)
+		valid, err := isExpenseCategoryForOwnerLocked(db, invoicingUserID(c), category)
 		if err != nil {
 			log.Printf("Error checking expense category %q: %v", category, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error listing expenses")
@@ -269,13 +272,48 @@ func ListInvoicingExpensesHandler(c *gin.Context) {
 // /invoicing/expense-categories.
 func ListInvoicingExpenseCategoriesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
-	cats, err := data_models.ListInvoicingExpenseCategories(db, invoicingUserID(c))
+	cats, err := listInvoicingExpenseCategoriesLocked(db, invoicingUserID(c))
 	if err != nil {
 		log.Printf("Error listing expense categories: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing expense categories")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"categories": cats})
+}
+
+// listInvoicingExpenseCategoriesLocked takes the book lock before seeding
+// (security review of PR 175 F3): without it, two concurrent first requests
+// can both see zero categories and both try to seed, and the loser's insert
+// hits the (owner, name) unique index. A create or delete already locks the
+// same way, so this only needs to join that existing serialisation.
+func listInvoicingExpenseCategoriesLocked(db *gorm.DB, owner uint) ([]data_models.InvoicingExpenseCategory, error) {
+	tx := db.Begin()
+	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	cats, err := data_models.ListInvoicingExpenseCategories(tx, owner)
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	return cats, tx.Commit().Error
+}
+
+// isExpenseCategoryForOwnerLocked is listInvoicingExpenseCategoriesLocked's
+// counterpart for a single-category existence check (same seeding race).
+func isExpenseCategoryForOwnerLocked(db *gorm.DB, owner uint, name string) (bool, error) {
+	tx := db.Begin()
+	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	valid, err := data_models.IsExpenseCategoryForOwner(tx, owner, name)
+	if err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	return valid, tx.Commit().Error
 }
 
 // CreateExpenseCategoryHandler adds one of the owner's own expense
@@ -355,6 +393,13 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error storing category")
 		return
 	}
+	details := auditDetails(gin.H{"name": name, "counts_as": countsAs})
+	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCreateManual, invoicingEntityExpenseCategory, cat.ID, details); err != nil {
+		tx.Rollback()
+		log.Printf("Error auditing expense category %d: %v", cat.ID, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing category")
+		return
+	}
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error committing expense category: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error storing category")
@@ -380,7 +425,7 @@ func DeleteExpenseHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
 		return
 	}
-	if err := lockExpenseRow(tx, uint(id)); err != nil {
+	if err := lockExpenseRow(tx, invoicingUserID(c), uint(id)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking expense %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
