@@ -410,6 +410,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.GET("/expense-categories", handlers.ListInvoicingExpenseCategoriesHandler)
 		invoicing.POST("/expense-categories", handlers.CreateExpenseCategoryHandler)
 		invoicing.POST("/expenses/import-paypal/confirm", handlers.ImportPayPalExpensesConfirmHandler)
+		invoicing.GET("/export/book-report.csv", handlers.ExportBookReportHandler)
 		invoicing.GET("/invoices", handlers.ListInvoicesHandler)
 		invoicing.POST("/invoices", handlers.CreateInvoiceDraftHandler)
 		invoicing.GET("/invoices/:id", handlers.GetInvoiceHandler)
