@@ -405,6 +405,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.DELETE("/payments/:id", handlers.DeletePaymentHandler)
 		invoicing.GET("/expenses", handlers.ListInvoicingExpensesHandler)
 		invoicing.POST("/expenses/manual", handlers.CreateManualExpenseHandler)
+		invoicing.POST("/expenses/import-n26/confirm", handlers.ImportN26ExpensesConfirmHandler)
 		invoicing.DELETE("/expenses/:id", handlers.DeleteExpenseHandler)
 		invoicing.GET("/expense-categories", handlers.ListInvoicingExpenseCategoriesHandler)
 		invoicing.POST("/expense-categories", handlers.CreateExpenseCategoryHandler)

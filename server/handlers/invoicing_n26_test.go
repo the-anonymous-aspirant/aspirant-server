@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -625,5 +627,314 @@ func TestPayPalTransferIntoN26_NeverPaidWorkNeverInvoiced(t *testing.T) {
 	w = invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d,%d]}`, ordinary.ID, f.payments[0].ID))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("control draft: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// --- #10414-B: outgoing statement rows become expense candidates ---
+
+func setupN26ExpensesRouter(db *gorm.DB, userID uint) *gin.Engine {
+	r := setupN26Router(db, userID)
+	r.POST("/invoicing/expenses/import-n26/confirm", ImportN26ExpensesConfirmHandler)
+	r.GET("/invoicing/expenses", ListInvoicingExpensesHandler)
+	r.POST("/invoicing/expense-categories", CreateExpenseCategoryHandler)
+	return r
+}
+
+func setupN26ExpensesDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := setupPaymentsDB(t)
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	return db
+}
+
+func confirmN26Expenses(t *testing.T, r *gin.Engine, rows []n26ExpenseConfirmRow) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(n26ExpenseConfirmRequest{Rows: rows})
+	return invoicingDo(r, "POST", "/invoicing/expenses/import-n26/confirm", string(body))
+}
+
+func asExpenseConfirmRows(cands []n26ExpenseCandidate, category string) []n26ExpenseConfirmRow {
+	out := make([]n26ExpenseConfirmRow, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, n26ExpenseConfirmRow{
+			TransactionID: c.TransactionID, PaidOn: c.PaidOn, Currency: c.Currency,
+			AmountCents: c.AmountCents, PayeeName: c.PayeeName, Note: c.Note, Category: category,
+		})
+	}
+	return out
+}
+
+// The fixture's one outgoing row is now an expense candidate, and the incoming
+// rows are exactly what they were: same fields, and the same ids the
+// pre-#10414-B key produced, so a statement imported before this change
+// still dedupes on re-upload.
+func TestN26StatementOutgoingRowsBecomeExpenseCandidates(t *testing.T) {
+	text := readN26Fixture(t, "n26_statement.txt")
+	expenses, err := parseN26StatementExpenses(text)
+	if err != nil {
+		t.Fatalf("parse expenses: %v", err)
+	}
+	if len(expenses) != 1 {
+		t.Fatalf("got %d expense candidates, want 1: %+v", len(expenses), expenses)
+	}
+	e := expenses[0]
+	if e.PaidOn != "2026-08-03" || e.AmountCents != 4567 || e.PayeeName != "Supermercato Esempio" ||
+		e.Currency != "EUR" || e.Note != "" || !strings.HasPrefix(e.TransactionID, "stmt-") {
+		t.Errorf("expense candidate: %+v", e)
+	}
+
+	cands, err := parseN26AccountStatement(text)
+	if err != nil {
+		t.Fatalf("parse payments: %v", err)
+	}
+	legacyID := func(paidOn string, cents int64, sender, note string, occurrence int) string {
+		key := paidOn + "|" + fmt.Sprint(cents) + "|" + sender + "|" + note
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d", key, occurrence)))
+		return "stmt-" + hex.EncodeToString(sum[:])[:24]
+	}
+	want := []string{
+		legacyID("2026-08-01", 25000, "Mara Esempio", "Bonifico ricevuto Illustrazione logo", 0),
+		legacyID("2026-08-05", 100000, "Cliente Due SRL", "Acconto progetto murale", 0),
+	}
+	if len(cands) != 2 {
+		t.Fatalf("payment candidates: %d", len(cands))
+	}
+	for i := range cands {
+		if cands[i].TransactionID != want[i] {
+			t.Errorf("payment %d id changed: %q, want %q (re-uploads would stop deduping)", i, cands[i].TransactionID, want[i])
+		}
+		if cands[i].TransactionID == e.TransactionID {
+			t.Errorf("payment %d shares the expense's id", i)
+		}
+	}
+
+	again, _ := parseN26StatementExpenses(text)
+	if again[0].TransactionID != e.TransactionID {
+		t.Errorf("expense id not stable: %q vs %q", e.TransactionID, again[0].TransactionID)
+	}
+}
+
+// Mixed directions with continuation lines: each continuation extends the row
+// directly above it, whichever direction that row is, and never leaks across
+// a direction change or a blank line. A zero-amount row is neither, and its
+// continuation goes with it.
+func TestN26StatementContinuationLinesFollowEitherDirection(t *testing.T) {
+	text := "Estratto conto\n\n" +
+		"Data          Descrizione                                           Importo\n\n" +
+		"01.08.2026    Mara Esempio                                          +250,00 EUR\n" +
+		"              Bonifico ricevuto Illustrazione logo\n" +
+		"02.08.2026    Colorificio Esempio                                    -89,90 EUR\n" +
+		"              Pigmenti e tele\n" +
+		"              ordine 4411\n" +
+		"03.08.2026    Cliente Due SRL                                       1.000,00 EUR\n" +
+		"              Acconto progetto murale\n" +
+		"04.08.2026    Rettifica                                                0,00 EUR\n" +
+		"              nota della rettifica\n" +
+		"05.08.2026    Tipografia Esempio                                    -120,00 EUR\n\n" +
+		"              riga staccata dopo una riga vuota\n"
+	in, out, err := scanN26Statement(text)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(in) != 2 || len(out) != 2 {
+		t.Fatalf("got %d in, %d out, want 2 and 2: %+v %+v", len(in), len(out), in, out)
+	}
+	if in[0].Note != "Bonifico ricevuto Illustrazione logo" || in[1].Note != "Acconto progetto murale" {
+		t.Errorf("incoming notes: %q, %q", in[0].Note, in[1].Note)
+	}
+	if out[0].PayeeName != "Colorificio Esempio" || out[0].AmountCents != 8990 || out[0].Note != "Pigmenti e tele ordine 4411" {
+		t.Errorf("first expense (two continuation lines): %+v", out[0])
+	}
+	if out[1].PayeeName != "Tipografia Esempio" || out[1].AmountCents != 12000 || out[1].Note != "" {
+		t.Errorf("second expense (a blank line ends it): %+v", out[1])
+	}
+	for _, c := range in {
+		if strings.Contains(c.Note, "rettifica") || strings.Contains(c.Note, "Pigmenti") {
+			t.Errorf("a note leaked onto a payment: %+v", c)
+		}
+	}
+}
+
+func TestN26FlagExpenseCandidates(t *testing.T) {
+	db := setupN26ExpensesDB(t)
+	paidOn, _ := time.Parse("2006-01-02", "2026-08-03")
+	for _, e := range []data_models.InvoicingExpense{
+		{OwnerUserID: 5, Source: "manual", TransactionID: "M-1", PaidOn: paidOn, Currency: "EUR", AmountCents: 4567, Category: "other", Entry: "manual"},
+		{OwnerUserID: 5, Source: invoicingPaymentSourceN26, TransactionID: "stmt-seen", PaidOn: paidOn, Currency: "EUR", AmountCents: 1, Category: "other", Entry: "import"},
+	} {
+		if err := db.Create(&e).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	cands := []n26ExpenseCandidate{
+		{TransactionID: "stmt-new", PaidOn: "2026-08-03", AmountCents: 4567},
+		{TransactionID: "stmt-seen", PaidOn: "2026-08-03", AmountCents: 1},
+		{TransactionID: "stmt-clean", PaidOn: "2026-09-01", AmountCents: 555},
+	}
+	other := []n26ExpenseCandidate{{TransactionID: "stmt-seen", PaidOn: "2026-08-03", AmountCents: 4567}}
+	if err := flagN26ExpenseCandidates(db, 6, other); err != nil {
+		t.Fatalf("flag as another owner: %v", err)
+	}
+	if other[0].AlreadyImported || other[0].PossibleDuplicateOf != 0 {
+		t.Errorf("another owner's expenses leaked into the flags: %+v", other[0])
+	}
+	if err := flagN26ExpenseCandidates(db, 5, cands); err != nil {
+		t.Fatalf("flag: %v", err)
+	}
+	if cands[0].PossibleDuplicateOf == 0 || cands[0].AlreadyImported {
+		t.Errorf("date+amount twin of a hand-entered expense: %+v", cands[0])
+	}
+	if !cands[1].AlreadyImported {
+		t.Errorf("already-imported row: %+v", cands[1])
+	}
+	if cands[2].AlreadyImported || cands[2].PossibleDuplicateOf != 0 {
+		t.Errorf("clean candidate flagged: %+v", cands[2])
+	}
+}
+
+// Confirm stores the owner's chosen outgoing rows as imported expenses, once,
+// in her own book, and never as payments.
+func TestN26ExpensesConfirm(t *testing.T) {
+	db := setupN26ExpensesDB(t)
+	r := setupN26ExpensesRouter(db, 7)
+	text := readN26Fixture(t, "n26_statement.txt")
+	cands, err := parseN26StatementExpenses(text)
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("parse: %v %+v", err, cands)
+	}
+
+	w := confirmN26Expenses(t, r, asExpenseConfirmRows(cands, "materials and supplies"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
+	}
+	var cresp struct {
+		Summary n26ConfirmSummary `json:"summary"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &cresp)
+	if cresp.Summary.Confirmed != 1 || cresp.Summary.Duplicates != 0 {
+		t.Fatalf("summary: %+v", cresp.Summary)
+	}
+	var stored []data_models.InvoicingExpense
+	db.Where("owner_user_id = ?", 7).Find(&stored)
+	if len(stored) != 1 {
+		t.Fatalf("stored %d expenses", len(stored))
+	}
+	e := stored[0]
+	if e.Source != invoicingPaymentSourceN26 || e.Entry != data_models.ExpenseEntryImport || e.AmountCents != 4567 ||
+		e.Category != "materials and supplies" || e.Reference != "Supermercato Esempio" || e.TransactionID != cands[0].TransactionID ||
+		e.PaidOn.Format("2006-01-02") != "2026-08-03" {
+		t.Fatalf("stored expense: %+v", e)
+	}
+	var payments int
+	db.Model(&data_models.InvoicingPayment{}).Count(&payments)
+	if payments != 0 {
+		t.Fatalf("an expense confirm stored %d payments", payments)
+	}
+
+	// Re-confirm dedupes; the re-flag sees it as imported.
+	w = confirmN26Expenses(t, r, asExpenseConfirmRows(cands, ""))
+	json.Unmarshal(w.Body.Bytes(), &cresp)
+	if cresp.Summary.Confirmed != 0 || cresp.Summary.Duplicates != 1 {
+		t.Fatalf("re-confirm summary: %+v", cresp.Summary)
+	}
+	if err := flagN26ExpenseCandidates(db, 7, cands); err != nil || !cands[0].AlreadyImported {
+		t.Fatalf("re-flag: %v %+v", err, cands[0])
+	}
+
+	// Another owner confirming the same row stores it in her own book.
+	r8 := setupN26ExpensesRouter(db, 8)
+	w = confirmN26Expenses(t, r8, asExpenseConfirmRows(cands, ""))
+	json.Unmarshal(w.Body.Bytes(), &cresp)
+	if w.Code != http.StatusOK || cresp.Summary.Confirmed != 1 {
+		t.Fatalf("another owner's confirm: %d %+v", w.Code, cresp.Summary)
+	}
+	var theirs data_models.InvoicingExpense
+	db.Where("owner_user_id = ?", 8).First(&theirs)
+	if theirs.Category != data_models.ExpenseCategoryOther {
+		t.Errorf("default category: %q", theirs.Category)
+	}
+
+	// The confirm is audit-logged.
+	var events int
+	db.Model(&data_models.InvoicingAuditEvent{}).Where("action = ? AND entity_type = ?", invoicingActionImport, invoicingEntityExpense).Count(&events)
+	if events == 0 {
+		t.Fatal("no audit event for the expense confirm")
+	}
+}
+
+func TestN26ExpensesConfirmValidation(t *testing.T) {
+	db := setupN26ExpensesDB(t)
+	r := setupN26ExpensesRouter(db, 7)
+	// Owner 8's own category must not validate for owner 7.
+	r8 := setupN26ExpensesRouter(db, 8)
+	if w := invoicingDo(r8, "POST", "/invoicing/expense-categories", `{"name":"pigments","counts_as":"materials and supplies"}`); w.Code != http.StatusCreated {
+		t.Fatalf("seed owner 8's category: %d %s", w.Code, w.Body.String())
+	}
+	good := n26ExpenseConfirmRow{
+		TransactionID: "stmt-0123456789abcdef01234567", PaidOn: "2026-08-03", Currency: "EUR",
+		AmountCents: 4567, PayeeName: "Supermercato Esempio",
+	}
+	cases := map[string]func(*n26ExpenseConfirmRow){
+		"payment-style id":         func(r *n26ExpenseConfirmRow) { r.TransactionID = "a1b2c3d4-0e15-4a6f-9bd0-123456789abc" },
+		"missing payee":            func(r *n26ExpenseConfirmRow) { r.PayeeName = " " },
+		"multi-line payee":         func(r *n26ExpenseConfirmRow) { r.PayeeName = "a\nb" },
+		"non-EUR":                  func(r *n26ExpenseConfirmRow) { r.Currency = "USD" },
+		"bad date":                 func(r *n26ExpenseConfirmRow) { r.PaidOn = "03.08.2026" },
+		"future date":              func(r *n26ExpenseConfirmRow) { r.PaidOn = time.Now().AddDate(0, 0, 3).Format("2006-01-02") },
+		"zero amount":              func(r *n26ExpenseConfirmRow) { r.AmountCents = 0 },
+		"negative amount":          func(r *n26ExpenseConfirmRow) { r.AmountCents = -4567 },
+		"unknown category":         func(r *n26ExpenseConfirmRow) { r.Category = "holidays" },
+		"another owner's category": func(r *n26ExpenseConfirmRow) { r.Category = "pigments" },
+	}
+	for name, mutate := range cases {
+		row := good
+		mutate(&row)
+		w := confirmN26Expenses(t, r, []n26ExpenseConfirmRow{row})
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_row") {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if w := confirmN26Expenses(t, r, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("empty rows: %d", w.Code)
+	}
+	var n int
+	db.Model(&data_models.InvoicingExpense{}).Count(&n)
+	if n != 0 {
+		t.Fatalf("a refused confirm stored %d expenses", n)
+	}
+	if w := confirmN26Expenses(t, r, []n26ExpenseConfirmRow{good}); w.Code != http.StatusOK {
+		t.Fatalf("the good row itself: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The parse response carries the outgoing rows in their own field, so the
+// client's payment review (which posts every `candidates` row to the payment
+// confirm) never sees them. Exercised through the real pdftotext pipeline.
+func TestN26ParseResponseCarriesExpenseCandidatesSeparately(t *testing.T) {
+	requirePdftotext(t)
+	db := setupN26ExpensesDB(t)
+	r := setupN26ExpensesRouter(db, 7)
+	w := uploadN26(t, r, map[string][]byte{"estratto.pdf": buildN26PDFFromText(t, readN26Fixture(t, "n26_statement.txt"))})
+	if w.Code != http.StatusOK {
+		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
+	}
+	resp := decodeN26Parse(t, w)
+	if len(resp.Files) != 1 || resp.Files[0].Error != nil {
+		t.Fatalf("files: %+v", resp.Files)
+	}
+	f := resp.Files[0]
+	if f.DocumentKind != n26KindAccountStatement || len(f.Candidates) != 2 || len(f.ExpenseCandidates) != 1 {
+		t.Fatalf("kind %q, %d payment and %d expense candidates", f.DocumentKind, len(f.Candidates), len(f.ExpenseCandidates))
+	}
+	for _, c := range f.Candidates {
+		if c.GrossCents <= 0 {
+			t.Errorf("an outgoing row is among the payment candidates: %+v", c)
+		}
+	}
+	if e := f.ExpenseCandidates[0]; e.AmountCents != 4567 || e.PayeeName != "Supermercato Esempio" {
+		t.Errorf("expense candidate through the real pipeline: %+v", e)
+	}
+	if !strings.Contains(w.Body.String(), `"expense_candidates":[`) {
+		t.Errorf("wire shape lacks expense_candidates: %s", w.Body.String())
 	}
 }

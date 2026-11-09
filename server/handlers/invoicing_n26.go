@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
 
@@ -108,8 +109,11 @@ type n26ParsedFile struct {
 	Filename     string         `json:"filename"`
 	DocumentKind string         `json:"document_kind,omitempty"`
 	Candidates   []n26Candidate `json:"candidates,omitempty"`
-	Skipped      map[string]int `json:"skipped,omitempty"`
-	Error        *n26FileError  `json:"error,omitempty"`
+	// ExpenseCandidates are the file's outgoing rows (system_3 #10414-B),
+	// confirmed through their own endpoint, never the payment confirm.
+	ExpenseCandidates []n26ExpenseCandidate `json:"expense_candidates,omitempty"`
+	Skipped           map[string]int        `json:"skipped,omitempty"`
+	Error             *n26FileError         `json:"error,omitempty"`
 }
 
 // dropPayPalTransfers removes the candidates whose payer is PayPal and
@@ -137,11 +141,14 @@ type n26Strategy struct {
 	name    string
 	matches func(text string) bool
 	parse   func(text string) ([]n26Candidate, error)
+	// expenses reads the document's outgoing rows as expense candidates;
+	// nil for a kind that carries none (system_3 #10414-B).
+	expenses func(text string) ([]n26ExpenseCandidate, error)
 }
 
 var n26Strategies = []n26Strategy{
-	{n26KindTransferConfirmation, isN26TransferConfirmation, parseN26TransferConfirmation},
-	{n26KindAccountStatement, isN26AccountStatement, parseN26AccountStatement},
+	{n26KindTransferConfirmation, isN26TransferConfirmation, parseN26TransferConfirmation, nil},
+	{n26KindAccountStatement, isN26AccountStatement, parseN26AccountStatement, parseN26StatementExpenses},
 }
 
 var (
@@ -342,67 +349,131 @@ func isN26AccountStatement(text string) bool {
 		(strings.Contains(text, "N26") && strings.Contains(text, "Account statement"))
 }
 
-// parseN26AccountStatement reads a statement's transaction table: one row per
-// booking line (date, counterparty, signed amount), indented date-less lines
-// extending the previous row's note. Only money in imports — outgoing rows
-// are the owner's own spending, not payments to invoice. Statement rows carry
-// no transaction id, so a deterministic one is derived from the row's fields:
-// the same file re-uploaded produces the same ids and dedupes to nothing.
+// n26ExpenseCandidate is one would-be work expense: an outgoing statement row,
+// parsed but not stored (system_3 #10414-B). It travels beside the payment
+// candidates, never inside them, because the client posts every payment
+// candidate back to the payment confirm. AmountCents is the money that went
+// out, as a positive number. PayeeName is the counterparty the statement
+// names. The two flags mirror n26Candidate's, read against the owner's
+// expenses instead of her payments.
+type n26ExpenseCandidate struct {
+	TransactionID       string `json:"transaction_id"`
+	PaidOn              string `json:"paid_on"`
+	Currency            string `json:"currency"`
+	AmountCents         int64  `json:"amount_cents"`
+	PayeeName           string `json:"payee_name"`
+	Note                string `json:"note"`
+	AlreadyImported     bool   `json:"already_imported"`
+	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
+}
+
+// parseN26AccountStatement reads a statement's money-in rows as payment
+// candidates. Outgoing rows are the owner's own spending, not payments to
+// invoice: they come back from parseN26StatementExpenses instead.
 func parseN26AccountStatement(text string) ([]n26Candidate, error) {
-	var out []n26Candidate
-	lines := strings.Split(text, "\n")
+	in, _, err := scanN26Statement(text)
+	return in, err
+}
+
+// parseN26StatementExpenses reads a statement's money-out rows as expense
+// candidates (system_3 #10414-B).
+func parseN26StatementExpenses(text string) ([]n26ExpenseCandidate, error) {
+	_, out, err := scanN26Statement(text)
+	return out, err
+}
+
+// scanN26Statement reads a statement's transaction table: one row per booking
+// line (date, counterparty, signed amount), indented date-less lines
+// extending the previous row's note. A positive amount is a payment
+// candidate, a negative one an expense candidate. A continuation line extends
+// whichever row it sits under, in either direction, and a blank line ends it.
+// A zero amount is neither, and its continuations are dropped with it.
+//
+// Statement rows carry no transaction id, so a deterministic one is derived
+// from the row's fields: the same file re-uploaded produces the same ids and
+// dedupes to nothing. A payment's key is unchanged from before outgoing rows
+// were read, so statements imported earlier still dedupe. An expense's key
+// is salted with "out|", so the two directions never share an id.
+func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, error) {
+	var in []n26Candidate
+	var out []n26ExpenseCandidate
+	// A continuation line extends the last kept row of either direction:
+	// lastDir names the slice ('i' in, 'o' out, 0 none) and lastIdx its row.
+	// An index, not a pointer, so a later append cannot leave it dangling.
+	var lastDir byte
 	lastIdx := -1
-	for _, raw := range lines {
+	for _, raw := range strings.Split(text, "\n") {
 		if m := n26StatementRowPattern.FindStringSubmatch(raw); m != nil {
 			date, counterparty, amount := m[1], strings.TrimSpace(m[2]), m[3]
 			paidOn, err := parseN26Date(date)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			cents, err := parseN26AmountCents(amount)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			if cents <= 0 {
-				lastIdx = -1 // money out: skipped, and its continuations with it
-				continue
+			switch {
+			case cents > 0:
+				in = append(in, n26Candidate{
+					DocumentKind: n26KindAccountStatement,
+					PaidOn:       paidOn.Format("2006-01-02"),
+					Currency:     "EUR",
+					GrossCents:   cents,
+					NetCents:     cents,
+					SenderName:   counterparty,
+				})
+				lastDir, lastIdx = 'i', len(in)-1
+			case cents < 0:
+				out = append(out, n26ExpenseCandidate{
+					PaidOn:      paidOn.Format("2006-01-02"),
+					Currency:    "EUR",
+					AmountCents: -cents,
+					PayeeName:   counterparty,
+				})
+				lastDir, lastIdx = 'o', len(out)-1
+			default:
+				lastDir, lastIdx = 0, -1
 			}
-			out = append(out, n26Candidate{
-				DocumentKind: n26KindAccountStatement,
-				PaidOn:       paidOn.Format("2006-01-02"),
-				Currency:     "EUR",
-				GrossCents:   cents,
-				NetCents:     cents,
-				SenderName:   counterparty,
-			})
-			lastIdx = len(out) - 1
 			continue
 		}
 		// A date-less content line directly under a kept row extends its note.
 		t := strings.TrimSpace(raw)
-		if lastIdx >= 0 && t != "" && !strings.Contains(t, "Estratto conto") {
-			if out[lastIdx].Note != "" {
-				out[lastIdx].Note += " "
+		if lastDir != 0 && t != "" && !strings.Contains(t, "Estratto conto") {
+			var note *string
+			if lastDir == 'i' {
+				note = &in[lastIdx].Note
+			} else {
+				note = &out[lastIdx].Note
 			}
-			out[lastIdx].Note += t
+			if *note != "" {
+				*note += " "
+			}
+			*note += t
 		} else if t == "" {
-			lastIdx = -1
+			lastDir, lastIdx = 0, -1
 		}
 	}
 	// The id carries the row's occurrence number among identical (date,
-	// amount, sender, note) tuples, so two genuinely separate but identical
-	// payments in one statement stay two payments, while a re-upload of the
+	// amount, counterparty, note) tuples, so two genuinely separate but
+	// identical rows in one statement stay two rows, while a re-upload of the
 	// same file still produces the same ids (security review F1, #9812
 	// c60279).
 	counts := map[string]int{}
-	for i := range out {
-		c := &out[i]
-		key := c.PaidOn + "|" + fmt.Sprint(c.GrossCents) + "|" + c.SenderName + "|" + c.Note
+	stmtID := func(key string) string {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d", key, counts[key])))
 		counts[key]++
-		c.TransactionID = "stmt-" + hex.EncodeToString(sum[:])[:24]
+		return "stmt-" + hex.EncodeToString(sum[:])[:24]
 	}
-	return out, nil
+	for i := range in {
+		c := &in[i]
+		c.TransactionID = stmtID(c.PaidOn + "|" + fmt.Sprint(c.GrossCents) + "|" + c.SenderName + "|" + c.Note)
+	}
+	for i := range out {
+		e := &out[i]
+		e.TransactionID = stmtID("out|" + e.PaidOn + "|" + fmt.Sprint(e.AmountCents) + "|" + e.PayeeName + "|" + e.Note)
+	}
+	return in, out, nil
 }
 
 // detectN26Document runs the strategy chain; empty name means no kind matched.
@@ -435,6 +506,41 @@ func flagN26Candidates(db *gorm.DB, owner uint, cands []n26Candidate) error {
 		}
 		var twin data_models.InvoicingPayment
 		err = db.Where("owner_user_id = ? AND paid_on = ? AND gross_cents = ?", owner, paidOn, c.GrossCents).
+			Order("id asc").First(&twin).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		c.PossibleDuplicateOf = twin.ID
+	}
+	return nil
+}
+
+// flagN26ExpenseCandidates is flagN26Candidates for outgoing rows: a
+// candidate already stored as an N26 expense under its id, or colliding on
+// date and amount with any of the owner's expenses (one she entered by hand
+// before importing the statement, typically).
+func flagN26ExpenseCandidates(db *gorm.DB, owner uint, cands []n26ExpenseCandidate) error {
+	for i := range cands {
+		c := &cands[i]
+		var n int
+		if err := db.Model(&data_models.InvoicingExpense{}).
+			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourceN26, c.TransactionID).
+			Count(&n).Error; err != nil {
+			return err
+		}
+		c.AlreadyImported = n > 0
+		if c.AlreadyImported {
+			continue
+		}
+		paidOn, err := time.Parse("2006-01-02", c.PaidOn)
+		if err != nil {
+			return err
+		}
+		var twin data_models.InvoicingExpense
+		err = db.Where("owner_user_id = ? AND paid_on = ? AND amount_cents = ?", owner, paidOn, c.AmountCents).
 			Order("id asc").First(&twin).Error
 		if err == gorm.ErrRecordNotFound {
 			continue
@@ -518,6 +624,20 @@ func ImportN26ParseHandler(c *gin.Context) {
 			log.Printf("N26 import: flagging candidates of %q: %v", fh.Filename, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error checking candidates against stored payments")
 			return
+		}
+		if strategy.expenses != nil {
+			expenses, err := strategy.expenses(text)
+			if err != nil {
+				log.Printf("N26 import: parsing %q's outgoing rows: %v", fh.Filename, err)
+				fail(n26ErrParseFailed, fmt.Sprintf("read as %s but a field is missing or malformed: %v", strategy.name, err))
+				continue
+			}
+			if err := flagN26ExpenseCandidates(db, invoicingUserID(c), expenses); err != nil {
+				log.Printf("N26 import: flagging expense candidates of %q: %v", fh.Filename, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error checking candidates against stored expenses")
+				return
+			}
+			entry.ExpenseCandidates = expenses
 		}
 		entry.DocumentKind = strategy.name
 		entry.Candidates = cands
@@ -685,6 +805,182 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error committing N26 confirm: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error storing payments")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"summary": summary})
+}
+
+// n26ExpenseConfirmRow is one outgoing row the owner confirmed: the
+// candidate's fields, plus the category she picked (empty means "other").
+type n26ExpenseConfirmRow struct {
+	TransactionID string `json:"transaction_id"`
+	PaidOn        string `json:"paid_on"`
+	Currency      string `json:"currency"`
+	AmountCents   int64  `json:"amount_cents"`
+	PayeeName     string `json:"payee_name"`
+	Note          string `json:"note"`
+	Category      string `json:"category"`
+}
+
+type n26ExpenseConfirmRequest struct {
+	Rows []n26ExpenseConfirmRow `json:"rows"`
+}
+
+// ImportN26ExpensesConfirmHandler stores the outgoing statement rows the owner
+// confirmed as work expenses (system_3 #10414-B): POST
+// /invoicing/expenses/import-n26/confirm. Each becomes an InvoicingExpense
+// with source "n26", entry "import", the payee in Reference, and the category
+// she picked (one of her own expense categories, default "other"). Rows
+// already stored under their (source, transaction id) count as duplicates
+// and are skipped. An invalid row fails the whole request, because the
+// client only ever posts back rows the parse endpoint produced. It is the
+// payment confirm's twin, so the same bounds and dedupe apply, under the
+// book lock every expense write takes.
+func ImportN26ExpensesConfirmHandler(c *gin.Context) {
+	db := c.MustGet("db").(*gorm.DB)
+
+	var req n26ExpenseConfirmRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondWithError(c, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.Rows) == 0 {
+		RespondWithError(c, http.StatusBadRequest, "rows is empty")
+		return
+	}
+	if len(req.Rows) > maxN26ConfirmRows {
+		respondError(c, http.StatusBadRequest, "too_many_rows",
+			fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows))
+		return
+	}
+	type validated struct {
+		row    n26ExpenseConfirmRow
+		paidOn time.Time
+	}
+	rows := make([]validated, 0, len(req.Rows))
+	for i, row := range req.Rows {
+		bad := func(msg string) {
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, msg))
+		}
+		row.TransactionID = strings.TrimSpace(row.TransactionID)
+		row.PayeeName = strings.TrimSpace(row.PayeeName)
+		row.Note = strings.TrimSpace(row.Note)
+		row.Category = strings.TrimSpace(row.Category)
+		if row.Category == "" {
+			row.Category = data_models.ExpenseCategoryOther
+		}
+		// Only statement rows reach here, and their ids are always derived.
+		if !strings.HasPrefix(row.TransactionID, "stmt-") || len(row.TransactionID) > 100 {
+			bad("transaction_id is not an N26 statement row id")
+			return
+		}
+		if row.PayeeName == "" || utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes ||
+			strings.Contains(row.PayeeName, "\n") || hasControlChars(row.PayeeName) || hasFormatChars(row.PayeeName) {
+			bad(fmt.Sprintf("payee_name must be one line of 1-%d characters", maxManualReferenceRunes))
+			return
+		}
+		if utf8.RuneCountInString(row.Note) > maxManualNoteRunes || hasControlChars(row.Note) {
+			bad(fmt.Sprintf("note is longer than %d characters", maxManualNoteRunes))
+			return
+		}
+		if row.Currency != "EUR" {
+			bad("currency must be EUR")
+			return
+		}
+		paidOn, err := time.Parse(invoicingDateLayout, row.PaidOn)
+		if err != nil {
+			bad("paid_on is not a yyyy-mm-dd date")
+			return
+		}
+		if paidOn.After(berlinToday()) || paidOn.Before(earliestPaymentDate) {
+			bad("paid_on is in the future or before 2000-01-01")
+			return
+		}
+		if row.AmountCents <= 0 || row.AmountCents > maxUnitPriceCents {
+			bad("amount_cents must be a whole number of cents above zero")
+			return
+		}
+		rows = append(rows, validated{row: row, paidOn: paidOn})
+	}
+
+	owner := invoicingUserID(c)
+	summary := n26ConfirmSummary{}
+	tx := db.Begin()
+	// The book lock, as every expense write takes: two concurrent confirms of
+	// the same rows cannot both pass the exists check.
+	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
+		tx.Rollback()
+		log.Printf("Error locking for an N26 expense confirm: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+		return
+	}
+	categoryOK := map[string]bool{}
+	seen := map[string]bool{}
+	for i, v := range rows {
+		ok, checked := categoryOK[v.row.Category]
+		if !checked {
+			valid, err := data_models.IsExpenseCategoryForOwner(tx, owner, v.row.Category)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error checking expense category %q: %v", v.row.Category, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+				return
+			}
+			ok, categoryOK[v.row.Category] = valid, valid
+		}
+		if !ok {
+			tx.Rollback()
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: category is not one of your expense categories", i))
+			return
+		}
+		if seen[v.row.TransactionID] {
+			summary.Duplicates++
+			continue
+		}
+		seen[v.row.TransactionID] = true
+		var n int
+		if err := tx.Model(&data_models.InvoicingExpense{}).
+			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourceN26, v.row.TransactionID).
+			Count(&n).Error; err != nil {
+			tx.Rollback()
+			log.Printf("Error checking N26 expense %s: %v", v.row.TransactionID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+			return
+		}
+		if n > 0 {
+			summary.Duplicates++
+			continue
+		}
+		e := data_models.InvoicingExpense{
+			OwnerUserID:   owner,
+			Source:        invoicingPaymentSourceN26,
+			TransactionID: v.row.TransactionID,
+			PaidOn:        v.paidOn,
+			Currency:      "EUR",
+			AmountCents:   v.row.AmountCents,
+			Note:          v.row.Note,
+			Category:      v.row.Category,
+			Entry:         data_models.ExpenseEntryImport,
+			Reference:     v.row.PayeeName,
+		}
+		if err := tx.Create(&e).Error; err != nil {
+			tx.Rollback()
+			log.Printf("Error storing N26 expense %s: %v", v.row.TransactionID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+			return
+		}
+		summary.Confirmed++
+	}
+	details := auditDetails(gin.H{"source": invoicingPaymentSourceN26, "entity": invoicingEntityExpense, "summary": summary})
+	if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionImport, invoicingEntityExpense, 0, details); err != nil {
+		tx.Rollback()
+		log.Printf("Error auditing N26 expense confirm: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("Error committing N26 expense confirm: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"summary": summary})
