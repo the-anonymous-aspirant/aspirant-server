@@ -56,7 +56,14 @@ func commanderURL() string {
 func commanderProxyGet(c *gin.Context, path string) {
 	url := fmt.Sprintf("%s%s", commanderURL(), path)
 
-	resp, err := commanderClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+
+	resp, err := doProxy(commanderClient, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -99,7 +106,7 @@ func UpdateCommanderTaskHandler(c *gin.Context) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := commanderClient.Do(req)
+	resp, err := doProxy(commanderClient, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -127,7 +134,7 @@ func DeleteCommanderTaskHandler(c *gin.Context) {
 		return
 	}
 
-	resp, err := commanderClient.Do(req)
+	resp, err := doProxy(commanderClient, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -156,7 +163,7 @@ func TriggerCommanderProcessHandler(c *gin.Context) {
 	}
 	req.Header.Set("Content-Type", c.GetHeader("Content-Type"))
 
-	resp, err := commanderClient.Do(req)
+	resp, err := doProxy(commanderClient, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -204,7 +211,7 @@ func UpdateCommanderNoteHandler(c *gin.Context) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := commanderClient.Do(req)
+	resp, err := doProxy(commanderClient, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -232,7 +239,7 @@ func DeleteCommanderNoteHandler(c *gin.Context) {
 		return
 	}
 
-	resp, err := commanderClient.Do(req)
+	resp, err := doProxy(commanderClient, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
@@ -300,7 +307,7 @@ func commanderProxyPassthroughVia(c *gin.Context, client *http.Client, method st
 		req.Header.Set("X-Aspirant-User-Id", fmt.Sprintf("%v", uid))
 	}
 
-	resp, err := client.Do(req)
+	resp, err := doProxy(client, req, c)
 	if err != nil {
 		respondCommanderError(c, err)
 		return
