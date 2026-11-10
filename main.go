@@ -75,6 +75,11 @@ func main() {
 	// above). Must run after the DB is up so the drain loop has a live handle.
 	handlers.StartProxyLatencyWriter(db)
 
+	// Start the nightly per-service usage rollup (system_3 #10490-C /
+	// #10496-C1): one row per served container or feature table, written once
+	// daily near 03:00 UTC. Best-effort, same construction as the writer above.
+	handlers.StartServiceUsageRollup(db)
+
 	// Build the outbound-mail sender. A mail misconfiguration must NOT stop the
 	// server: on 2026-09-05 an earlier version log.Fatal'd here and took the
 	// whole site down for want of two environment variables, because compose
