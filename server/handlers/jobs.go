@@ -41,7 +41,7 @@ func JobsProxyHandler(c *gin.Context) {
 		req.Header.Set("Accept", accept)
 	}
 
-	resp, err := browserClient.Do(req)
+	resp, err := doProxy(browserClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach browser service for jobs: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Browser service unavailable")
