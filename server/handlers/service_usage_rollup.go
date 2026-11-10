@@ -224,6 +224,20 @@ func proxyRequestCounts(db *gorm.DB, upstream string, since time.Time) (total in
 
 func ptrInt64(v int64) *int64 { return &v }
 
+// truncateLastUsedToDay drops a last-used timestamp to its UTC calendar date
+// (security review, c64842 on #10505): report 877 only needs to know
+// whether a service is in use, which day precision answers, and with few
+// members a second-precision `MAX(created_at)` of member-only activity is
+// close to logging when one specific person was last online. Applied at
+// write time so no reader needs to know to re-truncate it.
+func truncateLastUsedToDay(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return &d
+}
+
 // runServiceUsageRollup performs one rollup pass: one container row per
 // aspirant-monitor container, one feature row per featureTables entry, all
 // sharing one AsOf timestamp.
@@ -269,7 +283,7 @@ func runServiceUsageRollup(db *gorm.DB) {
 			}
 			row.RequestCount = ptrInt64(total)
 			row.RequestCountMember = ptrInt64(member)
-			row.LastUsedAt = lastUsed
+			row.LastUsedAt = truncateLastUsedToDay(lastUsed)
 		}
 		if err := db.Create(&row).Error; err != nil {
 			log.Printf("service usage rollup: insert failed for container %s: %v", c.Name, err)
@@ -286,7 +300,7 @@ func runServiceUsageRollup(db *gorm.DB) {
 			ServiceName:  ft.table,
 			Kind:         "feature",
 			RequestCount: ptrInt64(count),
-			LastUsedAt:   lastUsed,
+			LastUsedAt:   truncateLastUsedToDay(lastUsed),
 			AsOf:         asOf,
 		}
 		if err := db.Create(&row).Error; err != nil {
@@ -308,10 +322,22 @@ func StartServiceUsageRollup(db *gorm.DB) {
 		for {
 			now := time.Now()
 			if shouldRunDailyRollup(now, lastRunDate, rollupTargetHour) {
-				runServiceUsageRollup(db)
+				runServiceUsageRollupSafely(db)
 				lastRunDate = now.UTC().Format("2006-01-02")
 			}
 			time.Sleep(time.Minute)
 		}
 	}()
+}
+
+// runServiceUsageRollupSafely recovers a panic inside runServiceUsageRollup
+// (security review, c64842 on #10505): without it, a panic here at 03:00
+// would crash the whole server, not just skip one night's rollup.
+func runServiceUsageRollupSafely(db *gorm.DB) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("service usage rollup: recovered from panic: %v", r)
+		}
+	}()
+	runServiceUsageRollup(db)
 }
