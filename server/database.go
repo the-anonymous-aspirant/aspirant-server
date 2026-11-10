@@ -302,6 +302,11 @@ func AutoMigrate(db *gorm.DB) {
 	// timeout ceiling.
 	db.AutoMigrate(&data_models.ProxyRequestLog{})
 
+	// Nightly per-service usage rollup (system_3 #10490-C / #10496-C1): one
+	// row per served container or server-native feature table, written by
+	// handlers.StartServiceUsageRollup.
+	db.AutoMigrate(&data_models.ServiceUsageRollup{})
+
 	// Step 18: Constellations card editor, types and templates (system_3
 	// #8634, subtask #8643). Versioned, append-only template specs with an
 	// `extends` parent; the seed is insert-if-absent and never resets an
