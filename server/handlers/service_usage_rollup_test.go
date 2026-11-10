@@ -156,4 +156,38 @@ func TestRunServiceUsageRollupFeatureTablesSurviveMonitorFailure(t *testing.T) {
 	if containerRows != 0 {
 		t.Errorf("expected no container rows when monitor is unreachable, got %d", containerRows)
 	}
+
+	// Security review (c64842 on #10505): last_used_at must land at day
+	// precision, never to the second, with few members a second-precision
+	// timestamp is close to logging exactly when one person was last online.
+	if row.LastUsedAt == nil {
+		t.Fatal("expected a non-nil last_used_at")
+	}
+	if h, m, s := row.LastUsedAt.Clock(); h != 0 || m != 0 || s != 0 {
+		t.Errorf("last_used_at = %v, want midnight (day precision only)", row.LastUsedAt)
+	}
+}
+
+func TestTruncateToDay(t *testing.T) {
+	if got := truncateLastUsedToDay(nil); got != nil {
+		t.Errorf("truncateLastUsedToDay(nil) = %v, want nil", got)
+	}
+	in := time.Date(2026, 11, 10, 23, 59, 59, 999, time.UTC)
+	want := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	got := truncateLastUsedToDay(&in)
+	if got == nil || !got.Equal(want) {
+		t.Errorf("truncateLastUsedToDay(%v) = %v, want %v", in, got, want)
+	}
+}
+
+func TestRunServiceUsageRollupSafelyRecoversFromPanic(t *testing.T) {
+	// A nil *gorm.DB makes every query inside runServiceUsageRollup panic —
+	// this must be caught, not crash the process (security review, c64842
+	// on #10505).
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("runServiceUsageRollupSafely let a panic escape: %v", r)
+		}
+	}()
+	runServiceUsageRollupSafely(nil)
 }
