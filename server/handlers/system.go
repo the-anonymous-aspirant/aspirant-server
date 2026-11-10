@@ -25,7 +25,14 @@ func monitorURL() string {
 func monitorProxyGet(c *gin.Context, path string) {
 	url := fmt.Sprintf("%s%s", monitorURL(), path)
 
-	resp, err := monitorClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+
+	resp, err := doProxy(monitorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach monitor: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Monitor service unavailable")

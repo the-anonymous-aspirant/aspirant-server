@@ -24,7 +24,14 @@ func advisorURL() string {
 func advisorProxyGet(c *gin.Context, path string) {
 	url := fmt.Sprintf("%s%s", advisorURL(), path)
 
-	resp, err := advisorClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+
+	resp, err := doProxy(advisorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach advisor: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Advisor service unavailable")
@@ -53,7 +60,7 @@ func advisorProxyPost(c *gin.Context, path string) {
 	}
 	req.Header.Set("Content-Type", c.GetHeader("Content-Type"))
 
-	resp, err := advisorClient.Do(req)
+	resp, err := doProxy(advisorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach advisor: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Advisor service unavailable")
@@ -81,7 +88,7 @@ func advisorProxyDelete(c *gin.Context, path string) {
 		return
 	}
 
-	resp, err := advisorClient.Do(req)
+	resp, err := doProxy(advisorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach advisor: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Advisor service unavailable")
@@ -112,7 +119,7 @@ func advisorProxyMultipart(c *gin.Context, path string) {
 	// Preserve the original Content-Type with boundary parameter
 	req.Header.Set("Content-Type", c.GetHeader("Content-Type"))
 
-	resp, err := advisorClient.Do(req)
+	resp, err := doProxy(advisorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach advisor: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Advisor service unavailable")

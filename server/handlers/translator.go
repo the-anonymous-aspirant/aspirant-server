@@ -24,7 +24,14 @@ func translatorURL() string {
 func translatorProxyGet(c *gin.Context, path string) {
 	url := fmt.Sprintf("%s%s", translatorURL(), path)
 
-	resp, err := translatorClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+
+	resp, err := doProxy(translatorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach translator: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Translator service unavailable")
@@ -54,7 +61,7 @@ func translatorProxyPost(c *gin.Context, path string) {
 	}
 	req.Header.Set("Content-Type", c.GetHeader("Content-Type"))
 
-	resp, err := translatorClient.Do(req)
+	resp, err := doProxy(translatorClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach translator: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Translator service unavailable")

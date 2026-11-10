@@ -24,7 +24,14 @@ func transcriberURL() string {
 func proxyGet(c *gin.Context, path string) {
 	url := fmt.Sprintf("%s%s", transcriberURL(), path)
 
-	resp, err := proxyClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+
+	resp, err := doProxy(proxyClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach transcriber: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Transcriber service unavailable")
@@ -69,7 +76,7 @@ func UploadVoiceMessageHandler(c *gin.Context) {
 	}
 	req.Header.Set("Content-Type", c.GetHeader("Content-Type"))
 
-	resp, err := proxyClient.Do(req)
+	resp, err := doProxy(proxyClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach transcriber: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Transcriber service unavailable")
@@ -98,7 +105,7 @@ func DeleteVoiceMessageHandler(c *gin.Context) {
 		return
 	}
 
-	resp, err := proxyClient.Do(req)
+	resp, err := doProxy(proxyClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach transcriber: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Transcriber service unavailable")
@@ -120,7 +127,14 @@ func DeleteVoiceMessageHandler(c *gin.Context) {
 func GetVoiceAudioHandler(c *gin.Context) {
 	url := fmt.Sprintf("%s/voice-messages/%s/audio", transcriberURL(), c.Param("id"))
 
-	resp, err := proxyClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+
+	resp, err := doProxy(proxyClient, req, c)
 	if err != nil {
 		log.Printf("Failed to reach transcriber: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Transcriber service unavailable")
