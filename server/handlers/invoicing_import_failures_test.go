@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -596,3 +597,155 @@ func TestSweepWithNoDirLeavesRowsUnstamped(t *testing.T) {
 		t.Fatal("a row must not be stamped deleted by a pass that deleted nothing")
 	}
 }
+
+// --- #10567: the uploader is told when a kept copy is deleted ---
+
+// near reports whether got is want give or take a minute: the expiry is
+// computed from the row's own CreatedAt, a moment after the test's now.
+func near(got *time.Time, want time.Time) bool {
+	return got != nil && got.Sub(want) < time.Minute && want.Sub(*got) < time.Minute
+}
+
+func TestRecordImportFailureReturnsTheExpiryOnlyForAKeptCopy(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", t.TempDir())
+	t.Setenv("IMPORT_FAILURE_WINDOW_HOURS", "24")
+	db := setupImportFailuresDB(t)
+	got := recordImportFailure(db, 1, "n26", "a.pdf", 5, []byte("hello"), n26ErrParseFailed, "", 0)
+	if !near(got, time.Now().UTC().Add(24*time.Hour)) {
+		t.Fatalf("expiry = %v, want about a day from now (the env window)", got)
+	}
+	if row := lastImportFailure(t, db); !got.Equal(row.CreatedAt.Add(24 * time.Hour)) {
+		t.Fatalf("expiry %v doesn't match the row's own window (%v + 24h)", got, row.CreatedAt)
+	}
+	if got := recordImportFailure(db, 1, "n26", "big.pdf", 999, nil, n26ErrTooLarge, "", 0); got != nil {
+		t.Fatalf("no data, no copy: expiry should be nil, got %v", got)
+	}
+}
+
+func TestRecordImportFailureReturnsNilWithNoDirConfigured(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", "")
+	db := setupImportFailuresDB(t)
+	if got := recordImportFailure(db, 1, "n26", "a.pdf", 5, []byte("hello"), n26ErrParseFailed, "", 0); got != nil {
+		t.Fatalf("no directory, no copy: expiry should be nil, got %v", got)
+	}
+}
+
+func TestRecordImportFailureUnstoredRecordKeepsNoCopyAndClaimsNone(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", dir)
+	db := setupImportFailuresDB(t)
+	db.DropTable(&data_models.InvoicingImportFailure{})
+	if got := recordImportFailure(db, 1, "n26", "a.pdf", 5, []byte("hello"), n26ErrParseFailed, "", 0); got != nil {
+		t.Fatalf("record not stored: expiry should be nil, got %v", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("a copy no record points at was left behind: %d file(s)", len(entries))
+	}
+}
+
+func TestN26FailedFileCarriesItsCopyExpiryOnlyWhenKept(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", t.TempDir())
+	db := setupImportFailuresDB(t)
+	r := setupN26Router(db, 7)
+	w := uploadN26(t, r, map[string][]byte{
+		"not-a-pdf.pdf": []byte("just plain text that is neither a PDF nor a CSV export"),
+		"big.pdf":       make([]byte, maxN26PDFBytes+1),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
+	}
+	for _, f := range decodeN26Parse(t, w).Files {
+		switch f.Filename {
+		case "not-a-pdf.pdf":
+			if !near(f.CopyExpiresAt, time.Now().UTC().Add(importFailureWindow())) {
+				t.Fatalf("kept copy: copy_expires_at = %v, want about the window from now", f.CopyExpiresAt)
+			}
+		case "big.pdf":
+			if f.CopyExpiresAt != nil {
+				t.Fatalf("too large, no copy kept: copy_expires_at should be absent, got %v", f.CopyExpiresAt)
+			}
+		}
+	}
+	if !strings.Contains(w.Body.String(), `"copy_expires_at"`) {
+		t.Fatalf("the field's JSON name is copy_expires_at: %s", w.Body.String())
+	}
+}
+
+func TestN26HeaderOnlyCSVCarriesItsCopyExpiry(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", t.TempDir())
+	db := setupImportFailuresDB(t)
+	r := setupN26Router(db, 7)
+	w := uploadN26(t, r, map[string][]byte{"empty.csv": []byte(n26CSVHeaderLine + "\n")})
+	f := decodeN26Parse(t, w).Files[0]
+	if f.Error != nil || f.CopyExpiresAt == nil {
+		t.Fatalf("no rows, copy kept: want no error and an expiry, got %+v", f)
+	}
+}
+
+func TestN26FailedFileWithNoDirCarriesNoExpiry(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", "")
+	db := setupImportFailuresDB(t)
+	r := setupN26Router(db, 7)
+	w := uploadN26(t, r, map[string][]byte{"not-a-pdf.pdf": []byte("just plain text that is neither a PDF nor a CSV export")})
+	if strings.Contains(w.Body.String(), "copy_expires_at") {
+		t.Fatalf("no copy kept, the field must be absent: %s", w.Body.String())
+	}
+}
+
+func TestPayPalInvalidFileErrorCarriesItsCopyExpiryOnlyWhenKept(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", t.TempDir())
+	db := setupImportFailuresDB(t)
+	r := setupPaymentsRouter(db, 7)
+	w := uploadCSV(t, r, "not,a,recognised,header\n1,2,3,4", "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error         ErrorDetail `json:"error"`
+		CopyExpiresAt *time.Time  `json:"copy_expires_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "invalid_csv" || !near(body.CopyExpiresAt, time.Now().UTC().Add(importFailureWindow())) {
+		t.Fatalf("body: %s", w.Body.String())
+	}
+
+	// Too large: refused before being read, so no copy and no field.
+	w = uploadCSV(t, r, string(make([]byte, maxPayPalImportBytes+1)), "")
+	if strings.Contains(w.Body.String(), "copy_expires_at") {
+		t.Fatalf("no copy kept, the field must be absent: %s", w.Body.String())
+	}
+}
+
+func TestPayPalNoRowsSummaryCarriesItsCopyExpiry(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", t.TempDir())
+	db := setupImportFailuresDB(t)
+	r := setupPaymentsRouter(db, 7)
+	w := uploadCSV(t, r, reversalHeader, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"copy_expires_at"`) {
+		t.Fatalf("no rows read, copy kept: the summary should carry copy_expires_at: %s", w.Body.String())
+	}
+}
+
+func TestPayPalDateOrderAmbiguousCarriesNoExpiry(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", t.TempDir())
+	db := setupImportFailuresDB(t)
+	r := setupPaymentsRouter(db, 7)
+	w := uploadCSV(t, r, ambiguousDateOrderCSVForImportFailureTest, "")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "date_order_ambiguous") {
+		t.Fatalf("precondition: want date_order_ambiguous, got %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "copy_expires_at") {
+		t.Fatalf("not recorded, so no copy: the field must be absent: %s", w.Body.String())
+	}
+}
+
+// Day and month both <=12, so the order is ambiguous without the hint (the
+// same shape TestPayPalImportDateOrderAmbiguousIsNotRecorded uses).
+const ambiguousDateOrderCSVForImportFailureTest = "Date,Time,TimeZone,Name,Type,Status,Currency,Gross,Fee,Net,From Email Address,To Email Address,Transaction ID,Reference Txn ID\n" +
+	"07/08/2026,10:00:00,CET,Someone,General Payment,Completed,EUR,10.00,0.00,10.00,a@b.com,,TX1,"

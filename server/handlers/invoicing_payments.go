@@ -49,6 +49,23 @@ type invoicingImportSummary struct {
 	Refunds int `json:"refunds"`
 	// Format is the file format read: csv or xlsx.
 	Format string `json:"format"`
+	// CopyExpiresAt is set only when the file read no rows and a copy of it
+	// was kept for the administrator; it is when that copy is deleted
+	// (#10567).
+	CopyExpiresAt *time.Time `json:"copy_expires_at,omitempty"`
+}
+
+// importErrorResponse is the usual error body plus, when a copy of the
+// failed file was kept, when it will be deleted (design ruling c65231 on
+// system_3 #10536, #10567). Absent when no copy exists.
+type importErrorResponse struct {
+	Error         ErrorDetail `json:"error"`
+	CopyExpiresAt *time.Time  `json:"copy_expires_at,omitempty"`
+}
+
+func respondImportError(c *gin.Context, status int, code, message string, copyExpiresAt *time.Time) {
+	log.Printf("Error response: %d - %s - %s", status, code, message)
+	c.JSON(status, importErrorResponse{Error: ErrorDetail{Code: code, Message: message}, CopyExpiresAt: copyExpiresAt})
 }
 
 // File signatures the import sniffs: an .xlsx is a zip; a legacy .xls is an
@@ -91,9 +108,9 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 
 	if bytes.HasPrefix(data, ole2Signature) {
-		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, "xls_unsupported", "", 0)
-		respondError(c, http.StatusBadRequest, "xls_unsupported",
-			"This is an Excel 97-2003 (.xls) file. Save it as .xlsx or CSV and upload that.")
+		expires := recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, "xls_unsupported", "", 0)
+		respondImportError(c, http.StatusBadRequest, "xls_unsupported",
+			"This is an Excel 97-2003 (.xls) file. Save it as .xlsx or CSV and upload that.", expires)
 		return
 	}
 	format, code := "csv", "invalid_csv"
@@ -103,15 +120,16 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 	parsed, err := parse(data, c.PostForm("date_order"))
 	if err != nil {
+		var expires *time.Time
 		if errors.Is(err, ErrPayPalDateOrderAmbiguous) {
 			code = "date_order_ambiguous"
 		} else {
 			// date_order_ambiguous excluded: it always resolves on an
 			// immediate retry of the same file (system_3 #10536), so it
 			// reads as a normal interactive step, not a failure.
-			recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, code, format, 0)
+			expires = recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, code, format, 0)
 		}
-		respondError(c, http.StatusBadRequest, code, err.Error())
+		respondImportError(c, http.StatusBadRequest, code, err.Error(), expires)
 		return
 	}
 
@@ -123,7 +141,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	// failure the operator needs visibility into. The response to the
 	// uploader is unaffected -- rows_read: 0 already says this plainly.
 	if parsed.RowsRead == 0 {
-		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, format, 0)
+		summary.CopyExpiresAt = recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, format, 0)
 	}
 
 	tx := db.Begin()
