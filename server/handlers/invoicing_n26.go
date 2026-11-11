@@ -124,6 +124,9 @@ type n26ParsedFile struct {
 	ExpenseCandidates []n26ExpenseCandidate `json:"expense_candidates,omitempty"`
 	Skipped           map[string]int        `json:"skipped,omitempty"`
 	Error             *n26FileError         `json:"error,omitempty"`
+	// CopyExpiresAt is set only when this file failed and a copy of it was
+	// kept for the administrator; it is when that copy is deleted (#10567).
+	CopyExpiresAt *time.Time `json:"copy_expires_at,omitempty"`
 }
 
 // dropPayPalTransfers removes the candidates whose payer is PayPal and
@@ -781,8 +784,8 @@ func ImportN26ParseHandler(c *gin.Context) {
 		var documentKind string
 		fail := func(code, message string) {
 			entry.Error = &n26FileError{Code: code, Message: message}
+			entry.CopyExpiresAt = recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, code, documentKind, 0)
 			out = append(out, entry)
-			recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, code, documentKind, 0)
 		}
 		if fh.Size > maxN26PDFBytes {
 			fail(n26ErrTooLarge, "the file is larger than 5 MB")
@@ -878,7 +881,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 		// incoming ones imported correctly and is not a failure (security
 		// review F1 on #10536, c65539).
 		if len(cands) == 0 && len(entry.ExpenseCandidates) == 0 {
-			recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, documentKind, 0)
+			entry.CopyExpiresAt = recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, documentKind, 0)
 		}
 		out = append(out, entry)
 	}
