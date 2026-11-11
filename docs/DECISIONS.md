@@ -82,3 +82,12 @@ Key architectural and design decisions for aspirant-server.
 **Why only an OS package and not a Go module:** the only maintained pure-Go candidate fails the must-pass dimension outright — the toolchain question (it needs go ≥ 1.24.1; this repo is on 1.26) turned out irrelevant, it extracts garbage from these files at every version. pdfium would work but costs an order of magnitude more complexity than shelling out to a binary alpine ships.
 
 **Open questions parked:** the account-statement strategy is built against look-alike fixtures only (no real statement existed at authoring time); its first real file validates it (system_3 #9814). If poppler's output shape for statements differs, only `parseN26AccountStatement` changes.
+
+## N26 CSV Export as the Preferred N26 Input
+
+**Decision:** The N26 import reads N26's CSV export in the same parse endpoint as the PDFs, recognised from its bytes (valid UTF-8 whose first record has two or more fields), and the PDFs stay as the fallback (operator, system_3 #9656 c65186; built in system_3 #10543). The CSV is read with Go's standard `encoding/csv`, so it adds no dependency.
+
+**Rationale:**
+- **Columns by name, never by position.** The only real export has English headers; an export in another language may carry other names, possibly in another order. A per-language header table maps each needed column to its name, and a header no language matches is a per-file `csv_headers_unrecognised` error that names the headers seen (system_3 #10534 c65204). A guessed language table could map two columns wrongly without failing, so a language is added only from a real file.
+- **Space transfers by structure.** One export holds every account. A transfer between the main account and a Space appears once on each account, with the other account's name as its partner and no IBAN; every external transfer, direct debit and MoneyBeam carries an IBAN (checked on the operator's real export). A row is internal only when both hold, so a real counterparty that shares a Space's name stays a candidate.
+- **One payment, either file.** The value date is the payment date, as the statement's Wertstellung is, so the existing same-date-and-amount flag matches a CSV row against the same payment imported from a PDF.
