@@ -81,6 +81,14 @@ docker run -p 8080:8080 aspirant-server
 
 ## Testing
 
+The N26 invoice-import tests (`server/handlers/invoicing_n26_test.go`,
+`invoicing_links_test.go`, `invoicing_payment_delete_test.go`) shell out to
+`pdftotext`, so a plain `go test` image without `poppler-utils` fails all
+five with "pdftotext is not installed", not a code problem (system_3
+#10552 — found when that message was mistaken for a real break on `main`).
+Install it first: `apt-get install -y poppler-utils` (Debian/Ubuntu base
+images) or the equivalent for the image in use.
+
 ```bash
 # Run all tests
 go test ./...
