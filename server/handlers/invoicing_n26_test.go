@@ -113,9 +113,9 @@ func TestN26ParseTransferConfirmation(t *testing.T) {
 func TestN26ParseTransferConfirmationMalformed(t *testing.T) {
 	full := readN26Fixture(t, "n26_confirmation.txt")
 	for name, text := range map[string]string{
-		"no amount":    strings.Replace(full, "1.234,56 EUR", "", 1),
-		"no uuid":      strings.Replace(full, "a1b2c3d4-0e15-4a6f-9bd0-123456789abc", "not-an-id", 1),
-		"no sender":    strings.Replace(full, "DETTAGLI MITTENTE", "QUALCOS'ALTRO", 1),
+		"no amount": strings.Replace(full, "1.234,56 EUR", "", 1),
+		"no uuid":   strings.Replace(full, "a1b2c3d4-0e15-4a6f-9bd0-123456789abc", "not-an-id", 1),
+		"no sender": strings.Replace(full, "DETTAGLI MITTENTE", "QUALCOS'ALTRO", 1),
 		// Security review F2 (c60279): with the name line gone, the block's
 		// first content is the IBAN value — the parser must refuse, never
 		// store the IBAN as the sender.
@@ -732,9 +732,12 @@ func TestN26StatementContinuationLinesFollowEitherDirection(t *testing.T) {
 		"              nota della rettifica\n" +
 		"05.08.2026    Tipografia Esempio                                    -120,00 EUR\n\n" +
 		"              riga staccata dopo una riga vuota\n"
-	in, out, err := scanN26Statement(text)
+	in, out, skipped, err := scanN26Statement(text)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("the Italian layout has no internal-transfer skip concept: got %d", skipped)
 	}
 	if len(in) != 2 || len(out) != 2 {
 		t.Fatalf("got %d in, %d out, want 2 and 2: %+v %+v", len(in), len(out), in, out)
@@ -936,5 +939,312 @@ func TestN26ParseResponseCarriesExpenseCandidatesSeparately(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"expense_candidates":[`) {
 		t.Errorf("wire shape lacks expense_candidates: %s", w.Body.String())
+	}
+}
+
+// --- system_3 #10534: the real N26 German layout, alongside the Italian one above ---
+//
+// The operator's own N26 export is German (statement + Kontoaktivität); the
+// Italian layout above stays as its own path (operator, comment 65185 on
+// #9656) since no real Italian statement exists to retire it against.
+
+func TestN26DetectKontoaktivitaet(t *testing.T) {
+	if s, ok := detectN26Document(readN26Fixture(t, "n26_kontoaktivitaet.txt")); !ok || s.name != n26KindAccountStatement {
+		t.Fatalf("Kontoaktivität fixture: got (%q, %v)", s.name, ok)
+	}
+}
+
+func TestN26ParseStatementDE(t *testing.T) {
+	text := readN26Fixture(t, "n26_statement_de.txt")
+	cands, err := parseN26AccountStatement(text)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("got %d candidates, want 2 (money out and the internal Space transfer are not payments)", len(cands))
+	}
+	first, second := cands[0], cands[1]
+	if first.GrossCents != 25000 || first.SenderName != "Mara Beispiel" {
+		t.Errorf("first row: %+v", first)
+	}
+	if first.Note != "Vorschuss Wandbild" {
+		t.Errorf("first note: %q", first.Note)
+	}
+	if second.GrossCents != 100000 || second.SenderName != "Kunde Zwei GmbH" {
+		t.Errorf("second row: %+v", second)
+	}
+	// PaidOn is the value date (Wertstellung), not the booking date
+	// (Verbuchungsdatum) printed on the row itself: the fixture's first row
+	// books on 03.11.2026 but values on 04.11.2026.
+	if !strings.Contains(text, "03.11.2026       250,00€") {
+		t.Fatal("fixture drifted: the booking-date row is not in it verbatim")
+	}
+	if first.PaidOn != "2026-11-04" {
+		t.Errorf("first PaidOn: %q, want the Wertstellung date, not the booking date", first.PaidOn)
+	}
+	if second.PaidOn != "2026-11-11" {
+		t.Errorf("second PaidOn: %q, want the Wertstellung date", second.PaidOn)
+	}
+	for _, c := range cands {
+		if !strings.HasPrefix(c.TransactionID, "stmt-") {
+			t.Errorf("synthesized id: %q", c.TransactionID)
+		}
+	}
+	if first.TransactionID == second.TransactionID {
+		t.Error("distinct rows share a transaction id")
+	}
+	again, err := parseN26AccountStatement(text)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	for i := range cands {
+		if cands[i].TransactionID != again[i].TransactionID {
+			t.Errorf("row %d id not stable: %q vs %q", i, cands[i].TransactionID, again[i].TransactionID)
+		}
+	}
+}
+
+func TestN26StatementOutgoingRowsBecomeExpenseCandidatesDE(t *testing.T) {
+	text := readN26Fixture(t, "n26_statement_de.txt")
+	expenses, err := parseN26StatementExpenses(text)
+	if err != nil {
+		t.Fatalf("parse expenses: %v", err)
+	}
+	if len(expenses) != 2 {
+		t.Fatalf("got %d expense candidates, want 2: %+v", len(expenses), expenses)
+	}
+	first, second := expenses[0], expenses[1]
+	if first.PaidOn != "2026-11-05" || first.AmountCents != 4567 || first.PayeeName != "Beispiel Supermarkt" ||
+		first.Currency != "EUR" || first.Note != "" || !strings.HasPrefix(first.TransactionID, "stmt-") {
+		t.Errorf("first expense candidate: %+v", first)
+	}
+	// A Mastercard purchase has no IBAN/BIC line, and still parses cleanly.
+	if second.PaidOn != "2026-11-07" || second.AmountCents != 1250 || second.PayeeName != "BEISPIEL SPORTHALLE" ||
+		second.Note != "" || !strings.HasPrefix(second.TransactionID, "stmt-") {
+		t.Errorf("second expense candidate (Mastercard, no IBAN): %+v", second)
+	}
+
+	cands, err := parseN26AccountStatement(text)
+	if err != nil {
+		t.Fatalf("parse payments: %v", err)
+	}
+	for _, c := range cands {
+		for _, e := range expenses {
+			if c.TransactionID == e.TransactionID {
+				t.Errorf("a payment and an expense share an id: %q", c.TransactionID)
+			}
+		}
+	}
+
+	again, err := parseN26StatementExpenses(text)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	for i := range expenses {
+		if expenses[i].TransactionID != again[i].TransactionID {
+			t.Errorf("expense %d id not stable: %q vs %q", i, expenses[i].TransactionID, again[i].TransactionID)
+		}
+	}
+}
+
+// The Kontoaktivität export's per-Space summary page carries no dated rows:
+// its four aggregate lines (Eingänge/Ausgänge/Gebühren/Saldo) never match
+// the statement row pattern, so only the main account page's one real row
+// is read.
+func TestN26ParseKontoaktivitaetSkipsSpaceSummaryPage(t *testing.T) {
+	text := readN26Fixture(t, "n26_kontoaktivitaet.txt")
+	in, out, skipped, err := scanN26Statement(text)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(in) != 1 || len(out) != 0 || skipped != 0 {
+		t.Fatalf("got %d in, %d out, %d skipped, want 1, 0, 0: %+v", len(in), len(out), skipped, in)
+	}
+	if in[0].SenderName != "Mara Beispiel" || in[0].GrossCents != 25000 || in[0].PaidOn != "2026-11-04" {
+		t.Errorf("the one real row: %+v", in[0])
+	}
+}
+
+// A German row's detail block carries structural lines (the transaction
+// type, IBAN/BIC, the value date) alongside any genuine reference lines;
+// only the latter become the row's note, and multiple reference lines join
+// into one. A zero-amount row is neither a payment nor an expense. A row
+// with no type line (an N26 Space's own internal transfer, e.g. into
+// "Investments") is reported as a skip, not a candidate — the shape such a
+// row takes in the operator's real statement.
+func TestN26StatementMixedDetailBlocksDE(t *testing.T) {
+	text := "Kontoauszug Nr. 1/2026\n01.01.2026 bis 31.01.2026\n\n\n\n" +
+		"Zahlungsempfänger/Auftraggeber                            Verbuchungsdatum     Betrag\n\n" +
+		"Mara Beispiel                                             01.01.2026    250,00€\n" +
+		"Gutschriften\n" +
+		"IBAN: DE00111122223333444455 • BIC: BANKDEFFXXX\n" +
+		"Vorschuss Wandbild\n" +
+		"Wertstellung 02.01.2026\n\n" +
+		"Beispiel Farbenhandel                                     03.01.2026    -89,90€\n" +
+		"Lastschriften\n" +
+		"IBAN: DE00555566667777888899 • BIC: BANKDEFFXXX\n" +
+		"Pigmente und Leinwand\n" +
+		"Bestellung 4411\n" +
+		"Wertstellung 03.01.2026\n\n" +
+		"Kunde Zwei GmbH                                            05.01.2026   1.000,00€\n" +
+		"Gutschriften\n" +
+		"IBAN: DE00999988887777666655 • BIC: BANKDEFFXXX\n" +
+		"Wertstellung 06.01.2026\n\n" +
+		"Korrektur                                                  07.01.2026      0,00€\n" +
+		"Wertstellung 07.01.2026\n\n" +
+		"zu Investments                                             08.01.2026    -100,00€\n" +
+		"Wertstellung 08.01.2026\n\n"
+
+	in, out, skipped, err := scanN26Statement(text)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(in) != 2 || len(out) != 1 || skipped != 1 {
+		t.Fatalf("got %d in, %d out, %d skipped, want 2, 1, 1: %+v %+v", len(in), len(out), skipped, in, out)
+	}
+	if in[0].Note != "Vorschuss Wandbild" || in[1].Note != "" {
+		t.Errorf("incoming notes: %q, %q", in[0].Note, in[1].Note)
+	}
+	if out[0].PayeeName != "Beispiel Farbenhandel" || out[0].AmountCents != 8990 || out[0].Note != "Pigmente und Leinwand Bestellung 4411" {
+		t.Errorf("the outgoing row's two reference lines: %+v", out[0])
+	}
+	for _, c := range in {
+		if strings.Contains(c.Note, "IBAN") || strings.Contains(c.Note, "Gutschriften") {
+			t.Errorf("a structural line leaked into a note: %+v", c)
+		}
+	}
+	if in[0].PaidOn != "2026-01-02" {
+		t.Errorf("first row PaidOn: %q, want the Wertstellung date", in[0].PaidOn)
+	}
+}
+
+// The type vocabulary of N26's real German statement (system_3 #10534,
+// checked against the operator's October statement and N26's CSV export of
+// the same month; every name, IBAN and amount below is synthetic). Real
+// money: Gutschriften, Lastschriften, Belastungen, Mastercard with or
+// without a "• <category>" suffix, MoneyBeam — in either direction, and on a
+// per-Space page as much as on the main one (a Belastungen paid out of a
+// Space is still money leaving the account holder). Internal: a Round-up, a
+// Monthly Rule, and a "zu/von <Space>" row with no type line. A type the
+// parser has never seen is offered as a candidate, never dropped unseen.
+func TestN26StatementRealTypeVocabularyDE(t *testing.T) {
+	row := func(name, date, amount string, block ...string) string {
+		s := fmt.Sprintf("%-58s%s    %s€\n", name, date, amount)
+		for _, l := range block {
+			s += l + "\n"
+		}
+		return s + "\n"
+	}
+	text := "Kontoauszug Nr. 2/2026\n01.02.2026 bis 28.02.2026\n\n\n\n" +
+		"Zahlungsempfänger/Auftraggeber                            Verbuchungsdatum     Betrag\n\n" +
+		row("Beispiel Vermieter", "01.02.2026", "-700,00", "Belastungen", "IBAN: DE00111122223333444466 • BIC: BANKDEFFXXX", "Miete Atelier", "Wertstellung 01.02.2026") +
+		row("Lia Beispiel", "02.02.2026", "40,00", "MoneyBeam", "Farben geteilt", "Wertstellung 02.02.2026") +
+		row("Lia Beispiel", "03.02.2026", "-15,00", "MoneyBeam", "Wertstellung 03.02.2026") +
+		row("BEISPIEL KINO", "04.02.2026", "-11,00", "Mastercard • Freizeit", "Wertstellung 05.02.2026") +
+		row("BEISPIEL KINO", "06.02.2026", "11,00", "Mastercard • Freizeit", "Wertstellung 06.02.2026") +
+		row("Beispiel Neu", "07.02.2026", "-3,00", "Neue Buchungsart", "Wertstellung 07.02.2026") +
+		row("zu Investments", "08.02.2026", "-1,20", "2x Round-up", "Wertstellung 08.02.2026") +
+		row("zu Investments", "09.02.2026", "-50,00", "Monthly Rule", "Wertstellung 09.02.2026") +
+		row("von Investments", "10.02.2026", "80,00", "Wertstellung 10.02.2026") +
+		"N26 Bank Beispiel GmbH Musterstraße 1, 10000 Berlin, Germany\n" +
+		"Kontoauszug\nSpace: Investments\n\n" +
+		row("von Hauptkonto", "08.02.2026", "1,20", "2x Round-up", "Wertstellung 08.02.2026") +
+		row("Beispiel Versicherung", "12.02.2026", "-20,00", "Belastungen", "IBAN: DE00222233334444555566 • BIC: BANKDEFFXXX", "Police 77", "Wertstellung 12.02.2026") +
+		row("zu Hauptkonto", "10.02.2026", "-80,00", "Wertstellung 10.02.2026")
+
+	in, out, skipped, err := scanN26Statement(text)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	var inNames, outNames []string
+	for _, c := range in {
+		inNames = append(inNames, c.SenderName)
+	}
+	for _, e := range out {
+		outNames = append(outNames, e.PayeeName)
+	}
+	wantIn := []string{"Lia Beispiel", "BEISPIEL KINO"}
+	wantOut := []string{"Beispiel Vermieter", "Lia Beispiel", "BEISPIEL KINO", "Beispiel Neu", "Beispiel Versicherung"}
+	if fmt.Sprint(inNames) != fmt.Sprint(wantIn) || fmt.Sprint(outNames) != fmt.Sprint(wantOut) || skipped != 5 {
+		t.Fatalf("in %v (want %v), out %v (want %v), skipped %d (want 5)", inNames, wantIn, outNames, wantOut, skipped)
+	}
+	if out[0].Note != "Miete Atelier" || out[4].Note != "Police 77" || in[0].Note != "Farben geteilt" {
+		t.Errorf("a type line or IBAN leaked into a note, or a reference was lost: %q %q %q", out[0].Note, out[4].Note, in[0].Note)
+	}
+	for _, e := range out {
+		if strings.Contains(e.Note, "Belastungen") || strings.Contains(e.Note, "MoneyBeam") || strings.Contains(e.Note, "Mastercard") || strings.Contains(e.Note, "Buchungsart") {
+			t.Errorf("type line in note: %+v", e)
+		}
+	}
+	if out[2].PaidOn != "2026-02-05" {
+		t.Errorf("card purchase PaidOn: %q, want the Wertstellung date", out[2].PaidOn)
+	}
+}
+
+func TestN26DropPayPalTransfersDE(t *testing.T) {
+	text := readN26Fixture(t, "n26_statement_de.txt")
+	plain, err := parseN26AccountStatement(text)
+	if err != nil || len(plain) != 2 {
+		t.Fatalf("fixture parse: %d rows, %v", len(plain), err)
+	}
+	const company = "PayPal Europe S.a.r.l. et Cie S.C.A"
+	const mention = "Vorschuss Wandbild via PayPal"
+	mixed := strings.Replace(text, "Kunde Zwei GmbH", company, 1)
+	mixed = strings.Replace(mixed, "Vorschuss Wandbild", mention, 1)
+	if mixed == text || !strings.Contains(mixed, company) || !strings.Contains(mixed, mention) {
+		t.Fatal("fixture drifted: the replacements did not apply")
+	}
+	all, err := parseN26AccountStatement(mixed)
+	if err != nil || len(all) != 2 || all[1].SenderName != company {
+		t.Fatalf("mixed parse must still read both rows before the filter: %+v, %v", all, err)
+	}
+	kept, skipped := dropPayPalTransfers(all)
+	if len(kept) != 1 || kept[0].SenderName != "Mara Beispiel" || kept[0].Note != mention {
+		t.Fatalf("kept: %+v", kept)
+	}
+	if skipped[n26SkipPayPalTransfer] != 1 || len(skipped) != 1 {
+		t.Fatalf("skipped: %+v", skipped)
+	}
+	if kept[0].TransactionID != all[0].TransactionID {
+		t.Error("a kept row's id changed when a sibling row was dropped")
+	}
+	if k, s := dropPayPalTransfers(plain); len(k) != 2 || s != nil {
+		t.Fatalf("clean statement: kept %d, skipped %+v", len(k), s)
+	}
+}
+
+// Through the real pipeline: the German fixture's statement rows, its
+// outgoing rows as expense candidates, and its one internal Space transfer
+// reported as a skip — all against real pdftotext extraction of a rendered
+// PDF, not the unit-level scan.
+func TestN26ParseResponseCarriesExpenseCandidatesSeparatelyDE(t *testing.T) {
+	requirePdftotext(t)
+	db := setupN26ExpensesDB(t)
+	r := setupN26ExpensesRouter(db, 7)
+	w := uploadN26(t, r, map[string][]byte{"kontoauszug.pdf": buildN26PDFFromText(t, readN26Fixture(t, "n26_statement_de.txt"))})
+	if w.Code != http.StatusOK {
+		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
+	}
+	resp := decodeN26Parse(t, w)
+	if len(resp.Files) != 1 || resp.Files[0].Error != nil {
+		t.Fatalf("files: %+v", resp.Files)
+	}
+	f := resp.Files[0]
+	if f.DocumentKind != n26KindAccountStatement || len(f.Candidates) != 2 || len(f.ExpenseCandidates) != 2 {
+		t.Fatalf("kind %q, %d payment and %d expense candidates", f.DocumentKind, len(f.Candidates), len(f.ExpenseCandidates))
+	}
+	for _, c := range f.Candidates {
+		if c.GrossCents <= 0 {
+			t.Errorf("an outgoing row is among the payment candidates: %+v", c)
+		}
+	}
+	if e := f.ExpenseCandidates[0]; e.AmountCents != 4567 || e.PayeeName != "Beispiel Supermarkt" {
+		t.Errorf("expense candidate through the real pipeline: %+v", e)
+	}
+	if !strings.Contains(w.Body.String(), `"expense_candidates":[`) {
+		t.Errorf("wire shape lacks expense_candidates: %s", w.Body.String())
+	}
+	if f.Skipped[n26SkipInternalTransfer] != 1 {
+		t.Errorf("internal-transfer skip not reported through the real pipeline: %+v", f.Skipped)
 	}
 }

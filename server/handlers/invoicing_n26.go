@@ -48,6 +48,15 @@ const (
 	// n26SkipPayPalTransfer is the per-file skipped reason for a credit whose
 	// payer is PayPal (system_3 #9881).
 	n26SkipPayPalTransfer = "paypal_transfer"
+
+	// n26SkipInternalTransfer is the per-file skipped reason for a German-
+	// layout statement row whose detail-block type the parser does not
+	// recognise as one of N26's three real transaction types (Gutschriften,
+	// Lastschriften, a Mastercard purchase) — the shape an N26 Space's own
+	// internal transfer takes (e.g. a move into "Investments": no IBAN, no
+	// recognised type), confirmed against a real Kontoaktivität export
+	// (system_3 #10534). Such a row is neither a payment nor a work expense.
+	n26SkipInternalTransfer = "space_transfer"
 )
 
 // isPayPalSender reports whether an N26 credit's payer is PayPal. Money that
@@ -144,11 +153,34 @@ type n26Strategy struct {
 	// expenses reads the document's outgoing rows as expense candidates;
 	// nil for a kind that carries none (system_3 #10414-B).
 	expenses func(text string) ([]n26ExpenseCandidate, error)
+	// skipped reports the strategy's own per-file skip reasons beyond
+	// PayPal (system_3 #10534, e.g. a German statement's internal Space
+	// transfers); nil for a kind that carries none.
+	skipped func(text string) (map[string]int, error)
 }
 
 var n26Strategies = []n26Strategy{
-	{n26KindTransferConfirmation, isN26TransferConfirmation, parseN26TransferConfirmation, nil},
-	{n26KindAccountStatement, isN26AccountStatement, parseN26AccountStatement, parseN26StatementExpenses},
+	{n26KindTransferConfirmation, isN26TransferConfirmation, parseN26TransferConfirmation, nil, nil},
+	{n26KindAccountStatement, isN26AccountStatement, parseN26AccountStatement, parseN26StatementExpenses, parseN26StatementSkipped},
+}
+
+// mergeSkipCounts adds every reason from each map into one, nil when both are
+// empty so the wire shape omits an empty "skipped" field as before.
+func mergeSkipCounts(a, b map[string]int) map[string]int {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make(map[string]int, len(a)+len(b))
+	for k, v := range a {
+		out[k] += v
+	}
+	for k, v := range b {
+		out[k] += v
+	}
+	return out
 }
 
 var (
@@ -156,16 +188,42 @@ var (
 	// mark: thousands dots, decimal comma ("1.234,56 EUR", "0,00 EUR",
 	// "400,00 €").
 	n26AmountPattern = regexp.MustCompile(`(\d[\d.]*,\d{2})\s*(?:EUR|€)`)
-	n26DatePattern = regexp.MustCompile(`\d{2}\.\d{2}\.\d{4}`)
+	n26DatePattern   = regexp.MustCompile(`\d{2}\.\d{2}\.\d{4}`)
 	// n26IBANPattern recognises an IBAN standing alone where a name should
 	// be, the second half of the F2 fix (c60279).
 	n26IBANPattern = regexp.MustCompile(`^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$`)
-	n26UUIDPattern         = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
-	// n26StatementRowPattern is one statement transaction line: booking date,
-	// counterparty, signed amount at line end. Continuation lines (no date)
-	// extend the row's note.
+	n26UUIDPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+	// n26StatementRowPattern is one Italian-layout statement transaction
+	// line (the one real file at authoring time, system_3 #9760 c60234):
+	// booking date, counterparty, signed amount at line end. Continuation
+	// lines (no date) extend the row's note.
 	n26StatementRowPattern = regexp.MustCompile(`^\s*(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s{2,}([+-]?\d[\d.]*,\d{2})\s*(?:EUR|€)?\s*$`)
+	// n26GermanStatementRowPattern is one statement transaction line in N26's
+	// real German layout (system_3 #10534, against the operator's own
+	// statement and Kontoaktivität export — her N26 is in German, unlike the
+	// Italian look-alike this importer was first built against): counterparty
+	// first, the booking date (Verbuchungsdatum) in the middle, the signed
+	// amount glued to its currency mark at line end. A detail block of a few
+	// more lines follows (see scanN26Statement); a blank line ends it.
+	n26GermanStatementRowPattern = regexp.MustCompile(`^\s*(.+?)\s{2,}(\d{2}\.\d{2}\.\d{4})\s+([+-]?\d[\d.]*,\d{2})€\s*$`)
 )
+
+// n26InternalStatementRow reports whether a German-layout statement row is
+// money moving between the account holder's own main account and Spaces,
+// judged by its detail-block type line (the block's first line; "" when the
+// block opens straight on its Wertstellung line). Checked against the
+// operator's real October statement and N26's own CSV export of the same
+// month (system_3 #10534): every internal row is a Round-up ("2x Round-up"),
+// a "Monthly Rule", or carries no type line at all (a plain "zu/von <Space>"
+// transfer, mirrored by the opposite row on the other account). Every other
+// type is real money, on the main pages and the per-Space pages alike:
+// Gutschriften, Lastschriften, Belastungen, Mastercard (incl. "Mastercard •
+// <category>"), MoneyBeam. The internal kinds are enumerated rather than the
+// real ones, so a type this list has never seen is offered to the user as a
+// candidate they can untick, never dropped unseen.
+func n26InternalStatementRow(typeLine string) bool {
+	return typeLine == "" || strings.Contains(typeLine, "Round-up") || typeLine == "Monthly Rule"
+}
 
 // parseN26AmountCents reads "1.234,56" into 123456.
 func parseN26AmountCents(s string) (int64, error) {
@@ -346,6 +404,10 @@ func parseN26TransferConfirmation(text string) ([]n26Candidate, error) {
 func isN26AccountStatement(text string) bool {
 	return strings.Contains(text, "Estratto conto") ||
 		strings.Contains(text, "Kontoauszug") ||
+		// The Kontoaktivität export (an account-activity PDF for a chosen
+		// date range, system_3 #10534) shares the German statement's row
+		// layout and detail-block grammar; it is the same document kind.
+		strings.Contains(text, "Kontoaktivität") ||
 		(strings.Contains(text, "N26") && strings.Contains(text, "Account statement"))
 }
 
@@ -371,47 +433,173 @@ type n26ExpenseCandidate struct {
 // candidates. Outgoing rows are the owner's own spending, not payments to
 // invoice: they come back from parseN26StatementExpenses instead.
 func parseN26AccountStatement(text string) ([]n26Candidate, error) {
-	in, _, err := scanN26Statement(text)
+	in, _, _, err := scanN26Statement(text)
 	return in, err
 }
 
 // parseN26StatementExpenses reads a statement's money-out rows as expense
 // candidates (system_3 #10414-B).
 func parseN26StatementExpenses(text string) ([]n26ExpenseCandidate, error) {
-	_, out, err := scanN26Statement(text)
+	_, out, _, err := scanN26Statement(text)
 	return out, err
 }
 
-// scanN26Statement reads a statement's transaction table: one row per booking
-// line (date, counterparty, signed amount), indented date-less lines
-// extending the previous row's note. A positive amount is a payment
-// candidate, a negative one an expense candidate. A continuation line extends
-// whichever row it sits under, in either direction, and a blank line ends it.
-// A zero amount is neither, and its continuations are dropped with it.
+// parseN26StatementSkipped reports a German-layout statement's internal-
+// transfer skip count (system_3 #10534), the n26Strategy.skipped hook.
+func parseN26StatementSkipped(text string) (map[string]int, error) {
+	_, _, skipped, err := scanN26Statement(text)
+	if err != nil {
+		return nil, err
+	}
+	if skipped == 0 {
+		return nil, nil
+	}
+	return map[string]int{n26SkipInternalTransfer: skipped}, nil
+}
+
+// scanN26Statement reads a statement's transaction table under either of the
+// two row grammars this importer understands: the Italian layout (booking
+// date, counterparty, signed amount, with any following date-less line
+// extending the row's note until a blank line) this importer was first built
+// against (system_3 #9760 c60234), and the real German layout (system_3
+// #10534, against the operator's own statement and Kontoaktivität export):
+// counterparty, booking date (Verbuchungsdatum), signed amount, then a
+// detail block of up to a few more lines — the transaction type
+// (Gutschriften, Lastschriften, or a Mastercard purchase), the
+// counterparty's IBAN/BIC when it prints one, an optional reference line,
+// and the value date (Wertstellung) — ended by a blank line. Both stay
+// supported: her N26 export is German, Flowah's (#9760) may be Italian, and
+// neither real file proves the other layout's statement path (operator,
+// comment 65185 on #9656).
+//
+// A positive amount is a payment candidate, a negative one an expense
+// candidate (#10414-B); PaidOn is a German row's Wertstellung date when its
+// block carries one (the confirmation importer's own value-date rule), the
+// booking date otherwise — an Italian row has no Wertstellung concept, so
+// PaidOn is always its own booking date. A zero amount is neither.
+//
+// A German row whose type line is none of the three known ones — the shape
+// an N26 Space's own internal transfer takes (e.g. a move into
+// "Investments": no IBAN, no recognised type) — is not a payment or
+// expense; it is counted as a skip (n26SkipInternalTransfer) instead of
+// offered as either, and a per-Space summary page's own four aggregate
+// lines never match the row pattern at all (they carry no date), so they
+// contribute nothing here. The Italian layout has no such concept.
 //
 // Statement rows carry no transaction id, so a deterministic one is derived
 // from the row's fields: the same file re-uploaded produces the same ids and
-// dedupes to nothing. A payment's key is unchanged from before outgoing rows
-// were read, so statements imported earlier still dedupe. An expense's key
-// is salted with "out|", so the two directions never share an id.
-func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, error) {
+// dedupes to nothing. The id carries the row's occurrence number among
+// identical (date, amount, counterparty, note) tuples, so two genuinely
+// separate but identical rows in one statement stay two rows (security
+// review F1, #9812 c60279). A payment's key is unchanged from before
+// outgoing rows were read, so statements imported earlier still dedupe. An
+// expense's key is salted with "out|", so the two directions never share an
+// id.
+func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error) {
 	var in []n26Candidate
 	var out []n26ExpenseCandidate
-	// A continuation line extends the last kept row of either direction:
-	// lastDir names the slice ('i' in, 'o' out, 0 none) and lastIdx its row.
-	// An index, not a pointer, so a later append cannot leave it dangling.
+	skippedInternal := 0
+
+	lines := strings.Split(text, "\n")
+	// The Italian layout's continuation state: lastDir names the slice ('i'
+	// in, 'o' out, 0 none) and lastIdx its row, carried across the lines
+	// following an Italian row match until a blank line or a new row ends
+	// it (unchanged from the original #9812 implementation). A German row
+	// consumes its own detail block inline and never touches this state.
 	var lastDir byte
 	lastIdx := -1
-	for _, raw := range strings.Split(text, "\n") {
-		if m := n26StatementRowPattern.FindStringSubmatch(raw); m != nil {
+
+	for i := 0; i < len(lines); i++ {
+		if m := n26GermanStatementRowPattern.FindStringSubmatch(lines[i]); m != nil {
+			lastDir, lastIdx = 0, -1
+			counterparty := strings.TrimSpace(m[1])
+			bookingDateStr, amountStr := m[2], m[3]
+			cents, err := parseN26AmountCents(amountStr)
+			if err != nil {
+				return nil, nil, 0, err
+			}
+
+			// Read the detail block that follows the row line, up to the
+			// blank line that ends it: the type line (the block's first
+			// line, unless the block opens on Wertstellung or IBAN), the
+			// IBAN/BIC line (dropped — structural, not a note), the value
+			// date off the Wertstellung line, and any other line as the
+			// row's note.
+			typeLine := ""
+			valueDateStr := ""
+			var noteParts []string
+			j := i + 1
+			for ; j < len(lines); j++ {
+				t := strings.TrimSpace(lines[j])
+				if t == "" {
+					break
+				}
+				if strings.HasPrefix(t, "Wertstellung") {
+					if d := n26DatePattern.FindString(t); d != "" {
+						valueDateStr = d
+					}
+					continue
+				}
+				if strings.HasPrefix(t, "IBAN:") {
+					continue
+				}
+				if j == i+1 {
+					typeLine = t
+					continue
+				}
+				noteParts = append(noteParts, t)
+			}
+			i = j // resume scanning after the consumed detail block
+
+			if cents == 0 {
+				continue
+			}
+			if n26InternalStatementRow(typeLine) {
+				skippedInternal++
+				continue
+			}
+
+			paidOnStr := bookingDateStr
+			if valueDateStr != "" {
+				paidOnStr = valueDateStr
+			}
+			paidOn, err := parseN26Date(paidOnStr)
+			if err != nil {
+				return nil, nil, 0, err
+			}
+			note := strings.Join(noteParts, " ")
+
+			if cents > 0 {
+				in = append(in, n26Candidate{
+					DocumentKind: n26KindAccountStatement,
+					PaidOn:       paidOn.Format("2006-01-02"),
+					Currency:     "EUR",
+					GrossCents:   cents,
+					NetCents:     cents,
+					SenderName:   counterparty,
+					Note:         note,
+				})
+			} else {
+				out = append(out, n26ExpenseCandidate{
+					PaidOn:      paidOn.Format("2006-01-02"),
+					Currency:    "EUR",
+					AmountCents: -cents,
+					PayeeName:   counterparty,
+					Note:        note,
+				})
+			}
+			continue
+		}
+
+		if m := n26StatementRowPattern.FindStringSubmatch(lines[i]); m != nil {
 			date, counterparty, amount := m[1], strings.TrimSpace(m[2]), m[3]
 			paidOn, err := parseN26Date(date)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, 0, err
 			}
 			cents, err := parseN26AmountCents(amount)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, 0, err
 			}
 			switch {
 			case cents > 0:
@@ -437,8 +625,11 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, error
 			}
 			continue
 		}
-		// A date-less content line directly under a kept row extends its note.
-		t := strings.TrimSpace(raw)
+
+		// A date-less content line directly under a kept Italian row
+		// extends its note (unchanged from the original implementation); a
+		// German row's own lines are already consumed above.
+		t := strings.TrimSpace(lines[i])
 		if lastDir != 0 && t != "" && !strings.Contains(t, "Estratto conto") {
 			var note *string
 			if lastDir == 'i' {
@@ -473,7 +664,7 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, error
 		e := &out[i]
 		e.TransactionID = stmtID("out|" + e.PaidOn + "|" + fmt.Sprint(e.AmountCents) + "|" + e.PayeeName + "|" + e.Note)
 	}
-	return in, out, nil
+	return in, out, skippedInternal, nil
 }
 
 // detectN26Document runs the strategy chain; empty name means no kind matched.
@@ -620,6 +811,15 @@ func ImportN26ParseHandler(c *gin.Context) {
 			continue
 		}
 		cands, entry.Skipped = dropPayPalTransfers(cands)
+		if strategy.skipped != nil {
+			extra, err := strategy.skipped(text)
+			if err != nil {
+				log.Printf("N26 import: reading %q's skip reasons: %v", fh.Filename, err)
+				fail(n26ErrParseFailed, fmt.Sprintf("read as %s but a field is missing or malformed: %v", strategy.name, err))
+				continue
+			}
+			entry.Skipped = mergeSkipCounts(entry.Skipped, extra)
+		}
 		if err := flagN26Candidates(db, invoicingUserID(c), cands); err != nil {
 			log.Printf("N26 import: flagging candidates of %q: %v", fh.Filename, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error checking candidates against stored payments")

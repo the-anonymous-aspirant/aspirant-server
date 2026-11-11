@@ -1,0 +1,32 @@
+Kontoaktivität
+01.11.2026 bis 08.11.2026
+
+
+
+Zahlungsempfänger/Auftraggeber                            Verbuchungsdatum     Betrag
+
+Mara Beispiel                                             03.11.2026    250,00€
+Gutschriften
+IBAN: DE00111122223333444455 • BIC: BANKDEFFXXX
+Wertstellung 04.11.2026
+
+
+
+N26 Bank Beispiel GmbH Musterstraße 1, 10000 Berlin, Germany                          Seite 1
+Kontoaktivität
+Space: Investments
+Zeitraum bis: 08.11.2026
+01.11.2026 bis 08.11.2026
+
+
+
+Zusammenfassung
+
+Eingänge                                 +250,00€
+Ausgänge                                 -100,00€
+Gebühren                                   0,00€
+Saldo                                    +150,00€
+
+
+
+N26 Bank Beispiel GmbH Musterstraße 1, 10000 Berlin, Germany                          Seite 2
