@@ -769,12 +769,20 @@ func ImportN26ParseHandler(c *gin.Context) {
 		return
 	}
 
+	ownerID := invoicingUserID(c)
 	out := make([]n26ParsedFile, 0, len(files))
 	for _, fh := range files {
 		entry := n26ParsedFile{Filename: fh.Filename}
+		// Set as the loop learns them, read by fail at whichever point it is
+		// called (system_3 #10536): data stays nil for a file refused before
+		// being fully read, which also means no copy is kept for it, the
+		// same cap the import itself just enforced.
+		var data []byte
+		var documentKind string
 		fail := func(code, message string) {
 			entry.Error = &n26FileError{Code: code, Message: message}
 			out = append(out, entry)
+			recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, code, documentKind, 0)
 		}
 		if fh.Size > maxN26PDFBytes {
 			fail(n26ErrTooLarge, "the file is larger than 5 MB")
@@ -785,9 +793,10 @@ func ImportN26ParseHandler(c *gin.Context) {
 			fail(n26ErrExtractFailed, "could not read the uploaded file")
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(f, maxN26PDFBytes+1))
+		data, err = io.ReadAll(io.LimitReader(f, maxN26PDFBytes+1))
 		f.Close()
 		if err != nil || int64(len(data)) > maxN26PDFBytes {
+			data = nil
 			fail(n26ErrTooLarge, "the file is larger than 5 MB")
 			continue
 		}
@@ -803,6 +812,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 				continue
 			}
 			strategy = n26CSVStrategy
+			documentKind = strategy.name
 		} else {
 			text, err = ExtractN26PDFText(data)
 			if err == errNotAPDF {
@@ -820,6 +830,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 				fail(n26ErrNotN26Document, "not an N26 transfer confirmation or account statement")
 				continue
 			}
+			documentKind = strategy.name
 		}
 		cands, err := strategy.parse(text)
 		if err != nil {
@@ -858,6 +869,14 @@ func ImportN26ParseHandler(c *gin.Context) {
 		}
 		entry.DocumentKind = strategy.name
 		entry.Candidates = cands
+		// Recognised but nothing usable (system_3 #10536, security ruling
+		// c65222): still a failure the operator needs visibility into, not
+		// a silent empty response. Not routed through fail(), which sets
+		// entry.Error for the uploader -- a 0-row statement is a normal
+		// server response, just also a recorded failure.
+		if len(cands) == 0 {
+			recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, documentKind, 0)
+		}
 		out = append(out, entry)
 	}
 	c.JSON(http.StatusOK, gin.H{"files": out})

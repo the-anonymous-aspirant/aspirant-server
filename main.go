@@ -80,6 +80,11 @@ func main() {
 	// daily near 03:00 UTC. Best-effort, same construction as the writer above.
 	handlers.StartServiceUsageRollup(db)
 
+	// Start the failed-import-upload sweep (system_3 #10536): deletes a kept
+	// copy once its retention window passes, and prunes old failure rows.
+	// Runs once at start and then hourly (security ruling c65222 §3).
+	handlers.StartImportFailureSweep(db)
+
 	// Build the outbound-mail sender. A mail misconfiguration must NOT stop the
 	// server: on 2026-09-05 an earlier version log.Fatal'd here and took the
 	// whole site down for want of two environment variables, because compose

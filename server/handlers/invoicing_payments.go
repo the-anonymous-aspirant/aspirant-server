@@ -70,23 +70,28 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusBadRequest, "Upload a PayPal CSV or Excel file in the form field \"file\"")
 		return
 	}
+	userID := invoicingUserID(c)
 	if fh.Size > maxPayPalImportBytes {
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "too_large", "", 0)
 		RespondWithError(c, http.StatusRequestEntityTooLarge, "The file is larger than 5 MB")
 		return
 	}
 	f, err := fh.Open()
 	if err != nil {
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "read_failed", "", 0)
 		RespondWithError(c, http.StatusBadRequest, "Could not read the uploaded file")
 		return
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxPayPalImportBytes+1))
 	if err != nil || len(data) > maxPayPalImportBytes {
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "too_large", "", 0)
 		RespondWithError(c, http.StatusRequestEntityTooLarge, "The file is larger than 5 MB")
 		return
 	}
 
 	if bytes.HasPrefix(data, ole2Signature) {
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, "xls_unsupported", "", 0)
 		respondError(c, http.StatusBadRequest, "xls_unsupported",
 			"This is an Excel 97-2003 (.xls) file. Save it as .xlsx or CSV and upload that.")
 		return
@@ -100,15 +105,25 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, ErrPayPalDateOrderAmbiguous) {
 			code = "date_order_ambiguous"
+		} else {
+			// date_order_ambiguous excluded: it always resolves on an
+			// immediate retry of the same file (system_3 #10536), so it
+			// reads as a normal interactive step, not a failure.
+			recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, code, format, 0)
 		}
 		respondError(c, http.StatusBadRequest, code, err.Error())
 		return
 	}
 
-	userID := invoicingUserID(c)
 	summary := invoicingImportSummary{RowsRead: parsed.RowsRead, SkippedReasons: parsed.Skipped, Format: format}
 	for _, n := range parsed.Skipped {
 		summary.Skipped += n
+	}
+	// Recognised but nothing usable (security ruling c65222): still a
+	// failure the operator needs visibility into. The response to the
+	// uploader is unaffected -- rows_read: 0 already says this plainly.
+	if parsed.RowsRead == 0 {
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, format, 0)
 	}
 
 	tx := db.Begin()
