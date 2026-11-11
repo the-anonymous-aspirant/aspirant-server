@@ -497,6 +497,15 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.POST("/system/containers/:name/start", handlers.PostContainerStartHandler)
 		adminRoutes.POST("/system/containers/:name/stop", handlers.PostContainerStopHandler)
 
+		// Failed invoice-import uploads (system_3 #10536): Admin-tier only,
+		// never the /invoicing group -- these are the owner's own uploaded
+		// bank documents, kept for the operator, not for her (security ruling
+		// c65222 §2). The path deliberately does not start with "/invoicing/"
+		// either: TestInvoicingRoutes_OnlyOwnerAndAdminPassTheGate treats that
+		// whole prefix as owner-or-Admin by convention, which this is not.
+		adminRoutes.GET("/admin/invoicing/import-failures", handlers.ListImportFailuresHandler)
+		adminRoutes.GET("/admin/invoicing/import-failures/:id/download", handlers.DownloadImportFailureHandler)
+
 		// Advisor (proxied to advisor service)
 		adminRoutes.GET("/advisor/health", handlers.GetAdvisorHealthHandler)
 		adminRoutes.GET("/advisor/sources", handlers.GetAdvisorSourcesHandler)

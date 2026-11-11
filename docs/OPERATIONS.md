@@ -32,6 +32,16 @@ GIN_MODE=debug
 # rejected; set it to include a dev origin (e.g. http://localhost:5173) when
 # running the frontend on a separate port.
 CORS_ALLOWED_ORIGINS=https://the-aspirant.com
+
+# Optional: failed invoice-import uploads (system_3 #10536). A dedicated
+# directory for time-limited copies of files that failed to import -- never
+# an existing upload or asset directory (security ruling c65222). Unset
+# disables keeping copies; failure records are still written either way.
+IMPORT_FAILURE_COPIES_DIR=/data/import-failures
+# Optional: how long a kept copy survives, in hours. May only shorten the
+# 7-day (168h) ceiling, never lengthen it; an out-of-range or unparsable
+# value is ignored and logged.
+IMPORT_FAILURE_WINDOW_HOURS=168
 ```
 
 ### First Run
