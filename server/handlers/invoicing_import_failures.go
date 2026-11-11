@@ -100,7 +100,13 @@ const importFailureCodeNoCandidates = "no_candidates"
 // "too large"), in which case no copy is kept and SHA256 stays empty --
 // consistent with security's own cap, since such a file was never going to
 // get a copy anyway.
-func recordImportFailure(db *gorm.DB, ownerID uint, importKind, filename string, size int64, data []byte, code string, documentKind string, candidateCount int) {
+//
+// It returns when the kept copy will be deleted, or nil when no copy was
+// kept (no data, over the directory cap, no directory configured, or the
+// record itself could not be stored). The uploader is told this date
+// (design ruling c65231 on system_3 #10536, #10567), so it is set only for
+// a copy that exists and that the administrator can find.
+func recordImportFailure(db *gorm.DB, ownerID uint, importKind, filename string, size int64, data []byte, code string, documentKind string, candidateCount int) *time.Time {
 	messages := n26FailureMessages
 	if importKind == "paypal" {
 		messages = paypalFailureMessages
@@ -139,7 +145,20 @@ func recordImportFailure(db *gorm.DB, ownerID uint, importKind, filename string,
 
 	if err := db.Create(&row).Error; err != nil {
 		log.Printf("import failure: could not store the record for %q: %v", filename, err)
+		// A copy no record points at can't be found or downloaded, so it
+		// isn't kept and the uploader isn't told it is.
+		if row.CopyPath != "" {
+			if rmErr := os.Remove(filepath.Join(importFailureDir(), row.CopyPath)); rmErr != nil && !os.IsNotExist(rmErr) {
+				log.Printf("import failure: removing the unrecorded copy for %q: %v", filename, rmErr)
+			}
+		}
+		return nil
 	}
+	if row.CopyPath == "" {
+		return nil
+	}
+	expires := row.CreatedAt.Add(importFailureWindow())
+	return &expires
 }
 
 // writeImportFailureCopy stores data under the copies directory with a
