@@ -307,6 +307,11 @@ func AutoMigrate(db *gorm.DB) {
 	// handlers.StartServiceUsageRollup.
 	db.AutoMigrate(&data_models.ServiceUsageRollup{})
 
+	// Failed invoice-import uploads: a durable record plus a time-limited
+	// copy of the file (system_3 #10536, security ruling c65222). Swept by
+	// handlers.StartImportFailureSweep.
+	db.AutoMigrate(&data_models.InvoicingImportFailure{})
+
 	// Step 18: Constellations card editor, types and templates (system_3
 	// #8634, subtask #8643). Versioned, append-only template specs with an
 	// `extends` parent; the seed is insert-if-absent and never resets an
