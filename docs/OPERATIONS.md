@@ -88,6 +88,8 @@ five with "pdftotext is not installed", not a code problem (system_3
 #10552 — found when that message was mistaken for a real break on `main`).
 Install it first: `apt-get install -y poppler-utils` (Debian/Ubuntu base
 images) or the equivalent for the image in use.
+The N26 CSV-export tests (`invoicing_n26_csv_test.go`, system_3 #10543)
+read text only and need no poppler.
 
 ```bash
 # Run all tests

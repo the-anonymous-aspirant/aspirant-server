@@ -21,7 +21,8 @@ import (
 // N26 PDF import for the invoicing app (system_3 #9812, operator decision on
 // #9760): one importer reads both N26 document kinds — the per-transfer
 // confirmation PDF and the periodic account statement — next to the PayPal
-// CSV import and manual entry, which stay unchanged.
+// CSV import and manual entry, which stay unchanged. N26's own CSV export is
+// a third input, and the preferred one (system_3 #10543, invoicing_n26_csv.go).
 //
 // Unlike the PayPal import, nothing is stored at upload time: the parse
 // endpoint returns candidate rows, the owner reviews each one in the client,
@@ -744,8 +745,9 @@ func flagN26ExpenseCandidates(db *gorm.DB, owner uint, cands []n26ExpenseCandida
 	return nil
 }
 
-// ImportN26ParseHandler takes one or more N26 PDFs (multipart field "files")
-// and returns their candidate payments without storing anything. Per-file
+// ImportN26ParseHandler takes one or more N26 files (multipart field
+// "files"): PDFs, and since system_3 #10543 N26's CSV export, the preferred
+// input. It returns their candidate payments without storing anything. Per-file
 // problems come back as per-file errors; the request itself fails only when
 // it carries no usable field at all.
 func ImportN26ParseHandler(c *gin.Context) {
@@ -753,12 +755,12 @@ func ImportN26ParseHandler(c *gin.Context) {
 
 	form, err := c.MultipartForm()
 	if err != nil {
-		RespondWithError(c, http.StatusBadRequest, "Upload N26 PDFs in the form field \"files\"")
+		RespondWithError(c, http.StatusBadRequest, "Upload N26 files in the form field \"files\"")
 		return
 	}
 	files := form.File["files"]
 	if len(files) == 0 {
-		RespondWithError(c, http.StatusBadRequest, "Upload N26 PDFs in the form field \"files\"")
+		RespondWithError(c, http.StatusBadRequest, "Upload N26 files in the form field \"files\"")
 		return
 	}
 	if len(files) > maxN26FilesPerRequest {
@@ -789,20 +791,35 @@ func ImportN26ParseHandler(c *gin.Context) {
 			fail(n26ErrTooLarge, "the file is larger than 5 MB")
 			continue
 		}
-		text, err := ExtractN26PDFText(data)
-		if err == errNotAPDF {
-			fail(n26ErrNotAPDF, "the file is not a PDF")
-			continue
-		}
-		if err != nil {
-			log.Printf("N26 import: extracting %q: %v", fh.Filename, err)
-			fail(n26ErrExtractFailed, "could not read the PDF's text")
-			continue
-		}
-		strategy, ok := detectN26Document(text)
-		if !ok {
-			fail(n26ErrNotN26Document, "not an N26 transfer confirmation or account statement")
-			continue
+		// The CSV export (system_3 #10543) is recognised from its bytes and
+		// read as text; everything else must be a PDF, read through the
+		// strategy chain. Both then share the path below.
+		var text string
+		var strategy n26Strategy
+		if looksLikeN26CSV(data) {
+			text = string(data)
+			if he := checkN26CSVHeader(text); he != nil {
+				fail(n26ErrCSVHeadersUnrecognised, he.Error())
+				continue
+			}
+			strategy = n26CSVStrategy
+		} else {
+			text, err = ExtractN26PDFText(data)
+			if err == errNotAPDF {
+				fail(n26ErrNotAPDF, "the file is neither a PDF nor an N26 CSV export")
+				continue
+			}
+			if err != nil {
+				log.Printf("N26 import: extracting %q: %v", fh.Filename, err)
+				fail(n26ErrExtractFailed, "could not read the PDF's text")
+				continue
+			}
+			var ok bool
+			strategy, ok = detectN26Document(text)
+			if !ok {
+				fail(n26ErrNotN26Document, "not an N26 transfer confirmation or account statement")
+				continue
+			}
 		}
 		cands, err := strategy.parse(text)
 		if err != nil {
@@ -895,7 +912,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.SenderName = strings.TrimSpace(row.SenderName)
 		row.Note = strings.TrimSpace(row.Note)
-		if row.DocumentKind != n26KindTransferConfirmation && row.DocumentKind != n26KindAccountStatement {
+		if row.DocumentKind != n26KindTransferConfirmation && row.DocumentKind != n26KindAccountStatement && row.DocumentKind != n26KindCSVExport {
 			bad("document_kind is not an N26 document kind")
 			return
 		}
@@ -1069,9 +1086,10 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		if row.Category == "" {
 			row.Category = data_models.ExpenseCategoryOther
 		}
-		// Only statement rows reach here, and their ids are always derived.
-		if !strings.HasPrefix(row.TransactionID, "stmt-") || len(row.TransactionID) > 100 {
-			bad("transaction_id is not an N26 statement row id")
+		// Only statement and CSV export rows reach here, and their ids are
+		// always derived.
+		if !(strings.HasPrefix(row.TransactionID, "stmt-") || strings.HasPrefix(row.TransactionID, n26CSVIDPrefix)) || len(row.TransactionID) > 100 {
+			bad("transaction_id is not an N26 statement or CSV export row id")
 			return
 		}
 		if row.PayeeName == "" || utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes ||
