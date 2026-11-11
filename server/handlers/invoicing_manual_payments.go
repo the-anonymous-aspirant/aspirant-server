@@ -36,6 +36,15 @@ const (
 var manualPaymentFields = map[string]bool{
 	"paid_on": true, "gross_cents": true, "currency": true, "method": true,
 	"reference": true, "sender_name": true, "note": true, "client_id": true,
+	"new_client_name": true,
+}
+
+// validOneLineName is the rule a payer name typed by hand meets, whether it
+// is the payment's sender_name or a new client's name (system_3 #10539): one
+// line of at most maxManualSenderRunes, with no control or invisible format
+// characters.
+func validOneLineName(s string) bool {
+	return utf8.RuneCountInString(s) <= maxManualSenderRunes && !strings.Contains(s, "\n") && !hasControlChars(s) && !hasFormatChars(s)
 }
 
 // newManualTransactionID is the database key of a hand-entered payment. It is
@@ -95,7 +104,11 @@ var earliestPaymentDate = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 // by hand: POST /invoicing/payments/manual with paid_on (YYYY-MM-DD, not after
 // today in Berlin), gross_cents (> 0), method (bank_transfer, paypal, stripe,
 // cash, other), and optional currency (default EUR), reference, sender_name,
-// note and client_id. It is always incoming paid work.
+// note, and either client_id or new_client_name. new_client_name adds that
+// payer to the client book and links the payment to it, in one transaction;
+// a name already in the book (design §3.142 Decision 4) is refused with 409
+// client_exists and that client. It is always incoming paid work, and it
+// never makes a draft.
 func CreateManualPaymentHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	var body map[string]json.RawMessage
@@ -183,9 +196,26 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(sender) > maxManualSenderRunes || strings.Contains(sender, "\n") || hasControlChars(sender) || hasFormatChars(sender) {
+	if !validOneLineName(sender) {
 		bad("sender_name", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
 		return
+	}
+	// new_client_name adds the payer to the client book in the same
+	// transaction as the payment (system_3 #10539, design §3.142 Decisions 2
+	// and 3): both are saved, or neither.
+	newClientName, ok := str("new_client_name")
+	if !ok {
+		return
+	}
+	if !validOneLineName(newClientName) {
+		bad("new_client_name", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
+		return
+	}
+	if newClientName != "" {
+		if raw, present := body["client_id"]; present && string(raw) != "null" {
+			bad("new_client_name", "cannot be given together with client_id: choose a client or add a new one")
+			return
+		}
 	}
 	note, ok := str("note")
 	if !ok {
@@ -235,6 +265,47 @@ func CreateManualPaymentHandler(c *gin.Context) {
 			}
 		}
 		clientID = cid
+	}
+	// A new payer name: refuse one that is already in the book under
+	// Decision 4's "the same", naming that client so the form can offer it,
+	// rather than make a silent duplicate. The issuing lock taken above
+	// serialises two hand entries of one new name, so the second one finds
+	// the first one's client here.
+	var newClient *data_models.InvoicingClient
+	if newClientName != "" {
+		existing, err := findSameClient(tx, invoicingUserID(c), newClientName)
+		if err != nil {
+			tx.Rollback()
+			log.Printf("Error reading the client book: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
+			return
+		}
+		if existing != nil {
+			tx.Rollback()
+			c.JSON(http.StatusConflict, gin.H{
+				"error": ErrorDetail{
+					Code:    "client_exists",
+					Message: fmt.Sprintf("%s is already in your client book", existing.Name),
+				},
+				"client": existing,
+			})
+			return
+		}
+		cl := data_models.InvoicingClient{OwnerUserID: invoicingUserID(c), Name: newClientName}
+		if err := tx.Create(&cl).Error; err != nil {
+			tx.Rollback()
+			log.Printf("Error creating a client for a manual payment: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
+			return
+		}
+		if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": cl, "via": "manual_payment"})); err != nil {
+			tx.Rollback()
+			log.Printf("Error auditing client create %d: %v", cl.ID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
+			return
+		}
+		newClient = &cl
+		clientID = &cl.ID
 	}
 	// A PayPal payment entered by hand and later imported (or the other way
 	// round) must not become two payments.
@@ -289,6 +360,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	details := auditDetails(gin.H{
 		"paid_on": paidOnRaw, "gross_cents": gross, "currency": currency, "method": method,
 		"reference": reference, "sender_name": sender, "note": note, "client_id": clientID,
+		"new_client_name": newClientName,
 	})
 	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCreateManual, invoicingEntityPayment, p.ID, details); err != nil {
 		tx.Rollback()
@@ -301,7 +373,11 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"payment": p})
+	resp := gin.H{"payment": p}
+	if newClient != nil {
+		resp["client"] = newClient
+	}
+	c.JSON(http.StatusCreated, resp)
 }
 
 // DeletePaymentHandler removes a payment, imported or entered by hand:
