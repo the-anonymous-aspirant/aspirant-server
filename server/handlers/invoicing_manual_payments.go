@@ -211,6 +211,10 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		bad("new_client_name", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
 		return
 	}
+	if newClientName != "" && !validClientName(newClientName) {
+		bad("new_client_name", "must contain at least one letter or digit")
+		return
+	}
 	if newClientName != "" {
 		if raw, present := body["client_id"]; present && string(raw) != "null" {
 			bad("new_client_name", "cannot be given together with client_id: choose a client or add a new one")
