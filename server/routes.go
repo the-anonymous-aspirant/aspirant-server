@@ -491,6 +491,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		adminRoutes.GET("/system/containers", handlers.GetMonitorContainersHandler)
 		adminRoutes.GET("/system/disk", handlers.GetMonitorDiskHandler)
 		adminRoutes.GET("/system/db-stats", handlers.GetDBStatsHandler)
+		adminRoutes.GET("/system/service-usage", handlers.GetServiceUsageHandler)
+		adminRoutes.POST("/system/containers/:name/start", handlers.PostContainerStartHandler)
+		adminRoutes.POST("/system/containers/:name/stop", handlers.PostContainerStopHandler)
 
 		// Advisor (proxied to advisor service)
 		adminRoutes.GET("/advisor/health", handlers.GetAdvisorHealthHandler)
