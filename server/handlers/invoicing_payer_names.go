@@ -56,3 +56,11 @@ func findSameClient(db *gorm.DB, owner uint, name string) (*data_models.Invoicin
 	}
 	return nil, nil
 }
+
+// validClientName refuses a client name with nothing left once normalised —
+// one made only of the folded punctuation, such as "..." or " - ". Such a
+// name could never be "the same" as anything, so it would be added again and
+// again (security review of PR 185, c65409 on #10547).
+func validClientName(name string) bool {
+	return normalisePayerName(name) != ""
+}

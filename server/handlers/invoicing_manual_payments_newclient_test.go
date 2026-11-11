@@ -123,6 +123,7 @@ func TestManualPayment_NewClientNameRefusals(t *testing.T) {
 		"zero-width space": `{` + ok + `,"new_client_name":"Mara​Esempio"}`,
 		"too long":         `{` + ok + `,"new_client_name":"` + strings.Repeat("x", 201) + `"}`,
 		"not a string":     `{` + ok + `,"new_client_name":42}`,
+		"punctuation only": `{` + ok + `,"new_client_name":"..."}`,
 	} {
 		w := invoicingDo(f.r, "POST", "/invoicing/payments/manual", body)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_field") {
