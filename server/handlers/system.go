@@ -5,8 +5,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
+
+	"aspirant-online/server/data_models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
@@ -63,6 +66,134 @@ func GetMonitorContainersHandler(c *gin.Context) {
 // GetMonitorDiskHandler proxies GET /disk to the monitor service
 func GetMonitorDiskHandler(c *gin.Context) {
 	monitorProxyGet(c, "/disk")
+}
+
+// monitorControlToken is the bearer token aspirant-server presents to the
+// monitor's write-scoped container-control endpoints (system_3 #10491-B /
+// #10514). Unset disables the proxy routes below the same way an unset
+// CONTROL_TOKEN disables them on the monitor side: the monitor refuses with
+// its own 503, so there is one place that reports "not configured", not two.
+func monitorControlToken() string {
+	return os.Getenv("MONITOR_CONTROL_TOKEN")
+}
+
+// monitorProxyPost forwards a bodyless POST to the monitor service with the
+// control bearer token attached, and pipes the response back unchanged. Only
+// the container start/stop routes below use it.
+func monitorProxyPost(c *gin.Context, path string) {
+	reqURL := fmt.Sprintf("%s%s", monitorURL(), path)
+
+	req, err := http.NewRequest("POST", reqURL, nil)
+	if err != nil {
+		log.Printf("Failed to create proxy request: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
+		return
+	}
+	if token := monitorControlToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := doProxy(monitorClient, req, c)
+	if err != nil {
+		log.Printf("Failed to reach monitor: %v", err)
+		RespondWithError(c, http.StatusBadGateway, "Monitor service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read monitor response: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read monitor response")
+		return
+	}
+
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+}
+
+// PostContainerStartHandler proxies POST /containers/:name/start to the
+// monitor service. This route's Admin-tier gate (routes.go's adminRoutes
+// group) is the only way a client reaches it; the monitor's own bearer token
+// and hard allowlist (system_3 #10514) are a second, independent check once
+// it arrives. This pair is "never a raw docker socket from the client": the
+// client never holds a credential that talks to Docker directly, at either
+// hop.
+func PostContainerStartHandler(c *gin.Context) {
+	name := c.Param("name")
+	monitorProxyPost(c, fmt.Sprintf("/containers/%s/start", url.PathEscape(name)))
+}
+
+// PostContainerStopHandler proxies POST /containers/:name/stop to the monitor
+// service. See PostContainerStartHandler.
+func PostContainerStopHandler(c *gin.Context) {
+	name := c.Param("name")
+	monitorProxyPost(c, fmt.Sprintf("/containers/%s/stop", url.PathEscape(name)))
+}
+
+// GetServiceUsageHandler returns the most recent service_usage_rollup run:
+// one row per served service with its last-used time and request counts
+// (system_3 #10491-B). Reads this service's own table directly, unlike the
+// monitor-proxied routes above, so it needs no new credential.
+func GetServiceUsageHandler(c *gin.Context) {
+	db, exists := c.Get("db")
+	if !exists {
+		RespondWithError(c, http.StatusInternalServerError, "Database not available")
+		return
+	}
+	gormDB, ok := db.(*gorm.DB)
+	if !ok {
+		RespondWithError(c, http.StatusInternalServerError, "Invalid database connection")
+		return
+	}
+
+	type usageRow struct {
+		ServiceName        string     `json:"service_name"`
+		Kind               string     `json:"kind"`
+		MemoryMB           *float64   `json:"memory_mb"`
+		DiskMB             *float64   `json:"disk_mb"`
+		LastUsedAt         *time.Time `json:"last_used_at"`
+		RequestCount       *int64     `json:"request_count"`
+		RequestCountMember *int64     `json:"request_count_member"`
+	}
+
+	// Found via the model, not a raw MAX(as_of) scan: scanning an aggregate
+	// straight into *time.Time depends on the driver returning a time.Time
+	// value rather than a string for a computed column, which sqlite (the
+	// test suite's dialect) does not do.
+	var mostRecent data_models.ServiceUsageRollup
+	err := gormDB.Order("as_of desc").First(&mostRecent).Error
+	if err == gorm.ErrRecordNotFound {
+		RespondWithSuccess(c, gin.H{"as_of": nil, "services": []usageRow{}}, "No service usage rollup has run yet")
+		return
+	}
+	if err != nil {
+		log.Printf("Failed to find latest service usage rollup: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read service usage")
+		return
+	}
+	asOf := mostRecent.AsOf
+
+	var rows []data_models.ServiceUsageRollup
+	if err := gormDB.Where("as_of = ?", asOf).Order("service_name").Find(&rows).Error; err != nil {
+		log.Printf("Failed to read service usage rollup: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read service usage")
+		return
+	}
+
+	results := make([]usageRow, 0, len(rows))
+	for _, r := range rows {
+		results = append(results, usageRow{
+			ServiceName:        r.ServiceName,
+			Kind:               r.Kind,
+			MemoryMB:           r.MemoryMB,
+			DiskMB:             r.DiskMB,
+			LastUsedAt:         r.LastUsedAt,
+			RequestCount:       r.RequestCount,
+			RequestCountMember: r.RequestCountMember,
+		})
+	}
+
+	RespondWithSuccess(c, gin.H{"as_of": asOf, "services": results}, "Latest service usage rollup")
 }
 
 // GetDBStatsHandler returns database table sizes and row counts
