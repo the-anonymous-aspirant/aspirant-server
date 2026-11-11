@@ -79,15 +79,17 @@ func monitorControlToken() string {
 
 // monitorProxyPost forwards a bodyless POST to the monitor service with the
 // control bearer token attached, and pipes the response back unchanged. Only
-// the container start/stop routes below use it.
-func monitorProxyPost(c *gin.Context, path string) {
+// the container start/stop routes below use it. Returns the upstream's status
+// code, or 0 if the call never produced one -- in that case the caller has
+// already written its own error response.
+func monitorProxyPost(c *gin.Context, path string) int {
 	reqURL := fmt.Sprintf("%s%s", monitorURL(), path)
 
 	req, err := http.NewRequest("POST", reqURL, nil)
 	if err != nil {
 		log.Printf("Failed to create proxy request: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to create proxy request")
-		return
+		return 0
 	}
 	if token := monitorControlToken(); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -97,7 +99,7 @@ func monitorProxyPost(c *gin.Context, path string) {
 	if err != nil {
 		log.Printf("Failed to reach monitor: %v", err)
 		RespondWithError(c, http.StatusBadGateway, "Monitor service unavailable")
-		return
+		return 0
 	}
 	defer resp.Body.Close()
 
@@ -105,10 +107,26 @@ func monitorProxyPost(c *gin.Context, path string) {
 	if err != nil {
 		log.Printf("Failed to read monitor response: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to read monitor response")
-		return
+		return 0
 	}
 
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	return resp.StatusCode
+}
+
+// logContainerControl records which admin asked to start or stop which
+// container, and what the monitor answered (security review c65352 on
+// #10515, asked for since c64991 on #10514): a container stop is the most
+// destructive thing the admin page can do, and until now nothing recorded
+// which admin acted. Deliberately never includes the bearer token.
+func logContainerControl(c *gin.Context, action, name string, status int) {
+	var userID uint
+	if v, exists := c.Get("user_id"); exists {
+		if uid, ok := v.(uint); ok {
+			userID = uid
+		}
+	}
+	log.Printf("container control: user_id=%d action=%s name=%q status=%d", userID, action, name, status)
 }
 
 // PostContainerStartHandler proxies POST /containers/:name/start to the
@@ -120,14 +138,16 @@ func monitorProxyPost(c *gin.Context, path string) {
 // hop.
 func PostContainerStartHandler(c *gin.Context) {
 	name := c.Param("name")
-	monitorProxyPost(c, fmt.Sprintf("/containers/%s/start", url.PathEscape(name)))
+	status := monitorProxyPost(c, fmt.Sprintf("/containers/%s/start", url.PathEscape(name)))
+	logContainerControl(c, "start", name, status)
 }
 
 // PostContainerStopHandler proxies POST /containers/:name/stop to the monitor
 // service. See PostContainerStartHandler.
 func PostContainerStopHandler(c *gin.Context) {
 	name := c.Param("name")
-	monitorProxyPost(c, fmt.Sprintf("/containers/%s/stop", url.PathEscape(name)))
+	status := monitorProxyPost(c, fmt.Sprintf("/containers/%s/stop", url.PathEscape(name)))
+	logContainerControl(c, "stop", name, status)
 }
 
 // GetServiceUsageHandler returns the most recent service_usage_rollup run:

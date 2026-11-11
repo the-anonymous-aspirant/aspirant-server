@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// captureLog redirects the standard logger to a buffer for the test's
+// duration and restores it on cleanup, so a test can assert on a log.Printf
+// line without a dependency-injected logger existing for these handlers.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	return &buf
+}
 
 // --- GetServiceUsageHandler (system_3 #10491-B) -----------------------------
 
@@ -83,6 +97,7 @@ func TestGetServiceUsageHandlerReturnsOnlyLatestRun(t *testing.T) {
 
 func TestPostContainerStartHandlerForwardsNameAndToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	logs := captureLog(t)
 
 	var gotPath, gotAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -96,6 +111,7 @@ func TestPostContainerStartHandlerForwardsNameAndToken(t *testing.T) {
 	t.Setenv("MONITOR_CONTROL_TOKEN", "test-control-token")
 
 	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("user_id", uint(9)); c.Next() })
 	r.POST("/c/:name/start", PostContainerStartHandler)
 
 	req := httptest.NewRequest("POST", "/c/aspirant-online-advisor-1/start", nil)
@@ -111,10 +127,44 @@ func TestPostContainerStartHandlerForwardsNameAndToken(t *testing.T) {
 	if gotAuth != "Bearer test-control-token" {
 		t.Errorf("Authorization = %q, want Bearer test-control-token", gotAuth)
 	}
+
+	wantLog := `container control: user_id=9 action=start name="aspirant-online-advisor-1" status=202`
+	if !strings.Contains(logs.String(), wantLog) {
+		t.Errorf("log = %q, want a line containing %q", logs.String(), wantLog)
+	}
+	if strings.Contains(logs.String(), "test-control-token") {
+		t.Errorf("log = %q, the bearer token must never be logged", logs.String())
+	}
+}
+
+func TestPostContainerStartHandlerLogsZeroUserIDWhenContextHasNone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logs := captureLog(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	t.Setenv("MONITOR_URL", upstream.URL)
+
+	r := gin.New()
+	// Deliberately no user_id middleware, unlike the test above.
+	r.POST("/c/:name/start", PostContainerStartHandler)
+
+	req := httptest.NewRequest("POST", "/c/aspirant-online-advisor-1/start", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	wantLog := `container control: user_id=0 action=start name="aspirant-online-advisor-1" status=202`
+	if !strings.Contains(logs.String(), wantLog) {
+		t.Errorf("log = %q, want a line containing %q", logs.String(), wantLog)
+	}
 }
 
 func TestPostContainerStopHandlerForwardsNameAndToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	logs := captureLog(t)
 
 	var gotPath, gotAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -128,6 +178,7 @@ func TestPostContainerStopHandlerForwardsNameAndToken(t *testing.T) {
 	t.Setenv("MONITOR_CONTROL_TOKEN", "test-control-token")
 
 	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("user_id", uint(9)); c.Next() })
 	r.POST("/c/:name/stop", PostContainerStopHandler)
 
 	req := httptest.NewRequest("POST", "/c/aspirant-online-browser-1/stop", nil)
@@ -142,6 +193,14 @@ func TestPostContainerStopHandlerForwardsNameAndToken(t *testing.T) {
 	}
 	if gotAuth != "Bearer test-control-token" {
 		t.Errorf("Authorization = %q, want Bearer test-control-token", gotAuth)
+	}
+
+	wantLog := `container control: user_id=9 action=stop name="aspirant-online-browser-1" status=202`
+	if !strings.Contains(logs.String(), wantLog) {
+		t.Errorf("log = %q, want a line containing %q", logs.String(), wantLog)
+	}
+	if strings.Contains(logs.String(), "test-control-token") {
+		t.Errorf("log = %q, the bearer token must never be logged", logs.String())
 	}
 }
 
