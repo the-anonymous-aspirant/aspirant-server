@@ -1,0 +1,32 @@
+Kontoauszug Nr. 11/2026
+01.11.2026 bis 30.11.2026
+
+
+
+Zahlungsempfänger/Auftraggeber                                        Verbuchungsdatum        Betrag
+
+Mara Beispiel                                                         03.11.2026       250,00€
+Gutschriften
+IBAN: DE00111122223333444455 • BIC: BANKDEFFXXX
+Vorschuss Wandbild
+Wertstellung 04.11.2026
+
+Beispiel Supermarkt                                                   05.11.2026       -45,67€
+Lastschriften
+IBAN: DE00555566667777888899 • BIC: BANKDEFFXXX
+Wertstellung 05.11.2026
+
+BEISPIEL SPORTHALLE                                                   06.11.2026       -12,50€
+Mastercard • Kartenzahlung
+Wertstellung 07.11.2026
+
+zu Investments                                                        08.11.2026      -100,00€
+Wertstellung 08.11.2026
+
+Kunde Zwei GmbH                                                       10.11.2026     1.000,00€
+Gutschriften
+IBAN: DE00999988887777666655 • BIC: BANKDEFFXXX
+Anzahlung Projekt Wandmalerei
+Wertstellung 11.11.2026
+
+N26 Bank Beispiel GmbH Musterstraße 1, 10000 Berlin, Germany
