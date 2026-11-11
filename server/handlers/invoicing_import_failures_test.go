@@ -145,9 +145,9 @@ func TestImportFailureWindowRespectsTheEnvDownwardOnly(t *testing.T) {
 		{"", importFailureDefaultWindowHours * time.Hour},
 		{"24", 24 * time.Hour},
 		{"1", 1 * time.Hour},
-		{"0", importFailureDefaultWindowHours * time.Hour},          // ignored: not > 0
-		{"-5", importFailureDefaultWindowHours * time.Hour},         // ignored: not > 0
-		{"1000", importFailureDefaultWindowHours * time.Hour},       // ignored: past the 7-day ceiling
+		{"0", importFailureDefaultWindowHours * time.Hour},    // ignored: not > 0
+		{"-5", importFailureDefaultWindowHours * time.Hour},   // ignored: not > 0
+		{"1000", importFailureDefaultWindowHours * time.Hour}, // ignored: past the 7-day ceiling
 		{"not-a-number", importFailureDefaultWindowHours * time.Hour},
 	}
 	for _, tc := range cases {
@@ -435,5 +435,164 @@ func TestDownloadImportFailureWithNoCopyIs404(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// --- security review c65539 on #10536 ---
+
+const n26CSVHeaderLine = `"Booking Date","Value Date","Partner Name","Partner Iban","Type","Payment Reference","Account Name","Amount (EUR)","Original Amount","Original Currency","Exchange Rate"`
+
+// The 0-row rule, positive side: an export with only its header row parses
+// cleanly and yields nothing, so it is recorded as no_candidates.
+func TestN26CSVHeaderOnlyIsRecordedAsNoCandidates(t *testing.T) {
+	db := setupImportFailuresDB(t)
+	r := setupN26Router(db, 7)
+	w := uploadN26(t, r, map[string][]byte{"empty.csv": []byte(n26CSVHeaderLine + "\n")})
+	if w.Code != http.StatusOK {
+		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
+	}
+	resp := decodeN26Parse(t, w)
+	if resp.Files[0].Error != nil {
+		t.Fatalf("a header-only export is not a per-file error to the uploader: %+v", resp.Files[0].Error)
+	}
+	if countImportFailures(t, db) != 1 {
+		t.Fatalf("expected 1 import failure, got %d", countImportFailures(t, db))
+	}
+	if row := lastImportFailure(t, db); row.ErrorCode != importFailureCodeNoCandidates {
+		t.Fatalf("row: %+v", row)
+	}
+}
+
+// F1: a statement with real outgoing rows and no incoming ones imported
+// correctly. It is not a failure and its bank document is not kept.
+func TestN26CSVOutgoingOnlyRecordsNothing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", dir)
+	db := setupImportFailuresDB(t)
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	r := setupN26Router(db, 7)
+	csv := n26CSVHeaderLine + "\n" +
+		`"2026-10-05","2026-10-05","Stadtwerke Beispiel","DE00123456780000000003","Direct Debit","Abschlag Oktober","Hauptkonto","-45.10","","",""` + "\n"
+	w := uploadN26(t, r, map[string][]byte{"outgoing.csv": []byte(csv)})
+	if w.Code != http.StatusOK {
+		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
+	}
+	resp := decodeN26Parse(t, w)
+	f := resp.Files[0]
+	if f.Error != nil || len(f.Candidates) != 0 || len(f.ExpenseCandidates) == 0 {
+		t.Fatalf("fixture must be outgoing-only and parse cleanly for this test to mean anything: %+v", f)
+	}
+	if n := countImportFailures(t, db); n != 0 {
+		t.Fatalf("an outgoing-only statement imported fine; expected no failure record, got %d", n)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("no copy may be kept of a file that did not fail; found %d", len(entries))
+	}
+}
+
+// F2: the audit row is a condition of the download, not a side effect.
+func TestDownloadImportFailureRefusesWhenTheAuditWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", dir)
+	db := setupImportFailuresDB(t)
+	r := setupImportFailuresRouter(db, 9)
+	recordImportFailure(db, 1, "n26", "a.pdf", 5, []byte("hello"), n26ErrParseFailed, "", 0)
+	row := lastImportFailure(t, db)
+	db.DropTable(&data_models.InvoicingAuditEvent{})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/admin/invoicing/import-failures/"+strconv.Itoa(int(row.ID))+"/download", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status: %d, want 500 when the audit cannot be written", w.Code)
+	}
+	if w.Body.String() == "hello" {
+		t.Fatal("the file must not be served when its download could not be audited")
+	}
+}
+
+// Non-blocking 2: a copy past its window is refused even before the sweep
+// stamps it deleted.
+func TestDownloadImportFailureRefusesACopyPastItsWindow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", dir)
+	t.Setenv("IMPORT_FAILURE_WINDOW_HOURS", "1")
+	db := setupImportFailuresDB(t)
+	r := setupImportFailuresRouter(db, 9)
+	if err := os.WriteFile(filepath.Join(dir, "late-copy"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row := data_models.InvoicingImportFailure{
+		CreatedAt: time.Now().UTC().Add(-2 * time.Hour), ImportKind: "n26", Filename: "a.pdf",
+		ErrorCode: n26ErrParseFailed, ErrorMessage: "x", CopyPath: "late-copy",
+	}
+	db.Create(&row)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/admin/invoicing/import-failures/"+strconv.Itoa(int(row.ID))+"/download", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status: %d, want 404 for a copy past its window", w.Code)
+	}
+}
+
+// Non-blocking 3: the list says when each kept copy expires, and flags one
+// past its window that the sweep has not reached yet.
+func TestListImportFailuresCarriesExpiryAndOverdue(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_WINDOW_HOURS", "1")
+	db := setupImportFailuresDB(t)
+	r := setupImportFailuresRouter(db, 1)
+	db.Create(&data_models.InvoicingImportFailure{
+		CreatedAt: time.Now().UTC().Add(-2 * time.Hour), ImportKind: "n26", Filename: "late.pdf",
+		ErrorCode: n26ErrParseFailed, ErrorMessage: "x", CopyPath: "late-copy",
+	})
+	db.Create(&data_models.InvoicingImportFailure{
+		CreatedAt: time.Now().UTC(), ImportKind: "n26", Filename: "fresh.pdf",
+		ErrorCode: n26ErrParseFailed, ErrorMessage: "x", CopyPath: "fresh-copy",
+	})
+
+	w := invoicingDo(r, "GET", "/admin/invoicing/import-failures", "")
+	var body struct {
+		Data struct {
+			Failures []struct {
+				Filename      string     `json:"Filename"`
+				CopyExpiresAt *time.Time `json:"copy_expires_at"`
+				Overdue       bool       `json:"overdue"`
+			} `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+	got := map[string]bool{}
+	for _, f := range body.Data.Failures {
+		if f.CopyExpiresAt == nil {
+			t.Fatalf("%s: a kept copy must carry copy_expires_at", f.Filename)
+		}
+		got[f.Filename] = f.Overdue
+	}
+	if !got["late.pdf"] || got["fresh.pdf"] {
+		t.Fatalf("overdue flags: %+v", got)
+	}
+}
+
+// Non-blocking 1: with no directory configured, the sweep cannot delete
+// anything, so it must not claim it did.
+func TestSweepWithNoDirLeavesRowsUnstamped(t *testing.T) {
+	t.Setenv("IMPORT_FAILURE_COPIES_DIR", "")
+	t.Setenv("IMPORT_FAILURE_WINDOW_HOURS", "1")
+	db := setupImportFailuresDB(t)
+	row := data_models.InvoicingImportFailure{
+		CreatedAt: time.Now().UTC().Add(-2 * time.Hour), ImportKind: "n26", Filename: "a.pdf",
+		ErrorCode: n26ErrParseFailed, ErrorMessage: "x", CopyPath: "still-on-host",
+	}
+	db.Create(&row)
+
+	sweepImportFailures(db)
+
+	var got data_models.InvoicingImportFailure
+	db.First(&got, row.ID)
+	if got.CopyDeletedAt != nil {
+		t.Fatal("a row must not be stamped deleted by a pass that deleted nothing")
 	}
 }

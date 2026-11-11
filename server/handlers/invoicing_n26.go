@@ -873,8 +873,11 @@ func ImportN26ParseHandler(c *gin.Context) {
 		// c65222): still a failure the operator needs visibility into, not
 		// a silent empty response. Not routed through fail(), which sets
 		// entry.Error for the uploader -- a 0-row statement is a normal
-		// server response, just also a recorded failure.
-		if len(cands) == 0 {
+		// server response, just also a recorded failure. Both candidate
+		// lists must be empty: a statement with real outgoing rows and no
+		// incoming ones imported correctly and is not a failure (security
+		// review F1 on #10536, c65539).
+		if len(cands) == 0 && len(entry.ExpenseCandidates) == 0 {
 			recordImportFailure(db, ownerID, "n26", fh.Filename, fh.Size, data, importFailureCodeNoCandidates, documentKind, 0)
 		}
 		out = append(out, entry)

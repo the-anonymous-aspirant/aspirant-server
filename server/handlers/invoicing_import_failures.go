@@ -183,13 +183,53 @@ func ListImportFailuresHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error reading import failures")
 		return
 	}
-	RespondWithSuccess(c, gin.H{"failures": rows}, "Recent import failures")
+	window := importFailureWindow()
+	views := make([]importFailureView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, newImportFailureView(row, window))
+	}
+	RespondWithSuccess(c, gin.H{"failures": views}, "Recent import failures")
+}
+
+// importFailureView adds what the list can't work out for itself (security
+// review non-blocking item 3 on #10536, c65539): the retention window lives
+// in server env, so the client is told each row's own expiry and whether a
+// copy has passed its window but the sweep (at most an hour behind) hasn't
+// caught it yet.
+type importFailureView struct {
+	data_models.InvoicingImportFailure
+	CopyExpiresAt *time.Time `json:"copy_expires_at,omitempty"`
+	Overdue       bool       `json:"overdue"`
+}
+
+func newImportFailureView(row data_models.InvoicingImportFailure, window time.Duration) importFailureView {
+	v := importFailureView{InvoicingImportFailure: row}
+	if row.CopyPath != "" && row.CopyDeletedAt == nil {
+		expires := row.CreatedAt.Add(window)
+		v.CopyExpiresAt = &expires
+		v.Overdue = time.Now().UTC().After(expires)
+	}
+	return v
+}
+
+// copyIsAvailable is the single predicate for "may this copy still be
+// downloaded": a path is recorded, nothing has stamped it deleted, and its
+// own window has not passed -- not just CopyDeletedAt, which can lag the
+// window by up to the sweep's own hour (security review non-blocking item 2
+// on #10536, c65539).
+func copyIsAvailable(row data_models.InvoicingImportFailure) bool {
+	if row.CopyPath == "" || row.CopyDeletedAt != nil {
+		return false
+	}
+	return time.Now().UTC().Before(row.CreatedAt.Add(importFailureWindow()))
 }
 
 // DownloadImportFailureHandler serves a kept copy as an opaque attachment
 // (Admin-tier; security ruling c65222 §2: never inline, since a failed
-// upload is by definition not a valid PDF or CSV and could be HTML). Every
-// download is audited.
+// upload is by definition not a valid PDF or CSV and could be HTML). The
+// audit write is a condition of the download, not a best-effort side
+// effect (security review F2 on #10536, c65539): it is written first, and
+// the file is served only once that write has succeeded.
 func DownloadImportFailureHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -207,7 +247,7 @@ func DownloadImportFailureHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error reading import failures")
 		return
 	}
-	if row.CopyPath == "" || row.CopyDeletedAt != nil {
+	if !copyIsAvailable(row) {
 		RespondWithError(c, http.StatusNotFound, "No copy is kept for this failure")
 		return
 	}
@@ -227,6 +267,8 @@ func DownloadImportFailureHandler(c *gin.Context) {
 	if err := data_models.RecordInvoicingAuditEvent(db, adminID, invoicingActionDownload, invoicingEntityImportFailure, row.ID,
 		auditDetails(gin.H{"owner_user_id": row.OwnerUserID, "filename": row.Filename})); err != nil {
 		log.Printf("import failure: auditing download of %d: %v", id, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error recording the download")
+		return
 	}
 
 	c.Header("X-Content-Type-Options", "nosniff")

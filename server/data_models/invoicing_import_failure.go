@@ -21,10 +21,10 @@ import "time"
 // set by the sweep once the retention window has passed, or immediately if
 // no copy was ever kept.
 type InvoicingImportFailure struct {
-	ID             uint       `gorm:"primary_key"`
-	OwnerUserID    uint       `gorm:"index"`
-	CreatedAt      time.Time  `gorm:"index"`
-	ImportKind     string     // "n26" or "paypal"
+	ID             uint      `gorm:"primary_key"`
+	OwnerUserID    uint      `gorm:"index"`
+	CreatedAt      time.Time `gorm:"index"`
+	ImportKind     string    // "n26" or "paypal"
 	Filename       string
 	SizeBytes      int64
 	SHA256         string

@@ -62,12 +62,20 @@ func deleteTrackedCopiesPast(db *gorm.DB, cutoff time.Time) {
 		return
 	}
 	dir := importFailureDir()
+	if dir == "" {
+		// Never stamp a copy deleted that this pass did not delete: a deploy
+		// that drops the variable but keeps the mount would otherwise mark
+		// copies gone while they sit on the host (security review
+		// non-blocking item 1 on #10536, c65539).
+		if len(rows) > 0 {
+			log.Printf("import failure sweep: %d copies past their window but IMPORT_FAILURE_COPIES_DIR is unset; leaving them unstamped", len(rows))
+		}
+		return
+	}
 	for _, row := range rows {
-		if dir != "" {
-			if err := os.Remove(filepath.Join(dir, row.CopyPath)); err != nil && !os.IsNotExist(err) {
-				log.Printf("import failure sweep: deleting copy of row %d: %v (retrying next pass)", row.ID, err)
-				continue
-			}
+		if err := os.Remove(filepath.Join(dir, row.CopyPath)); err != nil && !os.IsNotExist(err) {
+			log.Printf("import failure sweep: deleting copy of row %d: %v (retrying next pass)", row.ID, err)
+			continue
 		}
 		now := time.Now().UTC()
 		if err := db.Model(&data_models.InvoicingImportFailure{}).Where("id = ?", row.ID).
