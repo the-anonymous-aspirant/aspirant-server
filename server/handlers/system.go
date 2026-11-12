@@ -252,6 +252,21 @@ func GetServiceUsageHandler(c *gin.Context) {
 	RespondWithSuccess(c, gin.H{"as_of": asOf, "services": results}, "Latest service usage rollup")
 }
 
+// dbStatsQuery sizes every table by its OID (relid), never by name. A name is
+// cast to regclass through the session's search_path, and server's path does
+// not include the per-service schemas that #9321 moved tables into
+// (aspirant_commander and the rest), so one moved table failed the whole
+// statement and the route returned 500 (system_3 #10686).
+const dbStatsQuery = `
+		SELECT
+			schemaname AS schema,
+			relname AS name,
+			n_live_tup AS rows,
+			pg_total_relation_size(relid) AS size_bytes
+		FROM pg_stat_user_tables
+		ORDER BY pg_total_relation_size(relid) DESC
+	`
+
 // GetDBStatsHandler returns database table sizes and row counts
 func GetDBStatsHandler(c *gin.Context) {
 	db, exists := c.Get("db")
@@ -267,20 +282,14 @@ func GetDBStatsHandler(c *gin.Context) {
 	}
 
 	type tableInfo struct {
+		Schema    string  `json:"schema"`
 		Name      string  `json:"name"`
 		Rows      int64   `json:"rows"`
 		SizeBytes int64   `json:"size_bytes"`
 		SizeMB    float64 `json:"size_mb"`
 	}
 
-	rows, err := gormDB.Raw(`
-		SELECT
-			relname AS name,
-			n_live_tup AS rows,
-			pg_total_relation_size(quote_ident(relname)) AS size_bytes
-		FROM pg_stat_user_tables
-		ORDER BY pg_total_relation_size(quote_ident(relname)) DESC
-	`).Rows()
+	rows, err := gormDB.Raw(dbStatsQuery).Rows()
 	if err != nil {
 		log.Printf("Failed to query table stats: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Failed to query table stats")
@@ -294,7 +303,7 @@ func GetDBStatsHandler(c *gin.Context) {
 
 	for rows.Next() {
 		var t tableInfo
-		if err := rows.Scan(&t.Name, &t.Rows, &t.SizeBytes); err != nil {
+		if err := rows.Scan(&t.Schema, &t.Name, &t.Rows, &t.SizeBytes); err != nil {
 			log.Printf("Failed to scan row: %v", err)
 			continue
 		}
