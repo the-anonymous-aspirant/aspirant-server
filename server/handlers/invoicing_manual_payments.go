@@ -81,9 +81,10 @@ func hasFormatChars(s string) bool {
 
 // lockPaymentRow takes the payment row's lock with a no-op UPDATE. A delete
 // and a draft that links the payment both take it, so they run one at a
-// time (#8409 security F1).
-func lockPaymentRow(tx *gorm.DB, id uint) error {
-	return tx.Model(&data_models.InvoicingPayment{}).Where("id = ?", id).
+// time (#8409 security F1). Scoped to the owner, like lockExpenseRow, so an
+// id from another book locks nothing (system_3 #10645, security c66025).
+func lockPaymentRow(tx *gorm.DB, owner, id uint) error {
+	return tx.Model(&data_models.InvoicingPayment{}).Where("id = ? AND owner_user_id = ?", id, owner).
 		UpdateColumn("category", gorm.Expr("category")).Error
 }
 
@@ -410,7 +411,7 @@ func DeletePaymentHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
 		return
 	}
-	if err := lockPaymentRow(tx, uint(id)); err != nil {
+	if err := lockPaymentRow(tx, invoicingUserID(c), uint(id)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking payment %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting payment")
