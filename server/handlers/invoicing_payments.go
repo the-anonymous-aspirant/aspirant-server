@@ -299,9 +299,19 @@ func ListInvoicingPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
 		return
 	}
+	live, err := data_models.LiveInvoicesForPayments(db, invoicingUserID(c))
+	if err != nil {
+		log.Printf("Error listing live invoices: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")
+		return
+	}
 	for i := range payments {
 		payments[i].OnInvoice = linked[payments[i].ID]
 		payments[i].OnIssuedInvoice = onIssued[payments[i].ID]
+		if ref, ok := live[payments[i].ID]; ok {
+			ref := ref
+			payments[i].Invoice = &ref
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"payments": payments, "categories": data_models.PaymentCategories})
 }
