@@ -42,6 +42,14 @@ IMPORT_FAILURE_COPIES_DIR=/data/import-failures
 # 7-day (168h) ceiling, never lengthen it; an out-of-range or unparsable
 # value is ignored and logged.
 IMPORT_FAILURE_WINDOW_HOURS=168
+
+# Optional: boot mode (#10688, #9324's migration/runtime role split). Unset
+# boots to serve, running AutoMigrate first unless SKIP_AUTOMIGRATE=1.
+# SERVER_MODE=migrate runs AutoMigrate alone and exits non-zero on any
+# migration error, rather than serving on a stale schema — the one-shot
+# migrate step ahead of a runtime boot that no longer has DDL privileges.
+SERVER_MODE=
+SKIP_AUTOMIGRATE=
 ```
 
 ### First Run
@@ -188,9 +196,11 @@ To proxy a new microservice endpoint:
    }
    ```
 
-2. **Add AutoMigrate** call in `server/database.go`:
+2. **Add a migrate call** in `server/database.go`'s `AutoMigrate` function, through the `migrate` helper so a failure is returned rather than silently dropped (#10688):
    ```go
-   db.AutoMigrate(&data_models.NewModel{})
+   if err := migrate(db, &data_models.NewModel{}); err != nil {
+       return fmt.Errorf("migrating new_models: %w", err)
+   }
    ```
 
 3. **Create handler file** in `server/handlers/`

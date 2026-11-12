@@ -23,6 +23,18 @@ func main() {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
 
+	// SERVER_MODE=migrate: run AutoMigrate as the migration role and exit,
+	// instead of serving (#10688, #9324's migrate-then-serve cutover). Checked
+	// before the JWT secret and every other serve-mode setup, none of which a
+	// migrate-only boot needs.
+	if server.IsMigrateOnlyMode() {
+		if err := server.RunMigrateOnly(); err != nil {
+			log.Fatalf("FATAL: %v", err)
+		}
+		log.Println("Migration completed successfully, exiting")
+		return
+	}
+
 	// Refuse to serve traffic on empty / placeholder / short JWT_SECRET.
 	// system_3 #1374 — the previous insecure fallback let a forged admin
 	// token pass AuthMiddleware.
@@ -55,9 +67,17 @@ func main() {
 		log.Fatalf("FATAL: database connection failed, exiting so the container restarts: %v", err)
 	}
 	defer db.Close()
-	// Set up the database tables (migrations)
-	server.AutoMigrate(db)
-	log.Println("Database connected and migrated successfully")
+	// Set up the database tables (migrations), unless SKIP_AUTOMIGRATE=1 — the
+	// runtime-role boot on the far side of #9324's cutover, where a separate
+	// SERVER_MODE=migrate boot already ran AutoMigrate as the migration role
+	// and this role lacks the DDL privileges to run it again.
+	if server.ShouldSkipAutoMigrate() {
+		log.Println("SKIP_AUTOMIGRATE=1 — skipping AutoMigrate on boot")
+	} else if err := server.AutoMigrate(db); err != nil {
+		log.Fatalf("FATAL: migration failed, exiting so the container restarts: %v", err)
+	} else {
+		log.Println("Database connected and migrated successfully")
+	}
 
 	// The Admin-tier gate (system_3 #8798). Log its mode at every start, and
 	// revoke Admin sessions when the mode changed since the last start. A
