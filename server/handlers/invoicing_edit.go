@@ -34,6 +34,10 @@ var (
 	paymentEditableByHand = map[string]bool{
 		"paid_on": true, "gross_cents": true, "method": true, "reference": true,
 		"sender_name": true, "note": true, "category": true, "client_id": true,
+		// Adds the payer to the client book in the same transaction, as the
+		// hand-entry create does (system_3 #10696, design §3.143 Decision 5:
+		// "Paid by" keeps §3.142's behaviour in edit mode).
+		"new_client_name": true,
 	}
 	paymentEditableImported = map[string]bool{"note": true, "category": true, "client_id": true}
 
@@ -248,6 +252,14 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		return
 	}
 	if !p.IsManual() {
+		// An imported payment's payer is the bank's record (§3.143 Decision
+		// 5): she can link a client, not add one from here.
+		if _, sent := body["new_client_name"]; sent {
+			tx.Rollback()
+			respondError(c, http.StatusBadRequest, "bank_fact_field",
+				"new_client_name cannot be given on an imported payment: its payer is the bank's record; choose a client with client_id")
+			return
+		}
 		if msg := bankFactRefusal(keys, paymentEditableImported, "payment"); msg != "" {
 			tx.Rollback()
 			respondError(c, http.StatusBadRequest, "bank_fact_field", msg)
@@ -260,9 +272,27 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 	}
 
 	next := *p
+	newClientName := ""
 	for _, k := range keys {
 		raw := body[k]
 		switch k {
+		case "new_client_name":
+			s, ok := editString(raw)
+			if !ok {
+				bad(k, "must be a string")
+				return
+			}
+			if msg := newClientNameRefusal(s); msg != "" {
+				bad(k, msg)
+				return
+			}
+			if s != "" {
+				if cid, present := body["client_id"]; present && string(cid) != "null" {
+					bad(k, "cannot be given together with client_id: choose a client or add a new one")
+					return
+				}
+			}
+			newClientName = s
 		case "paid_on":
 			d, msg := checkEditPaidOn(raw, "enter the day the money was received")
 			if msg != "" {
@@ -356,7 +386,30 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		next.Reference = strings.ToUpper(next.Reference)
 	}
 
-	before, after := changedFields(keys, paymentEditView(*p), paymentEditView(next))
+	// A new name adds the client in this transaction and links it, so the
+	// edit's audit event records the new client_id (system_3 #10696). Any
+	// refusal below rolls the client back with the edit.
+	diffKeys := keys
+	var newClient *data_models.InvoicingClient
+	if newClientName != "" {
+		cl, existing, err := addPayerClient(tx, owner, newClientName, "payment_edit")
+		if err != nil {
+			fail(tx, "new client", err)
+			return
+		}
+		if existing != nil {
+			tx.Rollback()
+			respondClientExists(c, existing)
+			return
+		}
+		newClient = cl
+		next.ClientID = &cl.ID
+		if _, sent := body["client_id"]; !sent {
+			diffKeys = append(append([]string{}, keys...), "client_id")
+		}
+	}
+
+	before, after := changedFields(diffKeys, paymentEditView(*p), paymentEditView(next))
 	if len(after) == 0 {
 		tx.Rollback()
 		c.JSON(http.StatusOK, gin.H{"payment": p})
@@ -434,7 +487,11 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error updating payment")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"payment": next})
+	resp := gin.H{"payment": next}
+	if newClient != nil {
+		resp["client"] = newClient
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // onlyKeys reports whether every key of m is one of allowed.
