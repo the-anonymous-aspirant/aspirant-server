@@ -52,6 +52,10 @@ type invoicingImportSummary struct {
 	// was kept for the administrator; it is when that copy is deleted
 	// (#10567).
 	CopyExpiresAt *time.Time `json:"copy_expires_at,omitempty"`
+	// RemovedEarlier and DeletedEarlier (#10555-B1) are the duplicates the
+	// owner had removed, or deleted for good. This import has no review, so
+	// its summary is the only place a removed PayPal payment can be named.
+	priorCounts
 }
 
 // importErrorResponse is the usual error body plus, when a copy of the
@@ -164,13 +168,15 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			continue
 		}
 		seen[row.TransactionID] = true
-		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingUserID(c), invoicingPaymentSourcePayPal, row.TransactionID)
+		prior, err := data_models.InvoicingPaymentPrior(tx, invoicingUserID(c), invoicingPaymentSourcePayPal, row.TransactionID)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking payment %s: %v", row.TransactionID, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
 			return
 		}
+		summary.count(prior)
+		exists := prior.Seen()
 		if !exists {
 			// The same PayPal payment may already have been entered by hand
 			// with its transaction id as the reference (#8409).
@@ -323,6 +329,8 @@ type paypalExpenseCandidate struct {
 	PayeeName           string `json:"payee_name"`
 	Note                string `json:"note"`
 	AlreadyImported     bool   `json:"already_imported"`
+	Removed             bool   `json:"removed,omitempty"`
+	DeletedEarlier      bool   `json:"deleted_earlier,omitempty"`
 	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
 }
 
@@ -347,13 +355,12 @@ func paypalExpenseCandidates(rows []paypalExpenseRow) []paypalExpenseCandidate {
 func flagPayPalExpenseCandidates(db *gorm.DB, owner uint, cands []paypalExpenseCandidate) error {
 	for i := range cands {
 		c := &cands[i]
-		var n int
-		if err := db.Model(&data_models.InvoicingExpense{}).
-			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourcePayPal, c.TransactionID).
-			Count(&n).Error; err != nil {
+		// Removed and deleted-for-good expenses count as seen (#10555-B1).
+		prior, err := data_models.InvoicingExpensePrior(db, owner, invoicingPaymentSourcePayPal, c.TransactionID)
+		if err != nil {
 			return err
 		}
-		c.AlreadyImported = n > 0
+		markPrior(prior, &c.AlreadyImported, &c.Removed, &c.DeletedEarlier)
 		if c.AlreadyImported {
 			continue
 		}
@@ -398,6 +405,7 @@ type paypalExpenseConfirmRow struct {
 type paypalExpenseConfirmSummary struct {
 	Confirmed  int `json:"confirmed"`
 	Duplicates int `json:"duplicates"`
+	priorCounts
 }
 
 // ImportPayPalExpensesConfirmHandler stores the outgoing PayPal rows the owner
@@ -513,17 +521,16 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 			continue
 		}
 		seen[v.row.TransactionID] = true
-		var n int
-		if err := tx.Model(&data_models.InvoicingExpense{}).
-			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourcePayPal, v.row.TransactionID).
-			Count(&n).Error; err != nil {
+		prior, err := data_models.InvoicingExpensePrior(tx, owner, invoicingPaymentSourcePayPal, v.row.TransactionID)
+		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking PayPal expense %s: %v", v.row.TransactionID, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
 			return
 		}
-		if n > 0 {
+		if prior.Seen() {
 			summary.Duplicates++
+			summary.count(prior)
 			continue
 		}
 		e := data_models.InvoicingExpense{
