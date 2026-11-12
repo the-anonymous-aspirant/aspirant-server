@@ -58,7 +58,9 @@ func BuildTables() {
 	}
 	defer db.Close()
 
-	AutoMigrate(db)
+	if err := AutoMigrate(db); err != nil {
+		log.Fatalf("Error migrating database: %v", err)
+	}
 	log.Println("Database tables built successfully")
 }
 
