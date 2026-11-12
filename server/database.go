@@ -202,6 +202,7 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.InvoicingPayment{})
 	db.AutoMigrate(&data_models.InvoicingExpense{})         // #10414-A: hand-entered work expenses
 	db.AutoMigrate(&data_models.InvoicingExpenseCategory{}) // #10414-A/#10424: the owner's expense categories
+	db.AutoMigrate(&data_models.InvoicingExpenseReceipt{})  // #10537-A1: a receipt attached to a work expense
 	db.AutoMigrate(&data_models.InvoicingInvoice{})
 	db.AutoMigrate(&data_models.InvoicingLineItem{})
 	db.AutoMigrate(&data_models.InvoicingInvoicePayment{})
