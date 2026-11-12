@@ -21,7 +21,10 @@ import (
 func setupExpensesDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := setupInvoicingDB(t)
-	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	// InvoicingExpenseReceipt is always migrated alongside InvoicingExpense
+	// in production (database.go); DeleteExpenseHandler reads it to cascade
+	// a receipt's delete with its expense (system_3 #10602).
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{}, &data_models.InvoicingExpenseReceipt{})
 	return db
 }
 
