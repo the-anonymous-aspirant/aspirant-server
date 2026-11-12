@@ -121,12 +121,41 @@ type InvoicingExpense struct {
 	// Payee is who a hand-entered expense was paid to, if she says
 	// (system_3 #10555-A1, design §3.143 Decision 3). An import keeps its
 	// payee in Reference, as it always has.
-	Payee     string    `json:"payee" gorm:"type:text;not null;default:''"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Payee string `json:"payee" gorm:"type:text;not null;default:''"`
+	// RemovedAt is when the owner removed the expense (system_3 #10555-A2,
+	// design §3.143 Decision 6): it is kept, but out of the list, the Book and
+	// its CSV until she restores it. Never named deleted_at: gorm v1 reads
+	// that column as a soft-delete marker and hides the row from every query,
+	// the removed view included.
+	RemovedAt *time.Time `json:"removed_at" gorm:"column:removed_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 func (InvoicingExpense) TableName() string { return "invoicing_expenses" }
+
+// InvoicingExpenseTombstone records that the owner deleted an expense for
+// good (system_3 #10555-A2), the same shape as InvoicingPaymentTombstone, so
+// an import can tell a re-import of it from a new row (#10555-B1 reads it).
+// The time column is deleted_on, never deleted_at, for the reason given on
+// InvoicingPaymentTombstone.
+type InvoicingExpenseTombstone struct {
+	ID            uint      `json:"id" gorm:"primary_key"`
+	OwnerUserID   uint      `json:"-" gorm:"column:owner_user_id;not null;default:0;unique_index:idx_invoicing_expense_tombstone_owner"`
+	Source        string    `json:"source" gorm:"type:text;not null;unique_index:idx_invoicing_expense_tombstone_owner"`
+	TransactionID string    `json:"transaction_id" gorm:"type:text;not null;unique_index:idx_invoicing_expense_tombstone_owner"`
+	DeletedOn     time.Time `json:"deleted_on" gorm:"not null"`
+	DeletedBy     uint      `json:"deleted_by" gorm:"not null"`
+}
+
+func (InvoicingExpenseTombstone) TableName() string { return "invoicing_expense_tombstones" }
+
+// TombstoneInvoicingExpense records the deletion of e in e's book. A second
+// tombstone for the same (owner, source, transaction id) is a no-op.
+func TombstoneInvoicingExpense(db *gorm.DB, e InvoicingExpense, deletedBy uint, at time.Time) error {
+	t := InvoicingExpenseTombstone{OwnerUserID: e.OwnerUserID, Source: e.Source, TransactionID: e.TransactionID, DeletedOn: at, DeletedBy: deletedBy}
+	return db.Where("owner_user_id = ? AND source = ? AND transaction_id = ?", e.OwnerUserID, e.Source, e.TransactionID).FirstOrCreate(&t).Error
+}
 
 // IsManual reports whether the owner entered this expense by hand.
 func (e InvoicingExpense) IsManual() bool { return e.Entry == ExpenseEntryManual }
@@ -136,14 +165,24 @@ func (e InvoicingExpense) IsManual() bool { return e.Entry == ExpenseEntryManual
 // handler (crypto/rand lives there, beside the payment one it mirrors).
 
 // ListInvoicingExpenses returns the owner's expenses oldest first, optionally
-// filtered by category (empty means any).
+// filtered by category (empty means any). Removed expenses are left out: they
+// count nowhere until restored (§3.143 Decision 6). The Book report reads
+// this list too, so they leave the Book and its CSV with it.
 func ListInvoicingExpenses(db *gorm.DB, owner uint, category string) ([]InvoicingExpense, error) {
-	q := db.Where("owner_user_id = ?", owner).Order("paid_on asc, id asc")
+	q := db.Where("owner_user_id = ? AND removed_at IS NULL", owner).Order("paid_on asc, id asc")
 	if category != "" {
 		q = q.Where("category = ?", category)
 	}
 	var expenses []InvoicingExpense
 	err := q.Find(&expenses).Error
+	return expenses, err
+}
+
+// ListRemovedInvoicingExpenses returns the owner's removed expenses, most
+// recently removed first: the removed view.
+func ListRemovedInvoicingExpenses(db *gorm.DB, owner uint) ([]InvoicingExpense, error) {
+	var expenses []InvoicingExpense
+	err := db.Where("owner_user_id = ? AND removed_at IS NOT NULL", owner).Order("removed_at desc, id desc").Find(&expenses).Error
 	return expenses, err
 }
 

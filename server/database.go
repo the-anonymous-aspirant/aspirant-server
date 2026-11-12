@@ -207,6 +207,7 @@ func AutoMigrate(db *gorm.DB) {
 	db.AutoMigrate(&data_models.InvoicingLineItem{})
 	db.AutoMigrate(&data_models.InvoicingInvoicePayment{})
 	db.AutoMigrate(&data_models.InvoicingPaymentTombstone{}) // #10009: deleted payments stay out of re-imports
+	db.AutoMigrate(&data_models.InvoicingExpenseTombstone{}) // #10555-A2: expenses deleted for good leave a tombstone too
 	db.AutoMigrate(&data_models.InvoicingInvoicePDF{})
 	db.AutoMigrate(&data_models.InvoicingProfileLogo{}) // #9858: the issuer's logo
 	// #10054: a book per user. The tags above create the per-owner unique
