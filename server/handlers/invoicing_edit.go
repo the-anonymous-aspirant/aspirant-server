@@ -233,7 +233,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		fail(tx, "issuing lock", err)
 		return
 	}
-	if err := lockPaymentRow(tx, uint(id)); err != nil {
+	if err := lockPaymentRow(tx, owner, uint(id)); err != nil {
 		fail(tx, "row lock", err)
 		return
 	}
