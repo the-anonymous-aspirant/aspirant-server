@@ -749,3 +749,45 @@ func TestPayPalDateOrderAmbiguousCarriesNoExpiry(t *testing.T) {
 // same shape TestPayPalImportDateOrderAmbiguousIsNotRecorded uses).
 const ambiguousDateOrderCSVForImportFailureTest = "Date,Time,TimeZone,Name,Type,Status,Currency,Gross,Fee,Net,From Email Address,To Email Address,Transaction ID,Reference Txn ID\n" +
 	"07/08/2026,10:00:00,CET,Someone,General Payment,Completed,EUR,10.00,0.00,10.00,a@b.com,,TX1,"
+
+// --- #10583: parser text, which quotes the file's cells, stays out of the log ---
+
+const logSentinel = "SENTINEL9X7"
+
+func TestPayPalParseFailureLogsTheCodeNotTheCellValue(t *testing.T) {
+	db := setupImportFailuresDB(t)
+	r := setupPaymentsRouter(db, 7)
+	csv := "Date,Time,TimeZone,Name,Type,Status,Currency,Gross,Fee,Net,From Email Address,To Email Address,Transaction ID,Reference Txn ID\n" +
+		"14/07/2026,10:00:00,CET,Someone,General Payment,Completed,EUR," + logSentinel + ",0.00,10.00,a@b.com,,TX1,"
+	buf := captureLog(t)
+	w := uploadCSV(t, r, csv, "")
+	logged := buf.String()
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), logSentinel) {
+		t.Fatalf("precondition: want a 400 whose message quotes the cell, got %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(logged, logSentinel) {
+		t.Fatalf("the cell value reached the log:\n%s", logged)
+	}
+	if !strings.Contains(logged, "invalid_csv") {
+		t.Fatalf("the log should still carry the code:\n%s", logged)
+	}
+}
+
+func TestN26ParseFailureLogsTheCodeNotTheCellValue(t *testing.T) {
+	db := setupImportFailuresDB(t)
+	r := setupN26Router(db, 7)
+	row := `"2026-07-14","2026-07-14","Mara Esempio","DE00123","Credit Transfer","Ref","Main Account","` + logSentinel + `","","",""`
+	buf := captureLog(t)
+	w := uploadN26(t, r, map[string][]byte{"export.csv": []byte(n26CSVHeaderLine + "\n" + row + "\n")})
+	logged := buf.String()
+	f := decodeN26Parse(t, w).Files[0]
+	if f.Error == nil || f.Error.Code != n26ErrParseFailed || !strings.Contains(f.Error.Message, logSentinel) {
+		t.Fatalf("precondition: want parse_failed quoting the cell to the uploader, got %+v", f)
+	}
+	if strings.Contains(logged, logSentinel) {
+		t.Fatalf("the cell value reached the log:\n%s", logged)
+	}
+	if !strings.Contains(logged, n26ErrParseFailed) {
+		t.Fatalf("the log should still carry the code:\n%s", logged)
+	}
+}
