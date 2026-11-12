@@ -34,6 +34,7 @@ const (
 var manualExpenseFields = map[string]bool{
 	"paid_on": true, "amount_cents": true, "currency": true,
 	"category": true, "reference": true, "note": true, "client_id": true,
+	"payee": true,
 }
 
 var expenseCategoryFields = map[string]bool{"name": true, "counts_as": true}
@@ -152,6 +153,16 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		bad("note", fmt.Sprintf("must be at most %d characters", maxManualNoteRunes))
 		return
 	}
+	// "Paid to (optional)" (system_3 #10555-A1, design §3.143 Decision 3):
+	// the same one-line rule as a payment's payer.
+	payee, ok := str("payee")
+	if !ok {
+		return
+	}
+	if !validOneLineName(payee) {
+		bad("payee", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
+		return
+	}
 
 	tx := db.Begin()
 	if err := data_models.LockInvoicingBook(tx, invoicingUserID(c)); err != nil {
@@ -215,6 +226,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		ClientID:      clientID,
 		Entry:         data_models.ExpenseEntryManual,
 		Reference:     reference,
+		Payee:         payee,
 	}
 	if err := tx.Create(&e).Error; err != nil {
 		tx.Rollback()
@@ -224,7 +236,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	}
 	details := auditDetails(gin.H{
 		"paid_on": paidOnRaw, "amount_cents": amount, "currency": currency, "category": category,
-		"reference": reference, "note": note, "client_id": clientID,
+		"reference": reference, "note": note, "client_id": clientID, "payee": payee,
 	})
 	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCreateManual, invoicingEntityExpense, e.ID, details); err != nil {
 		tx.Rollback()
