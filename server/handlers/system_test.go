@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -261,5 +262,89 @@ func TestPostContainerStartHandlerPathEscapesName(t *testing.T) {
 
 	if gotEscapedPath != "/containers/weird%20name/start" {
 		t.Errorf("upstream escaped path = %q, want /containers/weird%%20name/start", gotEscapedPath)
+	}
+}
+
+// --- a monitor refusing the server's control token (system_3 #10641) -------
+
+// controlAgainst runs one start or stop through the proxy against a fake
+// monitor that answers status and body, and returns the recorder and the log.
+func controlAgainst(t *testing.T, action string, status int, body string) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	logs := captureLog(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(upstream.Close)
+	t.Setenv("MONITOR_URL", upstream.URL)
+	t.Setenv("MONITOR_CONTROL_TOKEN", "wrong-control-token")
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("user_id", uint(9)); c.Next() })
+	r.POST("/c/:name/start", PostContainerStartHandler)
+	r.POST("/c/:name/stop", PostContainerStopHandler)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/c/aspirant-online-browser-1/"+action, nil))
+	return w, logs.String()
+}
+
+func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, w.Body.String())
+	}
+	return envelope.Error.Code
+}
+
+func TestContainerControl_MonitorRefusingTheTokenIsA502NotA401(t *testing.T) {
+	for _, action := range []string{"start", "stop"} {
+		w, logs := controlAgainst(t, action, http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"A valid control bearer token is required"}}`)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("%s: status = %d, want 502 (a 401 would log the admin out); body = %s", action, w.Code, w.Body.String())
+		}
+		if code := errorCode(t, w); code != "monitor_auth_failed" {
+			t.Errorf("%s: code = %q, want monitor_auth_failed", action, code)
+		}
+		// The control log still records what the monitor answered.
+		want := `container control: user_id=9 action=` + action + ` name="aspirant-online-browser-1" status=401`
+		if !strings.Contains(logs, want) {
+			t.Errorf("%s: log = %q, want a line containing %q", action, logs, want)
+		}
+		if strings.Contains(logs, "wrong-control-token") {
+			t.Errorf("%s: the bearer token must never be logged", action)
+		}
+	}
+}
+
+func TestContainerControl_ForbiddenOtherThanNotControllableIsA502(t *testing.T) {
+	for _, body := range []string{`{"error":{"code":"forbidden"}}`, `not json`} {
+		w, _ := controlAgainst(t, "stop", http.StatusForbidden, body)
+		if w.Code != http.StatusBadGateway || errorCode(t, w) != "monitor_auth_failed" {
+			t.Errorf("403 %s: status = %d body = %s, want 502 monitor_auth_failed", body, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestContainerControl_NotControllablePassesThrough(t *testing.T) {
+	refusal := `{"error":{"code":"not_controllable","message":"aspirant-online-browser-1 is not on the controllable-container allowlist"}}`
+	w, _ := controlAgainst(t, "stop", http.StatusForbidden, refusal)
+	if w.Code != http.StatusForbidden || w.Body.String() != refusal {
+		t.Errorf("status = %d body = %s, want the monitor's 403 not_controllable unchanged", w.Code, w.Body.String())
+	}
+}
+
+func TestContainerControl_OtherMonitorErrorsPassThrough(t *testing.T) {
+	notConfigured := `{"error":{"code":"control_disabled","message":"not configured"}}`
+	w, _ := controlAgainst(t, "start", http.StatusServiceUnavailable, notConfigured)
+	if w.Code != http.StatusServiceUnavailable || w.Body.String() != notConfigured {
+		t.Errorf("status = %d body = %s, want the monitor's 503 unchanged", w.Code, w.Body.String())
 	}
 }
