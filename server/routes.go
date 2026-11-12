@@ -409,6 +409,15 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.POST("/expenses/manual", handlers.CreateManualExpenseHandler)
 		invoicing.POST("/expenses/import-n26/confirm", handlers.ImportN26ExpensesConfirmHandler)
 		invoicing.DELETE("/expenses/:id", handlers.DeleteExpenseHandler)
+		// Remove, restore and delete for good (system_3 #10555-A2, design
+		// §3.143 Decision 6): bulk forms take {"ids": [...]}, single forms the
+		// path id; both are all or nothing.
+		for _, a := range []string{"remove", "restore", "purge"} {
+			invoicing.POST("/payments/"+a, handlers.PaymentsRowActionHandler(a))
+			invoicing.POST("/payments/:id/"+a, handlers.PaymentsRowActionHandler(a))
+			invoicing.POST("/expenses/"+a, handlers.ExpensesRowActionHandler(a))
+			invoicing.POST("/expenses/:id/"+a, handlers.ExpensesRowActionHandler(a))
+		}
 		invoicing.PATCH("/expenses/:id", handlers.PatchInvoicingExpenseHandler)
 		invoicing.PUT("/expenses/:id/receipt", handlers.PutInvoicingExpenseReceiptHandler)
 		invoicing.GET("/expenses/:id/receipt", handlers.GetInvoicingExpenseReceiptHandler)

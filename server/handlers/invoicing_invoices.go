@@ -107,6 +107,12 @@ func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uin
 		if p == nil {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_not_found", "payment %d does not exist", id), nil
 		}
+		// A removed payment counts nowhere until restored, Create invoice
+		// included (§3.143 Decision 6).
+		if p.RemovedAt != nil {
+			return nil, guard(http.StatusUnprocessableEntity, "payment_removed",
+				"payment %s is removed; restore it before invoicing it", paymentLabel(*p)), nil
+		}
 		if p.Kind != data_models.PaymentKindIncoming || p.Category != data_models.PaymentCategoryPaidWork {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work",
 				"payment %s is %q, not paid work; only paid-work payments can be invoiced", paymentLabel(*p), p.Category), nil
