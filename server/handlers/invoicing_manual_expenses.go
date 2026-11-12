@@ -443,6 +443,23 @@ func DeleteExpenseHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusNotFound, "Expense not found")
 		return
 	}
+	// A receipt on this expense goes in the same transaction (system_3
+	// #10602, security review c65885 point 6): no orphan row is left behind.
+	receipt, err := data_models.GetInvoicingExpenseReceipt(tx, invoicingUserID(c), e.ID)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error reading receipt for expense %d: %v", id, err)
+		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
+		return
+	}
+	if receipt != nil {
+		if _, err := data_models.DeleteInvoicingExpenseReceipt(tx, invoicingUserID(c), e.ID); err != nil {
+			tx.Rollback()
+			log.Printf("Error deleting receipt for expense %d: %v", id, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
+			return
+		}
+	}
 	if err := tx.Delete(e).Error; err != nil {
 		tx.Rollback()
 		log.Printf("Error deleting expense %d: %v", id, err)
@@ -455,6 +472,15 @@ func DeleteExpenseHandler(c *gin.Context) {
 		log.Printf("Error auditing expense delete %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
 		return
+	}
+	if receipt != nil {
+		receiptDetails := auditDetails(gin.H{"before": gin.H{"sha256": receipt.SHA256, "content_type": receipt.ContentType, "bytes": receipt.SizeBytes}})
+		if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionDelete, invoicingEntityExpenseReceipt, receipt.ID, receiptDetails); err != nil {
+			tx.Rollback()
+			log.Printf("Error auditing receipt delete for expense %d: %v", id, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
+			return
+		}
 	}
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error committing expense delete %d: %v", id, err)
