@@ -205,12 +205,13 @@ func TestManualExpense_OwnerIsolation(t *testing.T) {
 }
 
 // #10414-A/#10424: a fresh book is seeded with the operator-confirmed ten
-// categories (c63803 on #9656) the first time it's touched.
+// categories (c63803 on #9656) the first time it's touched, then the
+// built-in Private, last (#10555-A3, §3.143 Decision 8).
 func TestExpenseCategories_SeededOnFirstUse(t *testing.T) {
 	_, r := newExpenseFixture(t)
 	got := listExpenseCategories(t, r)
-	if len(got) != len(data_models.DefaultExpenseCategories) {
-		t.Fatalf("seeded categories = %d, want %d: %+v", len(got), len(data_models.DefaultExpenseCategories), got)
+	if len(got) != len(data_models.DefaultExpenseCategories)+1 || got[len(got)-1].Name != data_models.ExpenseCategoryPrivate {
+		t.Fatalf("seeded categories = %d, want the %d starters then Private: %+v", len(got), len(data_models.DefaultExpenseCategories), got)
 	}
 	for i, want := range data_models.DefaultExpenseCategories {
 		if got[i].Name != want || got[i].CountsAs != want {
@@ -218,7 +219,7 @@ func TestExpenseCategories_SeededOnFirstUse(t *testing.T) {
 		}
 	}
 	// Listing again does not reseed (no duplicates).
-	if got2 := listExpenseCategories(t, r); len(got2) != len(data_models.DefaultExpenseCategories) {
+	if got2 := listExpenseCategories(t, r); len(got2) != len(data_models.DefaultExpenseCategories)+1 {
 		t.Errorf("second list reseeded: %d categories", len(got2))
 	}
 }
@@ -233,8 +234,9 @@ func TestExpenseCategories_AddAndUse(t *testing.T) {
 		t.Fatalf("create category: %d %s", w.Code, w.Body.String())
 	}
 	got := listExpenseCategories(t, r)
-	last := got[len(got)-1]
-	if len(got) != len(data_models.DefaultExpenseCategories)+1 || last.Name != "Studio snacks" || last.CountsAs != "other" {
+	// Her own category comes after the starters; Private stays last.
+	last := got[len(got)-2]
+	if len(got) != len(data_models.DefaultExpenseCategories)+2 || last.Name != "Studio snacks" || last.CountsAs != "other" || got[len(got)-1].Name != data_models.ExpenseCategoryPrivate {
 		t.Fatalf("categories after add: %+v", got)
 	}
 	// Security review of PR 175 F4: a category add is audited like an
@@ -259,8 +261,9 @@ func TestExpenseCategories_CountsAs(t *testing.T) {
 		t.Fatalf("create with counts_as: %d %s", w.Code, w.Body.String())
 	}
 	got := listExpenseCategories(t, r)
-	if got[len(got)-1].CountsAs != "materials and supplies" {
-		t.Errorf("counts_as not honoured: %+v", got[len(got)-1])
+	// Hers is the last before Private, which is always last (#10555-A3).
+	if got[len(got)-2].Name != "Guitar strings" || got[len(got)-2].CountsAs != "materials and supplies" {
+		t.Errorf("counts_as not honoured: %+v", got[len(got)-2])
 	}
 	if w := invoicingDo(r, "POST", "/invoicing/expense-categories", `{"name":"Mystery item","counts_as":"not a starter type"}`); w.Code != http.StatusBadRequest {
 		t.Errorf("invalid counts_as: %d %s", w.Code, w.Body.String())
@@ -279,7 +282,7 @@ func TestExpenseCategories_DuplicateRefused(t *testing.T) {
 		t.Errorf("too long: %d", w.Code)
 	}
 	got := listExpenseCategories(t, r)
-	if len(got) != len(data_models.DefaultExpenseCategories) {
+	if len(got) != len(data_models.DefaultExpenseCategories)+1 { // the starters and Private
 		t.Errorf("refusals added a category: %+v", got)
 	}
 }
@@ -298,7 +301,7 @@ func TestExpenseCategories_OwnerIsolation(t *testing.T) {
 			t.Errorf("owner B sees owner A's category: %+v", gotB)
 		}
 	}
-	if len(gotB) != len(data_models.DefaultExpenseCategories) {
+	if len(gotB) != len(data_models.DefaultExpenseCategories)+1 { // the starters and Private
 		t.Errorf("owner B's own seeded list is wrong: %+v", gotB)
 	}
 }
