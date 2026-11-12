@@ -475,7 +475,7 @@ func DeleteExpenseHandler(c *gin.Context) {
 	}
 	if receipt != nil {
 		receiptDetails := auditDetails(gin.H{"before": gin.H{"sha256": receipt.SHA256, "content_type": receipt.ContentType, "bytes": receipt.SizeBytes}})
-		if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionDelete, invoicingEntityExpenseReceipt, receipt.ID, receiptDetails); err != nil {
+		if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionDelete, invoicingEntityExpenseReceipt, e.ID, receiptDetails); err != nil {
 			tx.Rollback()
 			log.Printf("Error auditing receipt delete for expense %d: %v", id, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")

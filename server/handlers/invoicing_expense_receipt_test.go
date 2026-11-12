@@ -172,14 +172,29 @@ func TestInvoicingExpenseReceipt_TwoExpensesIndependent(t *testing.T) {
 	}
 }
 
+// A receipt exists on the expense before the other owner ever touches it
+// (security review of #10602, c65909): with no receipt at all, GET/DELETE
+// would 404 whether or not ownership were checked, so that order could not
+// have caught a regression. Uploading first, then checking the owner's own
+// GET is unchanged afterward, proves the 404s below are ownership and
+// nothing else got through.
 func TestInvoicingExpenseReceipt_AnotherOwnersExpenseIsNotFound(t *testing.T) {
 	db := setupReceiptDB(t)
 	owner := setupReceiptRouter(db, 42)
 	other := setupReceiptRouter(db, 99)
 	e := mustCreateExpense(t, owner)
 
-	if w := uploadReceipt(other, int(e.ID), "x.png", testReceiptPNG(t), ""); w.Code != http.StatusNotFound {
-		t.Fatalf("other owner upload: %d, want 404", w.Code)
+	if w := uploadReceipt(owner, int(e.ID), "x.png", testReceiptPNG(t), ""); w.Code != http.StatusOK {
+		t.Fatalf("owner's own upload: %d %s", w.Code, w.Body.String())
+	}
+	own := invoicingDo(owner, "GET", fmt.Sprintf("/invoicing/expenses/%d/receipt", e.ID), "")
+	ownSHA := own.Header().Get("X-Content-SHA256")
+	if own.Code != http.StatusOK || ownSHA == "" {
+		t.Fatalf("owner's own GET before the other owner touches it: %d sha256=%q", own.Code, ownSHA)
+	}
+
+	if w := uploadReceipt(other, int(e.ID), "evil.png", testReceiptPNG(t), ""); w.Code != http.StatusNotFound {
+		t.Fatalf("other owner replace: %d, want 404", w.Code)
 	}
 	if w := invoicingDo(other, "GET", fmt.Sprintf("/invoicing/expenses/%d/receipt", e.ID), ""); w.Code != http.StatusNotFound {
 		t.Fatalf("other owner GET: %d, want 404", w.Code)
@@ -188,10 +203,10 @@ func TestInvoicingExpenseReceipt_AnotherOwnersExpenseIsNotFound(t *testing.T) {
 		t.Fatalf("other owner DELETE: %d, want 404", w.Code)
 	}
 
-	// Positive control: the owner's own upload on the same expense succeeds,
-	// so the 404s above are ownership, not a route or fixture mistake.
-	if w := uploadReceipt(owner, int(e.ID), "x.png", testReceiptPNG(t), ""); w.Code != http.StatusOK {
-		t.Fatalf("owner's own upload: %d %s", w.Code, w.Body.String())
+	// The other owner's refused calls changed nothing: the owner's own GET
+	// still answers with the same receipt.
+	if w := invoicingDo(owner, "GET", fmt.Sprintf("/invoicing/expenses/%d/receipt", e.ID), ""); w.Code != http.StatusOK || w.Header().Get("X-Content-SHA256") != ownSHA {
+		t.Fatalf("owner's own GET after the other owner's refused calls: %d sha256=%q, want 200 %q", w.Code, w.Header().Get("X-Content-SHA256"), ownSHA)
 	}
 }
 
@@ -323,6 +338,17 @@ func TestInvoicingExpenseReceipt_DeletedWithItsExpense(t *testing.T) {
 	}
 	if w := invoicingDo(r, "GET", fmt.Sprintf("/invoicing/expenses/%d/receipt", e.ID), ""); w.Code != http.StatusNotFound {
 		t.Errorf("GET receipt after expense delete: %d, want 404", w.Code)
+	}
+
+	// entity_id means the same thing on every expense_receipt audit row
+	// (security review c65909): the expense id, matching the PUT and the
+	// standalone DELETE, never the receipt row's own id.
+	events, err := data_models.ListInvoicingAuditEvents(db, 42, invoicingEntityExpenseReceipt, e.ID)
+	if err != nil {
+		t.Fatalf("ListInvoicingAuditEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("no expense_receipt audit event found keyed on the expense id")
 	}
 }
 
