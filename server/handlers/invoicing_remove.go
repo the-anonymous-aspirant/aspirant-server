@@ -162,7 +162,7 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 		return nil, fmt.Errorf("issuing lock: %w", err)
 	}
 	for _, id := range ascending(ids) {
-		if err := lockPaymentRow(tx, id); err != nil {
+		if err := lockPaymentRow(tx, owner, id); err != nil {
 			return nil, fmt.Errorf("row lock %d: %w", id, err)
 		}
 	}

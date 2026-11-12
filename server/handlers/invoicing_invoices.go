@@ -89,7 +89,7 @@ func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uin
 	ordered := append([]uint(nil), ids...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
 	for _, id := range ordered {
-		if err := lockPaymentRow(tx, id); err != nil {
+		if err := lockPaymentRow(tx, owner, id); err != nil {
 			return nil, nil, err
 		}
 	}
