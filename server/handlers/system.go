@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -110,8 +111,43 @@ func monitorProxyPost(c *gin.Context, path string) int {
 		return 0
 	}
 
+	if monitorRefusedServerCredential(resp.StatusCode, body) {
+		// The credential that failed is the server's own control token, not
+		// the caller's session: a 401 passed through reads as an expired
+		// session in the client, whose interceptor then logs the admin out
+		// (system_3 #10641). A server credential failing upstream is a gateway
+		// fault, so it answers 502 with a code the client can name. The
+		// caller still logs the monitor's own status.
+		log.Printf("Monitor refused the control token: upstream status %d", resp.StatusCode)
+		respondError(c, http.StatusBadGateway, "monitor_auth_failed", "The monitor refused the server's credentials")
+		return resp.StatusCode
+	}
+
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	return resp.StatusCode
+}
+
+// monitorRefusedServerCredential reports whether a monitor answer refuses the
+// server's control token rather than the request: any 401, and any 403 other
+// than not_controllable (the allowlist refusal, which is about the container
+// and passes through unchanged). The monitor itself sends only 401
+// unauthorized and 403 not_controllable (aspirant-monitor app/routes.py,
+// _control_request); a 403 with another code would come from something in
+// between, and is treated as the same gateway fault.
+func monitorRefusedServerCredential(status int, body []byte) bool {
+	if status == http.StatusUnauthorized {
+		return true
+	}
+	if status != http.StatusForbidden {
+		return false
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &envelope)
+	return envelope.Error.Code != "not_controllable"
 }
 
 // logContainerControl records which admin asked to start or stop which
