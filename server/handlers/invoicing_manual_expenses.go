@@ -371,6 +371,12 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_field", fmt.Sprintf("name must be one line of 1-%d characters", maxExpenseCategoryNameRunes))
 		return
 	}
+	// Private is built in and never counts (§3.143 Decision 8): she cannot
+	// make a second one under another case, nor any category that counts as it.
+	if strings.EqualFold(name, data_models.ExpenseCategoryPrivate) {
+		respondError(c, http.StatusConflict, "reserved_category", "Private is a built-in category for expenses that never count")
+		return
+	}
 	countsAs := data_models.ExpenseCategoryOther
 	if raw, present := body["counts_as"]; present {
 		if err := json.Unmarshal(raw, &countsAs); err != nil {

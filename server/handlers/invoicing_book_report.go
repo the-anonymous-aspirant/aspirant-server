@@ -29,10 +29,19 @@ func ExportBookReportHandler(c *gin.Context) {
 		respondInvoicingInternal(c, nil, "exporting the book report", err)
 		return
 	}
-	expenses, err := data_models.ListInvoicingExpenses(db, owner, "")
+	all, err := data_models.ListInvoicingExpenses(db, owner, "")
 	if err != nil {
 		respondInvoicingInternal(c, nil, "exporting the book report", err)
 		return
+	}
+	// A Private expense never counts (§3.143 Decision 8): not in a row, a
+	// total or a month column. Applying the rest of the Book's selection to
+	// this report is #10555-B2.
+	expenses := make([]data_models.InvoicingExpense, 0, len(all))
+	for _, e := range all {
+		if e.Category != data_models.ExpenseCategoryPrivate {
+			expenses = append(expenses, e)
+		}
 	}
 	categories, err := data_models.ListInvoicingExpenseCategories(db, owner)
 	if err != nil {
@@ -62,6 +71,9 @@ func ExportBookReportHandler(c *gin.Context) {
 
 	totalExpenseByMonth := map[string]int64{}
 	for _, cat := range categories {
+		if cat.Name == data_models.ExpenseCategoryPrivate {
+			continue
+		}
 		byMonth := expenseByCategoryMonth[cat.Name]
 		rows = append(rows, bookReportRow(cat.Name, months, byMonth))
 		for _, m := range months {
