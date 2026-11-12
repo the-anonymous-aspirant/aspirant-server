@@ -95,6 +95,9 @@ type InvoicingPayment struct {
 	// issued (not cancelled) invoice covers this payment. Only those payments
 	// refuse a delete. Not stored.
 	OnIssuedInvoice bool `json:"on_issued_invoice" gorm:"-"`
+	// Invoice is computed for the list (system_3 #10666): the invoice the
+	// payment is on now, or nil. See LiveInvoicesForPayments. Not stored.
+	Invoice *PaymentInvoiceRef `json:"invoice" gorm:"-"`
 	// RemovedAt is when the owner removed the payment (system_3 #10555-A2,
 	// §3.143 Decision 6). See InvoicingExpense.RemovedAt for why the column is
 	// not deleted_at.
@@ -260,6 +263,49 @@ func InvoicingPaymentSeen(db *gorm.DB, owner uint, source, transactionID string)
 func TombstoneInvoicingPayment(db *gorm.DB, p InvoicingPayment, deletedBy uint, at time.Time) error {
 	t := InvoicingPaymentTombstone{OwnerUserID: p.OwnerUserID, Source: p.Source, TransactionID: p.TransactionID, DeletedOn: at, DeletedBy: deletedBy}
 	return db.Where("owner_user_id = ? AND source = ? AND transaction_id = ?", p.OwnerUserID, p.Source, p.TransactionID).FirstOrCreate(&t).Error
+}
+
+// PaymentInvoiceRef names the invoice a listed payment is on, so a row can
+// read "Invoice 2026-014" or "Draft" and a dialog can name the draft
+// (§3.143 Decisions 3 and 5, system_3 #10666). InvoiceNumber is nil on a
+// draft.
+type PaymentInvoiceRef struct {
+	ID            uint    `json:"id"`
+	Status        string  `json:"status"`
+	InvoiceNumber *string `json:"invoice_number"`
+}
+
+// LiveInvoicesForPayments maps each of the owner's payments to the invoice it
+// is on now: the issued invoice if one covers it, otherwise the newest draft
+// (highest id). A cancelled invoice is never named, so a payment that only a
+// cancelled invoice lists is absent from the map. One query for the whole
+// book; the owner is matched on the invoice, so another book's invoice is
+// never named (security c62302).
+func LiveInvoicesForPayments(db *gorm.DB, owner uint) (map[uint]PaymentInvoiceRef, error) {
+	var rows []struct {
+		PaymentID     uint
+		InvoiceID     uint
+		Status        string
+		InvoiceNumber *string
+	}
+	err := db.Table("invoicing_invoice_payments").
+		Select("invoicing_invoice_payments.payment_id, i.id AS invoice_id, i.status, i.invoice_number").
+		Joins("JOIN invoicing_invoices i ON i.id = invoicing_invoice_payments.invoice_id").
+		Where("i.owner_user_id = ? AND i.status IN (?)", owner, []string{InvoiceStatusDraft, InvoiceStatusIssued}).
+		Order("i.id asc").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint]PaymentInvoiceRef, len(rows))
+	for _, r := range rows {
+		// Rows come oldest invoice first: a later draft replaces an earlier
+		// one, and nothing replaces an issued invoice.
+		if cur, ok := out[r.PaymentID]; ok && cur.Status == InvoiceStatusIssued {
+			continue
+		}
+		out[r.PaymentID] = PaymentInvoiceRef{ID: r.InvoiceID, Status: r.Status, InvoiceNumber: r.InvoiceNumber}
+	}
+	return out, nil
 }
 
 // PaymentIDsOnIssuedInvoices returns the ids of every payment an issued (not
