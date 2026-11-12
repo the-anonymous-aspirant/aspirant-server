@@ -94,9 +94,13 @@ type InvoicingPayment struct {
 	// OnIssuedInvoice is computed for the list (system_3 #10009): whether an
 	// issued (not cancelled) invoice covers this payment. Only those payments
 	// refuse a delete. Not stored.
-	OnIssuedInvoice bool      `json:"on_issued_invoice" gorm:"-"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	OnIssuedInvoice bool `json:"on_issued_invoice" gorm:"-"`
+	// RemovedAt is when the owner removed the payment (system_3 #10555-A2,
+	// §3.143 Decision 6). See InvoicingExpense.RemovedAt for why the column is
+	// not deleted_at.
+	RemovedAt *time.Time `json:"removed_at" gorm:"column:removed_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 func (InvoicingPayment) TableName() string { return "invoicing_payments" }
@@ -174,9 +178,11 @@ func ManualPayPalPaymentWithReference(db *gorm.DB, owner uint, reference string)
 }
 
 // ListInvoicingPayments returns the owner's payments oldest first, optionally
-// filtered by kind and category (empty means any).
+// filtered by kind and category (empty means any). Removed payments are left
+// out (§3.143 Decision 6), from the list and from the Book report that reads
+// it.
 func ListInvoicingPayments(db *gorm.DB, owner uint, kind, category string) ([]InvoicingPayment, error) {
-	q := db.Where("owner_user_id = ?", owner).Order("paid_on asc, id asc")
+	q := db.Where("owner_user_id = ? AND removed_at IS NULL", owner).Order("paid_on asc, id asc")
 	if kind != "" {
 		q = q.Where("kind = ?", kind)
 	}
@@ -185,6 +191,14 @@ func ListInvoicingPayments(db *gorm.DB, owner uint, kind, category string) ([]In
 	}
 	var payments []InvoicingPayment
 	err := q.Find(&payments).Error
+	return payments, err
+}
+
+// ListRemovedInvoicingPayments returns the owner's removed payments, most
+// recently removed first: the removed view.
+func ListRemovedInvoicingPayments(db *gorm.DB, owner uint) ([]InvoicingPayment, error) {
+	var payments []InvoicingPayment
+	err := db.Where("owner_user_id = ? AND removed_at IS NOT NULL", owner).Order("removed_at desc, id desc").Find(&payments).Error
 	return payments, err
 }
 

@@ -267,7 +267,15 @@ func ListInvoicingPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusBadRequest, "Unknown category")
 		return
 	}
-	payments, err := data_models.ListInvoicingPayments(db, invoicingUserID(c), kind, category)
+	// ?removed=true serves the removed view (§3.143 Decision 6): every
+	// removed payment, most recently removed first, whatever the other filters.
+	var payments []data_models.InvoicingPayment
+	var err error
+	if c.Query("removed") == "true" {
+		payments, err = data_models.ListRemovedInvoicingPayments(db, invoicingUserID(c))
+	} else {
+		payments, err = data_models.ListInvoicingPayments(db, invoicingUserID(c), kind, category)
+	}
 	if err != nil {
 		log.Printf("Error listing payments: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing payments")

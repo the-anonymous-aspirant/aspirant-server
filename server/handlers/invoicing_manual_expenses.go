@@ -270,7 +270,14 @@ func ListInvoicingExpensesHandler(c *gin.Context) {
 			return
 		}
 	}
-	expenses, err := data_models.ListInvoicingExpenses(db, invoicingUserID(c), category)
+	// ?removed=true serves the removed view (§3.143 Decision 6).
+	var expenses []data_models.InvoicingExpense
+	var err error
+	if c.Query("removed") == "true" {
+		expenses, err = data_models.ListRemovedInvoicingExpenses(db, invoicingUserID(c))
+	} else {
+		expenses, err = data_models.ListInvoicingExpenses(db, invoicingUserID(c), category)
+	}
 	if err != nil {
 		log.Printf("Error listing expenses: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing expenses")

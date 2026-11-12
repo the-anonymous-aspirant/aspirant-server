@@ -113,7 +113,8 @@ func payerKey(p data_models.InvoicingPayment) string {
 // owner's incoming payments with no client yet.
 func unlinkedIncomingPayments(db *gorm.DB, owner uint) ([]data_models.InvoicingPayment, error) {
 	var ps []data_models.InvoicingPayment
-	err := db.Where("owner_user_id = ? AND kind = ? AND client_id IS NULL", owner, data_models.PaymentKindIncoming).
+	// A removed payment is matched to no payer until restored (§3.143 Decision 6).
+	err := db.Where("owner_user_id = ? AND kind = ? AND client_id IS NULL AND removed_at IS NULL", owner, data_models.PaymentKindIncoming).
 		Order("paid_on asc, id asc").Find(&ps).Error
 	return ps, err
 }
