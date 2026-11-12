@@ -91,28 +91,15 @@ func AutoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("seeding roles: %w", err)
 	}
 
-	// Remap user FKs to the tier roles (access-preserving, per the #5113-A1
-	// inventory). Admin keeps its name; the joins below match only rows still
-	// pointing at a legacy role. Done before the legacy rows are deleted.
-	if err := exec(db, `UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Member')
-		FROM roles r WHERE users.role_id = r.id AND r.role_name = 'Trusted'`); err != nil {
-		return fmt.Errorf("remapping Trusted users to Member: %w", err)
-	}
-	if err := exec(db, `UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Viewer')
-		FROM roles r WHERE users.role_id = r.id AND r.role_name IN ('User', 'Guest', 'Gamer')`); err != nil {
-		return fmt.Errorf("remapping legacy users to Viewer: %w", err)
-	}
-	if err := exec(db, `UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Blocked')
-		FROM roles r WHERE users.role_id = r.id AND r.role_name = 'Deleted'`); err != nil {
-		return fmt.Errorf("remapping Deleted users to Blocked: %w", err)
-	}
-	// NB: the legacy role rows are NOT deleted here — the Step 2 legacy path
-	// (a DB that still carries the access_role string column) name-matches
-	// against them to backfill role_id. They are deleted after Step 2, once
-	// both the modern role_id remap above and the legacy backfill below have
-	// landed every user on a tier role.
-
-	// Step 2: Check if the legacy access_role column still exists on users
+	// Step 2: Check if the legacy access_role column still exists on users.
+	// This also decides whether the `users` table exists at all: on a brand
+	// new database neither it nor the column exist, colCount reads 0, and the
+	// `else` branch's MigrateEmailVerified call is what creates `users` for
+	// the first time. The modern role_id remap just below depends on `users`
+	// already existing, so this check — and the table-creating AutoMigrate it
+	// guards — must run before that remap, not after it (#10688: the remap
+	// used to run first and silently fail off a dropped .Error on a fresh
+	// database, before this fix made AutoMigrate return that error).
 	var colCount int
 	if err := db.Raw(`SELECT COUNT(*) FROM information_schema.columns
 		WHERE table_name = 'users' AND column_name = 'access_role'`).Row().Scan(&colCount); err != nil {
@@ -159,15 +146,34 @@ func AutoMigrate(db *gorm.DB) error {
 		}
 		log.Println("Migration complete: access_role column dropped")
 	} else {
-		// Column already gone — normal migrate
+		// Column already gone — normal migrate. On a brand new database this
+		// is also where the `users` table is created for the first time.
 		if err := data_models.MigrateEmailVerified(db); err != nil {
 			log.Printf("Warning: user migrate failed: %v", err)
 		}
 	}
 
-	// Every user now points at a tier role (via the Step 1 role_id remap on a
-	// modern DB, or the Step 2 access_role backfill on a legacy one). Delete the
-	// legacy role rows. Idempotent: matches nothing once they are gone.
+	// Remap user FKs to the tier roles (access-preserving, per the #5113-A1
+	// inventory). Admin keeps its name; the joins below match only rows still
+	// pointing at a legacy role. `users` is guaranteed to exist by now (via
+	// one of the two MigrateEmailVerified calls above). Done before the
+	// legacy rows are deleted.
+	if err := exec(db, `UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Member')
+		FROM roles r WHERE users.role_id = r.id AND r.role_name = 'Trusted'`); err != nil {
+		return fmt.Errorf("remapping Trusted users to Member: %w", err)
+	}
+	if err := exec(db, `UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Viewer')
+		FROM roles r WHERE users.role_id = r.id AND r.role_name IN ('User', 'Guest', 'Gamer')`); err != nil {
+		return fmt.Errorf("remapping legacy users to Viewer: %w", err)
+	}
+	if err := exec(db, `UPDATE users SET role_id = (SELECT id FROM roles WHERE role_name = 'Blocked')
+		FROM roles r WHERE users.role_id = r.id AND r.role_name = 'Deleted'`); err != nil {
+		return fmt.Errorf("remapping Deleted users to Blocked: %w", err)
+	}
+
+	// Every user now points at a tier role (via the role_id remap just above on
+	// a modern DB, or the access_role backfill above on a legacy one). Delete
+	// the legacy role rows. Idempotent: matches nothing once they are gone.
 	if err := exec(db, "DELETE FROM roles WHERE role_name IN ('Trusted', 'User', 'Guest', 'Gamer', 'Deleted')"); err != nil {
 		return fmt.Errorf("deleting legacy role rows: %w", err)
 	}
