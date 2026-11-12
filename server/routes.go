@@ -409,6 +409,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.POST("/expenses/manual", handlers.CreateManualExpenseHandler)
 		invoicing.POST("/expenses/import-n26/confirm", handlers.ImportN26ExpensesConfirmHandler)
 		invoicing.DELETE("/expenses/:id", handlers.DeleteExpenseHandler)
+		invoicing.PATCH("/expenses/:id", handlers.PatchInvoicingExpenseHandler)
 		invoicing.PUT("/expenses/:id/receipt", handlers.PutInvoicingExpenseReceiptHandler)
 		invoicing.GET("/expenses/:id/receipt", handlers.GetInvoicingExpenseReceiptHandler)
 		invoicing.DELETE("/expenses/:id/receipt", handlers.DeleteInvoicingExpenseReceiptHandler)

@@ -118,8 +118,12 @@ type InvoicingExpense struct {
 	ClientID      *uint     `json:"client_id"`
 	Entry         string    `json:"entry" gorm:"type:text;not null;default:'manual'"`
 	Reference     string    `json:"reference" gorm:"type:text;not null;default:''"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// Payee is who a hand-entered expense was paid to, if she says
+	// (system_3 #10555-A1, design §3.143 Decision 3). An import keeps its
+	// payee in Reference, as it always has.
+	Payee     string    `json:"payee" gorm:"type:text;not null;default:''"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (InvoicingExpense) TableName() string { return "invoicing_expenses" }
