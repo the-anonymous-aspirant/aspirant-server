@@ -39,6 +39,19 @@ type InvoicingExpenseCategory struct {
 
 func (InvoicingExpenseCategory) TableName() string { return "invoicing_expense_categories" }
 
+// ExpenseCategoryPrivate is the built-in category for an expense she records
+// but never counts (system_3 #10555-A3, design §3.143 Decision 8). Every book
+// has it; it is listed last, cannot be created, renamed or deleted, and no
+// Book selection may include it. Its counts_as is itself, a value outside the
+// ten Anlage EKS lines, so nothing maps it into the report.
+const ExpenseCategoryPrivate = "private"
+
+// IsBuiltinExpenseCategory reports whether name is a category every book has
+// and nobody can create, rename or delete: the ten starters and Private.
+func IsBuiltinExpenseCategory(name string) bool {
+	return name == ExpenseCategoryPrivate || IsStarterExpenseCategory(name)
+}
+
 // IsStarterExpenseCategory reports whether name is one of the ten fixed
 // starter types (c63823: "the starter types are fixed... because they carry
 // the mapping").
@@ -60,26 +73,53 @@ func EnsureDefaultExpenseCategories(db *gorm.DB, owner uint) error {
 	if err := db.Model(&InvoicingExpenseCategory{}).Where("owner_user_id = ?", owner).Count(&n).Error; err != nil {
 		return err
 	}
+	if n == 0 {
+		for _, name := range DefaultExpenseCategories {
+			if err := db.Create(&InvoicingExpenseCategory{OwnerUserID: owner, Name: name, CountsAs: name}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return ensurePrivateExpenseCategory(db, owner)
+}
+
+// ensurePrivateExpenseCategory gives the book its Private category if it does
+// not have one yet, so books seeded before #10555-A3 gain it on first touch.
+func ensurePrivateExpenseCategory(db *gorm.DB, owner uint) error {
+	var n int
+	if err := db.Model(&InvoicingExpenseCategory{}).Where("owner_user_id = ? AND name = ?", owner, ExpenseCategoryPrivate).Count(&n).Error; err != nil {
+		return err
+	}
 	if n > 0 {
 		return nil
 	}
-	for _, name := range DefaultExpenseCategories {
-		if err := db.Create(&InvoicingExpenseCategory{OwnerUserID: owner, Name: name, CountsAs: name}).Error; err != nil {
-			return err
-		}
-	}
-	return nil
+	return db.Create(&InvoicingExpenseCategory{OwnerUserID: owner, Name: ExpenseCategoryPrivate, CountsAs: ExpenseCategoryPrivate}).Error
 }
 
 // ListInvoicingExpenseCategories returns the owner's categories, seeding the
-// defaults first if she has none, oldest (so seeded order) first.
+// defaults first if she has none, oldest (so seeded order) first, with
+// Private always last whatever its id (§3.143 Decision 8).
 func ListInvoicingExpenseCategories(db *gorm.DB, owner uint) ([]InvoicingExpenseCategory, error) {
 	if err := EnsureDefaultExpenseCategories(db, owner); err != nil {
 		return nil, err
 	}
 	var cats []InvoicingExpenseCategory
-	err := db.Where("owner_user_id = ?", owner).Order("id asc").Find(&cats).Error
-	return cats, err
+	if err := db.Where("owner_user_id = ?", owner).Order("id asc").Find(&cats).Error; err != nil {
+		return nil, err
+	}
+	out := make([]InvoicingExpenseCategory, 0, len(cats))
+	var private *InvoicingExpenseCategory
+	for i := range cats {
+		if cats[i].Name == ExpenseCategoryPrivate {
+			private = &cats[i]
+			continue
+		}
+		out = append(out, cats[i])
+	}
+	if private != nil {
+		out = append(out, *private)
+	}
+	return out, nil
 }
 
 // IsExpenseCategoryForOwner reports whether name is one of the owner's

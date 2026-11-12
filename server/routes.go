@@ -424,6 +424,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.DELETE("/expenses/:id/receipt", handlers.DeleteInvoicingExpenseReceiptHandler)
 		invoicing.GET("/expense-categories", handlers.ListInvoicingExpenseCategoriesHandler)
 		invoicing.POST("/expense-categories", handlers.CreateExpenseCategoryHandler)
+		// What the Book counts, and her presets (system_3 #10555-A3, design
+		// §3.143 Decision 8).
+		invoicing.GET("/book/selection", handlers.GetInvoicingBookSelectionHandler)
+		invoicing.PUT("/book/selection", handlers.PutInvoicingBookSelectionHandler)
+		invoicing.POST("/book/presets", handlers.CreateInvoicingBookPresetHandler)
+		invoicing.PUT("/book/presets/:id", handlers.UpdateInvoicingBookPresetHandler)
+		invoicing.DELETE("/book/presets/:id", handlers.DeleteInvoicingBookPresetHandler)
 		invoicing.POST("/expenses/import-paypal/confirm", handlers.ImportPayPalExpensesConfirmHandler)
 		invoicing.GET("/export/book-report.csv", handlers.ExportBookReportHandler)
 		invoicing.GET("/invoices", handlers.ListInvoicesHandler)
