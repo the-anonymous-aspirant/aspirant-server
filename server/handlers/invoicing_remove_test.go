@@ -17,7 +17,8 @@ import (
 func newRemoveFixture(t *testing.T) *invoiceFixture {
 	t.Helper()
 	f := newEditFixture(t)
-	f.db.AutoMigrate(&data_models.InvoicingExpenseTombstone{})
+	f.db.AutoMigrate(&data_models.InvoicingExpenseTombstone{},
+		&data_models.InvoicingBookSelection{}, &data_models.InvoicingBookPreset{})
 	f.r.GET("/invoicing/expenses", ListInvoicingExpensesHandler)
 	f.r.GET("/invoicing/export/book-report.csv", ExportBookReportHandler)
 	for _, a := range []string{"remove", "restore", "purge"} {
