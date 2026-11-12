@@ -835,9 +835,12 @@ func ImportN26ParseHandler(c *gin.Context) {
 			}
 			documentKind = strategy.name
 		}
+		// The parser's error quotes the file's values (a date, an amount), so
+		// these log lines carry the fixed code only; the uploader's per-file
+		// message keeps the detail (system_3 #10583, security c65625).
 		cands, err := strategy.parse(text)
 		if err != nil {
-			log.Printf("N26 import: parsing %q as %s: %v", fh.Filename, strategy.name, err)
+			log.Printf("N26 import: parsing %q as %s: %s", fh.Filename, strategy.name, n26ErrParseFailed)
 			fail(n26ErrParseFailed, fmt.Sprintf("read as %s but a field is missing or malformed: %v", strategy.name, err))
 			continue
 		}
@@ -845,7 +848,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 		if strategy.skipped != nil {
 			extra, err := strategy.skipped(text)
 			if err != nil {
-				log.Printf("N26 import: reading %q's skip reasons: %v", fh.Filename, err)
+				log.Printf("N26 import: reading %q's skip reasons: %s", fh.Filename, n26ErrParseFailed)
 				fail(n26ErrParseFailed, fmt.Sprintf("read as %s but a field is missing or malformed: %v", strategy.name, err))
 				continue
 			}
@@ -859,7 +862,7 @@ func ImportN26ParseHandler(c *gin.Context) {
 		if strategy.expenses != nil {
 			expenses, err := strategy.expenses(text)
 			if err != nil {
-				log.Printf("N26 import: parsing %q's outgoing rows: %v", fh.Filename, err)
+				log.Printf("N26 import: parsing %q's outgoing rows: %s", fh.Filename, n26ErrParseFailed)
 				fail(n26ErrParseFailed, fmt.Sprintf("read as %s but a field is missing or malformed: %v", strategy.name, err))
 				continue
 			}
