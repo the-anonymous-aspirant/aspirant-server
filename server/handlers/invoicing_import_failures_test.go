@@ -470,7 +470,7 @@ func TestN26CSVOutgoingOnlyRecordsNothing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("IMPORT_FAILURE_COPIES_DIR", dir)
 	db := setupImportFailuresDB(t)
-	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{}, &data_models.InvoicingExpenseTombstone{})
 	r := setupN26Router(db, 7)
 	csv := n26CSVHeaderLine + "\n" +
 		`"2026-10-05","2026-10-05","Stadtwerke Beispiel","DE00123456780000000003","Direct Debit","Abschlag Oktober","Hauptkonto","-45.10","","",""` + "\n"

@@ -251,13 +251,8 @@ func (InvoicingPaymentTombstone) TableName() string { return "invoicing_payment_
 // InvoicingPaymentExists instead: a deleted PayPal payment may be entered by
 // hand.
 func InvoicingPaymentSeen(db *gorm.DB, owner uint, source, transactionID string) (bool, error) {
-	exists, err := InvoicingPaymentExists(db, owner, source, transactionID)
-	if err != nil || exists {
-		return exists, err
-	}
-	var n int
-	err = db.Model(&InvoicingPaymentTombstone{}).Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, source, transactionID).Count(&n).Error
-	return n > 0, err
+	prior, err := InvoicingPaymentPrior(db, owner, source, transactionID)
+	return prior.Seen(), err
 }
 
 // TombstoneInvoicingPayment records the deletion of p in p's book. A second

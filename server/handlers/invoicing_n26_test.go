@@ -643,7 +643,7 @@ func setupN26ExpensesRouter(db *gorm.DB, userID uint) *gin.Engine {
 func setupN26ExpensesDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := setupPaymentsDB(t)
-	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{}, &data_models.InvoicingExpenseTombstone{})
 	return db
 }
 

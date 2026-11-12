@@ -104,6 +104,8 @@ type n26Candidate struct {
 	SenderName          string `json:"sender_name"`
 	Note                string `json:"note"`
 	AlreadyImported     bool   `json:"already_imported"`
+	Removed             bool   `json:"removed,omitempty"`
+	DeletedEarlier      bool   `json:"deleted_earlier,omitempty"`
 	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
 }
 
@@ -430,6 +432,8 @@ type n26ExpenseCandidate struct {
 	PayeeName           string `json:"payee_name"`
 	Note                string `json:"note"`
 	AlreadyImported     bool   `json:"already_imported"`
+	Removed             bool   `json:"removed,omitempty"`
+	DeletedEarlier      bool   `json:"deleted_earlier,omitempty"`
 	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
 }
 
@@ -681,18 +685,19 @@ func detectN26Document(text string) (n26Strategy, bool) {
 	return n26Strategy{}, false
 }
 
-// flagN26Candidates marks candidates already stored under their id, or
-// colliding on date+amount with any stored payment (the statement-overlaps-
+// flagN26Candidates marks candidates already stored under their id (and
+// whether that row was removed or deleted for good, #10555-B1), or colliding
+// on date+amount with any stored payment (the statement-overlaps-
 // confirmation case, and manual entries of the same transfer).
 func flagN26Candidates(db *gorm.DB, owner uint, cands []n26Candidate) error {
 	for i := range cands {
 		c := &cands[i]
-		exists, err := data_models.InvoicingPaymentSeen(db, owner, invoicingPaymentSourceN26, c.TransactionID)
+		prior, err := data_models.InvoicingPaymentPrior(db, owner, invoicingPaymentSourceN26, c.TransactionID)
 		if err != nil {
 			return err
 		}
-		c.AlreadyImported = exists
-		if exists {
+		markPrior(prior, &c.AlreadyImported, &c.Removed, &c.DeletedEarlier)
+		if c.AlreadyImported {
 			continue
 		}
 		paidOn, err := time.Parse("2006-01-02", c.PaidOn)
@@ -720,13 +725,14 @@ func flagN26Candidates(db *gorm.DB, owner uint, cands []n26Candidate) error {
 func flagN26ExpenseCandidates(db *gorm.DB, owner uint, cands []n26ExpenseCandidate) error {
 	for i := range cands {
 		c := &cands[i]
-		var n int
-		if err := db.Model(&data_models.InvoicingExpense{}).
-			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourceN26, c.TransactionID).
-			Count(&n).Error; err != nil {
+		// Removed and deleted-for-good expenses count as seen too: before
+		// #10555-B1 the expense tombstone was never read here, so a re-import
+		// offered an expense she had deleted for good as new.
+		prior, err := data_models.InvoicingExpensePrior(db, owner, invoicingPaymentSourceN26, c.TransactionID)
+		if err != nil {
 			return err
 		}
-		c.AlreadyImported = n > 0
+		markPrior(prior, &c.AlreadyImported, &c.Removed, &c.DeletedEarlier)
 		if c.AlreadyImported {
 			continue
 		}
@@ -901,6 +907,7 @@ type n26ConfirmRequest struct {
 type n26ConfirmSummary struct {
 	Confirmed  int `json:"confirmed"`
 	Duplicates int `json:"duplicates"`
+	priorCounts
 }
 
 // ImportN26ConfirmHandler stores the confirmed candidate rows as payments
@@ -1006,15 +1013,16 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			continue
 		}
 		seen[v.row.TransactionID] = true
-		exists, err := data_models.InvoicingPaymentSeen(tx, invoicingUserID(c), invoicingPaymentSourceN26, v.row.TransactionID)
+		prior, err := data_models.InvoicingPaymentPrior(tx, invoicingUserID(c), invoicingPaymentSourceN26, v.row.TransactionID)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking N26 payment %s: %v", v.row.TransactionID, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error storing payments")
 			return
 		}
-		if exists {
+		if prior.Seen() {
 			summary.Duplicates++
+			summary.count(prior)
 			continue
 		}
 		p := data_models.InvoicingPayment{
@@ -1184,17 +1192,16 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 			continue
 		}
 		seen[v.row.TransactionID] = true
-		var n int
-		if err := tx.Model(&data_models.InvoicingExpense{}).
-			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", owner, invoicingPaymentSourceN26, v.row.TransactionID).
-			Count(&n).Error; err != nil {
+		prior, err := data_models.InvoicingExpensePrior(tx, owner, invoicingPaymentSourceN26, v.row.TransactionID)
+		if err != nil {
 			tx.Rollback()
 			log.Printf("Error checking N26 expense %s: %v", v.row.TransactionID, err)
 			RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
 			return
 		}
-		if n > 0 {
+		if prior.Seen() {
 			summary.Duplicates++
+			summary.count(prior)
 			continue
 		}
 		e := data_models.InvoicingExpense{
