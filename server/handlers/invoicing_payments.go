@@ -63,8 +63,13 @@ type importErrorResponse struct {
 	CopyExpiresAt *time.Time  `json:"copy_expires_at,omitempty"`
 }
 
+// respondImportError writes the import error body. Only the status and
+// code are logged, never the message: on a parse
+// failure the message is the parser's own text, which quotes the file's
+// cells (an amount, a date) from a third party's bank export (system_3
+// #10583, security c65625). The uploader still gets the full message.
 func respondImportError(c *gin.Context, status int, code, message string, copyExpiresAt *time.Time) {
-	log.Printf("Error response: %d - %s - %s", status, code, message)
+	log.Printf("Error response: %d - %s", status, code)
 	c.JSON(status, importErrorResponse{Error: ErrorDetail{Code: code, Message: message}, CopyExpiresAt: copyExpiresAt})
 }
 
