@@ -459,7 +459,7 @@ func TestParsePayPal_MixedFileEachRowInItsOwnBucket(t *testing.T) {
 func setupPayPalExpensesRouter(t *testing.T, userID uint) (*gorm.DB, *gin.Engine) {
 	t.Helper()
 	db := setupPaymentsDB(t)
-	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{})
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{}, &data_models.InvoicingExpenseTombstone{})
 	r := setupPaymentsRouter(db, userID)
 	r.POST("/invoicing/expenses/import-paypal/confirm", ImportPayPalExpensesConfirmHandler)
 	r.POST("/invoicing/expense-categories", CreateExpenseCategoryHandler)
