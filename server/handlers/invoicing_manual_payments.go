@@ -208,12 +208,8 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !validOneLineName(newClientName) {
-		bad("new_client_name", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
-		return
-	}
-	if newClientName != "" && !validClientName(newClientName) {
-		bad("new_client_name", "must contain at least one letter or digit")
+	if msg := newClientNameRefusal(newClientName); msg != "" {
+		bad("new_client_name", msg)
 		return
 	}
 	if newClientName != "" {
@@ -278,38 +274,19 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	// the first one's client here.
 	var newClient *data_models.InvoicingClient
 	if newClientName != "" {
-		existing, err := findSameClient(tx, invoicingUserID(c), newClientName)
+		cl, existing, err := addPayerClient(tx, invoicingUserID(c), newClientName, "manual_payment")
 		if err != nil {
 			tx.Rollback()
-			log.Printf("Error reading the client book: %v", err)
+			log.Printf("Error adding a client for a manual payment: %v", err)
 			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
 			return
 		}
 		if existing != nil {
 			tx.Rollback()
-			c.JSON(http.StatusConflict, gin.H{
-				"error": ErrorDetail{
-					Code:    "client_exists",
-					Message: fmt.Sprintf("%s is already in your client book", existing.Name),
-				},
-				"client": existing,
-			})
+			respondClientExists(c, existing)
 			return
 		}
-		cl := data_models.InvoicingClient{OwnerUserID: invoicingUserID(c), Name: newClientName}
-		if err := tx.Create(&cl).Error; err != nil {
-			tx.Rollback()
-			log.Printf("Error creating a client for a manual payment: %v", err)
-			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
-			return
-		}
-		if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": cl, "via": "manual_payment"})); err != nil {
-			tx.Rollback()
-			log.Printf("Error auditing client create %d: %v", cl.ID, err)
-			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
-			return
-		}
-		newClient = &cl
+		newClient = cl
 		clientID = &cl.ID
 	}
 	// A PayPal payment entered by hand and later imported (or the other way
@@ -487,4 +464,54 @@ func DeletePaymentHandler(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// newClientNameRefusal applies the hand-entry rules for new_client_name
+// (system_3 #10539, design §3.142 Decisions 2 and 3): one line of at most
+// maxManualSenderRunes, and at least one letter or digit. "" means allowed;
+// an empty name is allowed and adds nothing. Create and edit share it
+// (system_3 #10696), so the two can never disagree about a name.
+func newClientNameRefusal(name string) string {
+	if !validOneLineName(name) {
+		return fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes)
+	}
+	if name != "" && !validClientName(name) {
+		return "must contain at least one letter or digit"
+	}
+	return ""
+}
+
+// addPayerClient adds name to the owner's client book inside tx, audited, unless
+// Decision 4's "the same" client is already there: then it returns that client
+// as existing and adds nothing, so the caller can refuse with it rather than
+// make a silent duplicate. via names the path in the audit event.
+func addPayerClient(tx *gorm.DB, owner uint, name, via string) (*data_models.InvoicingClient, *data_models.InvoicingClient, error) {
+	existing, err := findSameClient(tx, owner, name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the client book: %w", err)
+	}
+	if existing != nil {
+		return nil, existing, nil
+	}
+	cl := data_models.InvoicingClient{OwnerUserID: owner, Name: name}
+	if err := tx.Create(&cl).Error; err != nil {
+		return nil, nil, fmt.Errorf("creating the client: %w", err)
+	}
+	if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": cl, "via": via})); err != nil {
+		return nil, nil, fmt.Errorf("auditing client create %d: %w", cl.ID, err)
+	}
+	return &cl, nil, nil
+}
+
+// respondClientExists writes the 409 a new client name gets when Decision 4's
+// "the same" client is already in the book, naming that client so the form can
+// offer it.
+func respondClientExists(c *gin.Context, existing *data_models.InvoicingClient) {
+	c.JSON(http.StatusConflict, gin.H{
+		"error": ErrorDetail{
+			Code:    "client_exists",
+			Message: fmt.Sprintf("%s is already in your client book", existing.Name),
+		},
+		"client": existing,
+	})
 }
