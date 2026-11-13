@@ -327,8 +327,9 @@ func TestInvoicingExpenseReceipt_DeletedWithItsExpense(t *testing.T) {
 		t.Fatalf("receipt rows before delete = %d, want 1", before)
 	}
 
-	if w := invoicingDo(r, "DELETE", fmt.Sprintf("/invoicing/expenses/%d", e.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete expense: %d %s", w.Code, w.Body.String())
+	// Delete is remove then purge (system_3 #10647-A2).
+	if code, body := deleteForGood(r, "expenses", e.ID); code != http.StatusOK {
+		t.Fatalf("delete expense: %d %s", code, body)
 	}
 
 	var after int

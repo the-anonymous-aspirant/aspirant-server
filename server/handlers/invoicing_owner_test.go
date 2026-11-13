@@ -333,16 +333,18 @@ func TestInvoicingOwner_PaymentsAreSeparate(t *testing.T) {
 	if w := invoicingDo(b, "PATCH", fmt.Sprintf("/invoicing/payments/%d", victim), `{"category":"gift"}`); w.Code != http.StatusNotFound {
 		t.Errorf("another book edits payment %d: %d, want 404", victim, w.Code)
 	}
-	if w := invoicingDo(b, "DELETE", fmt.Sprintf("/invoicing/payments/%d", victim), ""); w.Code != http.StatusNotFound {
-		t.Errorf("another book deletes payment %d: %d, want 404", victim, w.Code)
+	for _, action := range []string{"remove", "purge"} {
+		if w := invoicingDo(b, "POST", fmt.Sprintf("/invoicing/payments/%d/%s", victim, action), ""); w.Code != http.StatusNotFound {
+			t.Errorf("another book's %s of payment %d: %d, want 404", action, victim, w.Code)
+		}
 	}
-	if p, _ := data_models.GetInvoicingPayment(db, 5, victim); p == nil || p.Category != la[0].Category {
+	if p, _ := data_models.GetInvoicingPayment(db, 5, victim); p == nil || p.Category != la[0].Category || p.RemovedAt != nil {
 		t.Errorf("payment %d changed or vanished: %+v", victim, p)
 	}
 
 	// A delete tombstones the row in its own book only.
-	if w := invoicingDo(a, "DELETE", fmt.Sprintf("/invoicing/payments/%d", victim), ""); w.Code != http.StatusOK && w.Code != http.StatusNoContent {
-		t.Fatalf("own delete: %d %s", w.Code, w.Body.String())
+	if code, body := deleteForGood(a, "payments", victim); code != http.StatusOK {
+		t.Fatalf("own delete: %d %s", code, body)
 	}
 	if seen, _ := data_models.InvoicingPaymentSeen(db, 5, la[0].Source, la[0].TransactionID); !seen {
 		t.Errorf("positive control: the deleting book does not see its tombstone")

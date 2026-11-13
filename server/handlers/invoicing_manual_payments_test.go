@@ -59,8 +59,8 @@ func TestManualPayment_DraftIssueAndExportsPrintTheReference(t *testing.T) {
 	if w := invoicingDo(f.r, "PATCH", fmt.Sprintf("/invoicing/payments/%d", p.ID), `{"category":"gift"}`); w.Code != http.StatusConflict {
 		t.Errorf("recategorise issued: %d", w.Code)
 	}
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", p.ID), ""); w.Code != http.StatusConflict {
-		t.Errorf("delete issued: %d", w.Code)
+	if w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/payments/%d/remove", p.ID), ""); w.Code != http.StatusConflict {
+		t.Errorf("remove issued: %d", w.Code)
 	}
 }
 
@@ -172,30 +172,34 @@ func TestManualPayment_DeleteAndTheOnInvoiceFlag(t *testing.T) {
 		t.Errorf("on_invoice: loose %v, drafted %v", onInvoice[loose.ID], onInvoice[drafted.ID])
 	}
 
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", drafted.ID), ""); w.Code != http.StatusNoContent {
-		t.Errorf("delete a payment on a draft (#10009: allowed): %d %s", w.Code, w.Body.String())
+	// Delete is remove then purge (system_3 #10647-A2).
+	if code, body := deleteForGood(f.r, "payments", drafted.ID); code != http.StatusOK {
+		t.Errorf("delete a payment on a draft (#10009: allowed): %d %s", code, body)
 	}
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", f.payments[0].ID), ""); w.Code != http.StatusNoContent {
-		t.Errorf("delete an imported payment (#10009: allowed): %d %s", w.Code, w.Body.String())
+	if code, body := deleteForGood(f.r, "payments", f.payments[0].ID); code != http.StatusOK {
+		t.Errorf("delete an imported payment (#10009: allowed): %d %s", code, body)
 	}
-	if w := invoicingDo(f.r, "DELETE", "/invoicing/payments/99999", ""); w.Code != http.StatusNotFound {
-		t.Errorf("delete unknown: %d", w.Code)
+	if code, _ := deleteForGood(f.r, "payments", 99999); code != http.StatusNotFound {
+		t.Errorf("delete unknown: %d", code)
 	}
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", loose.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete a loose manual payment: %d %s", w.Code, w.Body.String())
+	if code, body := deleteForGood(f.r, "payments", loose.ID); code != http.StatusOK {
+		t.Fatalf("delete a loose manual payment: %d %s", code, body)
 	}
 	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, loose.ID); got != nil {
 		t.Errorf("payment still stored after delete")
 	}
 	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "payment", loose.ID)
-	if len(events) != 2 || events[0].Action != "delete" {
+	if len(events) != 3 || events[0].Action != "delete" || events[1].Action != "remove" {
 		t.Errorf("delete audit: %+v", events)
 	}
 }
 
 // Security F1 (#8409): a delete and a draft that links the same payment must
 // not interleave into a link whose payment is gone, which issuing would then
-// silently drop. Both orders, then both at once.
+// silently drop. Both orders, then both at once. Since system_3 #10647-A2 the
+// delete is remove then purge, so the race is remove against the draft:
+// either the draft links first and remove takes it off, or remove goes first
+// and the draft refuses payment_removed. Then purge, and no link may be left.
 func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing.T) {
 	f := newInvoiceFixture(t)
 	orphanLinks := func() int {
@@ -207,8 +211,8 @@ func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing
 	}
 
 	_, gone, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", gone.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete: %d", w.Code)
+	if code, body := deleteForGood(f.r, "payments", gone.ID); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
 	}
 	if w := invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, gone.ID)); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "payment_not_found") {
 		t.Errorf("draft after delete: %d %s", w.Code, w.Body.String())
@@ -217,8 +221,8 @@ func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing
 	_, kept, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
 	invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, kept.ID))
 	// Since #10009 a payment on a draft can be deleted; its link goes with it.
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", kept.ID), ""); w.Code != http.StatusNoContent {
-		t.Errorf("delete after draft: %d", w.Code)
+	if code, body := deleteForGood(f.r, "payments", kept.ID); code != http.StatusOK {
+		t.Errorf("delete after draft: %d %s", code, body)
 	}
 	if n := orphanLinks(); n != 0 {
 		t.Errorf("delete after draft left %d links to a deleted payment", n)
@@ -226,9 +230,9 @@ func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing
 
 	// Both at once, repeatedly. sqlite :memory: needs one shared connection,
 	// so this serialises on it; on Postgres the payment-row and issuing
-	// locks do the ordering. The delete always wins (since #10009 it may take
-	// a draft's payment with it); the draft wins only when it ran first. No
-	// order may leave a link to a deleted payment.
+	// locks do the ordering. The remove always wins (it takes a draft's
+	// payment off the draft); the draft wins only when it ran first. Purge
+	// then erases the payment. No order may leave a link to a deleted payment.
 	f.db.DB().SetMaxOpenConns(1)
 	for i := 0; i < 20; i++ {
 		_, p, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash","note":"x"}`)
@@ -237,15 +241,18 @@ func TestManualPayment_DeleteAndDraftNeverLeaveALinkWithoutItsPayment(t *testing
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			codes[0] = invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", p.ID), "").Code
+			codes[0] = invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/payments/%d/remove", p.ID), "").Code
 		}()
 		go func() {
 			defer wg.Done()
 			codes[1] = invoicingDo(f.r, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, p.ID)).Code
 		}()
 		wg.Wait()
-		if codes[0] != http.StatusNoContent || (codes[1] != http.StatusCreated && codes[1] != http.StatusUnprocessableEntity) {
-			t.Errorf("round %d: delete %d, draft %d", i, codes[0], codes[1])
+		if codes[0] != http.StatusOK || (codes[1] != http.StatusCreated && codes[1] != http.StatusUnprocessableEntity) {
+			t.Errorf("round %d: remove %d, draft %d", i, codes[0], codes[1])
+		}
+		if w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/payments/%d/purge", p.ID), ""); w.Code != http.StatusOK {
+			t.Errorf("round %d: purge %d %s", i, w.Code, w.Body.String())
 		}
 		if n := orphanLinks(); n != 0 {
 			t.Fatalf("round %d: %d invoice links point at a deleted payment", i, n)

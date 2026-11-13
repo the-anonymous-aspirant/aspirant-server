@@ -15,10 +15,13 @@ import (
 // not on an issued invoice can be deleted, imported or entered by hand. A
 // deleted imported payment is tombstoned so a re-import of the same file does
 // not bring it back, and the delete's audit event keeps the whole row.
+//
+// Since system_3 #10647-A2 delete has one path: remove, then purge (design
+// §3.143 Decision 6). These tests pinned the retired DELETE /payments/:id and
+// now pin the same behaviour on that path.
 
 func deletePayment(f *invoiceFixture, id uint) (int, string) {
-	w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", id), "")
-	return w.Code, w.Body.String()
+	return deleteForGood(f.r, "payments", id)
 }
 
 func tombstoned(t *testing.T, f *invoiceFixture, source, txn string) bool {
@@ -31,7 +34,7 @@ func tombstoned(t *testing.T, f *invoiceFixture, source, txn string) bool {
 func TestDeletePayment_ImportedOnNoInvoiceIsDeletedTombstonedAndAudited(t *testing.T) {
 	f := newInvoiceFixture(t)
 	p := f.payments[0] // paypal TX1, on no invoice
-	if code, body := deletePayment(f, p.ID); code != http.StatusNoContent {
+	if code, body := deletePayment(f, p.ID); code != http.StatusOK {
 		t.Fatalf("delete an imported payment: %d %s", code, body)
 	}
 	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, p.ID); got != nil {
@@ -71,9 +74,13 @@ func TestDeletePayment_OnAnIssuedInvoiceIsRefused(t *testing.T) {
 	if code, _, body := f.issue(id); code != http.StatusOK {
 		t.Fatalf("issue: %d %s", code, body)
 	}
+	// Refused at remove, before purge is reached.
 	code, body := deletePayment(f, f.payments[0].ID)
 	if code != http.StatusConflict || !strings.Contains(body, "payment_on_invoice") || !strings.Contains(body, "cancel that invoice first") || !strings.Contains(body, "2026-") {
 		t.Fatalf("delete a payment on an issued invoice: %d %s", code, body)
+	}
+	if p, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, f.payments[0].ID); p == nil || p.RemovedAt != nil {
+		t.Fatalf("a refused remove changed the payment: %+v", p)
 	}
 	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, f.payments[0].ID); got == nil {
 		t.Fatal("refused delete removed the payment")
@@ -103,7 +110,7 @@ func TestDeletePayment_OnADraftUnlinksItAndTheDraftSaysItsTotalIsUncovered(t *te
 		}
 	}
 
-	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusNoContent {
+	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusOK {
 		t.Fatalf("delete a payment on a draft: %d %s", code, body)
 	}
 	after := decodeDetail(t, invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d", id), "").Body.Bytes())
@@ -120,7 +127,7 @@ func TestDeletePayment_OnADraftUnlinksItAndTheDraftSaysItsTotalIsUncovered(t *te
 	}
 
 	// The last payment too: the draft keeps its money and still says so.
-	if code, body := deletePayment(f, f.payments[1].ID); code != http.StatusNoContent {
+	if code, body := deletePayment(f, f.payments[1].ID); code != http.StatusOK {
 		t.Fatalf("delete the draft's last payment: %d %s", code, body)
 	}
 	last := decodeDetail(t, invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d", id), "").Body.Bytes())
@@ -130,9 +137,18 @@ func TestDeletePayment_OnADraftUnlinksItAndTheDraftSaysItsTotalIsUncovered(t *te
 	if len(last.Warnings) != 1 || !strings.HasPrefix(last.Warnings[0], "total_mismatch") {
 		t.Errorf("a draft with no payments left must warn: %v", last.Warnings)
 	}
+	// Remove takes a payment off its drafts, so the remove event names the
+	// draft; by purge there is no draft link left to name.
 	events, _ := data_models.ListInvoicingAuditEvents(f.db, invoiceFixtureUser, "payment", f.payments[0].ID)
-	if len(events) == 0 || !strings.Contains(events[0].Details, fmt.Sprintf(`"unlinked_invoice_ids":[%d]`, id)) {
-		t.Errorf("audit does not name the draft it unlinked: %+v", events)
+	if len(events) < 2 || events[0].Action != "delete" || events[1].Action != "remove" ||
+		!strings.Contains(events[1].Details, fmt.Sprintf(`"unlinked_draft_ids":[%d]`, id)) {
+		t.Errorf("the remove event does not name the draft it unlinked: %+v", events)
+	}
+	var purged struct {
+		Unlinked []uint `json:"unlinked_invoice_ids"`
+	}
+	if err := json.Unmarshal([]byte(events[0].Details), &purged); err != nil || len(purged.Unlinked) != 0 {
+		t.Errorf("the delete event unlinks nothing more: %v %s", err, events[0].Details)
 	}
 }
 
@@ -151,7 +167,7 @@ func TestDeletePayment_OnACancelledInvoiceLeavesItsPDFUntouched(t *testing.T) {
 	}
 	invBefore, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 
-	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusNoContent {
+	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusOK {
 		t.Fatalf("delete a payment on a cancelled invoice: %d %s", code, body)
 	}
 	pdfAfter, _ := data_models.GetInvoicePDF(f.db, id)
@@ -184,8 +200,8 @@ func TestDeletePayment_APayPalReImportSkipsTheDeletedRow(t *testing.T) {
 	}
 	stored := listPayments(t, r, "")
 	gone := stored[0]
-	if w := invoicingDo(r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", gone.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	if code, body := deleteForGood(r, "payments", gone.ID); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
 	}
 	s := decodeSummary(t, uploadCSV(t, r, paypalFixtureEN, ""))
 	if s.Imported != 0 || s.Duplicates != 3 {
@@ -201,7 +217,7 @@ func TestDeletePayment_APayPalReImportSkipsTheDeletedRow(t *testing.T) {
 func TestDeletePayment_AnN26ReConfirmSkipsTheDeletedRow(t *testing.T) {
 	db := setupPaymentsDB(t)
 	r := setupN26Router(db, 7)
-	r.DELETE("/invoicing/payments/:id", DeletePaymentHandler)
+	registerPaymentRowActions(r)
 	row := n26Candidate{DocumentKind: n26KindTransferConfirmation, TransactionID: "a1b2c3d4-0e15-4a6f-9bd0-123456789abc",
 		PaidOn: "2026-07-14", Currency: "EUR", GrossCents: 123456, NetCents: 123456, SenderName: "Mara Esempio", Note: "x"}
 	var cresp struct {
@@ -213,8 +229,8 @@ func TestDeletePayment_AnN26ReConfirmSkipsTheDeletedRow(t *testing.T) {
 		t.Fatalf("first confirm: %d %s", w.Code, w.Body.String())
 	}
 	p := listPayments(t, r, "")[0]
-	if w := invoicingDo(r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", p.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	if code, body := deleteForGood(r, "payments", p.ID); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
 	}
 	w = confirmN26(t, r, []n26Candidate{row})
 	json.Unmarshal(w.Body.Bytes(), &cresp)
@@ -230,13 +246,13 @@ func TestDeletePayment_AnN26ReParseFlagsTheDeletedRowAsAlreadyImported(t *testin
 	requirePdftotext(t)
 	db := setupPaymentsDB(t)
 	r := setupN26Router(db, 7)
-	r.DELETE("/invoicing/payments/:id", DeletePaymentHandler)
+	registerPaymentRowActions(r)
 	pdf := buildN26LookalikePDF(t)
 	resp := decodeN26Parse(t, uploadN26(t, r, map[string][]byte{"conferma.pdf": pdf}))
 	confirmN26(t, r, resp.Files[0].Candidates)
 	p := listPayments(t, r, "")[0]
-	if w := invoicingDo(r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", p.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	if code, body := deleteForGood(r, "payments", p.ID); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
 	}
 	resp = decodeN26Parse(t, uploadN26(t, r, map[string][]byte{"conferma.pdf": pdf}))
 	if !resp.Files[0].Candidates[0].AlreadyImported {
@@ -246,7 +262,7 @@ func TestDeletePayment_AnN26ReParseFlagsTheDeletedRowAsAlreadyImported(t *testin
 
 func TestDeletePayment_ADeletedPayPalPaymentCanBeEnteredByHand(t *testing.T) {
 	f := newInvoiceFixture(t)
-	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusNoContent {
+	if code, body := deletePayment(f, f.payments[0].ID); code != http.StatusOK {
 		t.Fatalf("delete: %d %s", code, body)
 	}
 	// The tombstone keeps it out of re-imports, not out of the owner's hands.
@@ -259,14 +275,14 @@ func TestDeletePayment_ADeletedPayPalPaymentCanBeEnteredByHand(t *testing.T) {
 func TestDeletePayment_ManualDeleteIsUnchanged(t *testing.T) {
 	f := newInvoiceFixture(t)
 	_, loose, _ := createManual(t, f, `{"paid_on":"2026-07-14","gross_cents":1000,"method":"cash"}`)
-	if code, body := deletePayment(f, loose.ID); code != http.StatusNoContent {
+	if code, body := deletePayment(f, loose.ID); code != http.StatusOK {
 		t.Fatalf("delete a loose manual payment: %d %s", code, body)
 	}
 	if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, loose.ID); got != nil {
 		t.Fatal("manual payment still stored")
 	}
-	if code, _ := deletePayment(f, loose.ID); code != http.StatusNotFound {
-		t.Errorf("second delete: %d", code)
+	if w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/payments/%d/purge", loose.ID), ""); w.Code != http.StatusNotFound {
+		t.Errorf("second purge: %d", w.Code)
 	}
 	if code, _ := deletePayment(f, 99999); code != http.StatusNotFound {
 		t.Errorf("delete unknown: %d", code)

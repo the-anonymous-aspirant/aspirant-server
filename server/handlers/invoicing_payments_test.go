@@ -32,7 +32,8 @@ func setupPaymentsRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r.GET("/invoicing/payments", ListInvoicingPaymentsHandler)
 	r.PATCH("/invoicing/payments/:id", PatchInvoicingPaymentHandler)
 	r.POST("/invoicing/payments/manual", CreateManualPaymentHandler)
-	r.DELETE("/invoicing/payments/:id", DeletePaymentHandler)
+	// Delete is remove then purge (system_3 #10647-A2).
+	registerPaymentRowActions(r)
 	return r
 }
 
