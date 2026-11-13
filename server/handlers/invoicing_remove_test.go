@@ -287,6 +287,61 @@ func TestPurge_OnlyRemovedRowsAndLeavesATombstone(t *testing.T) {
 	}
 }
 
+// system_3 #10647-A1 (security c66061): no path links a removed payment to an
+// issued invoice today, so this test builds that state directly in the DB, as
+// a future path that forgot the payment_removed guard would leave it. Purge
+// must refuse it, alone and in a batch, and write nothing.
+func TestPurge_RefusesARemovedPaymentThatAnIssuedInvoiceLists(t *testing.T) {
+	f := newRemoveFixture(t)
+	issued := f.draft(t, 0)
+	code, detail, raw := f.issue(issued)
+	if code != http.StatusOK || detail.Invoice.InvoiceNumber == nil {
+		t.Fatalf("issue: %d %s", code, raw)
+	}
+	linked, clean := f.payments[3], f.payments[2]
+	if code, _, body := rowAction(f, "payments", "remove", linked.ID, clean.ID); code != http.StatusOK {
+		t.Fatalf("remove: %d %s", code, body)
+	}
+	if err := f.db.Create(&data_models.InvoicingInvoicePayment{InvoiceID: issued, PaymentID: linked.ID}).Error; err != nil {
+		t.Fatalf("link the removed payment to the issued invoice: %v", err)
+	}
+	before := countAuditEvents(t, f.db)
+
+	for _, ids := range [][]uint{{linked.ID}, {clean.ID, linked.ID}} {
+		code, e, body := rowAction(f, "payments", "purge", ids...)
+		if code != http.StatusConflict || e.Error.Code != "payment_on_invoice" ||
+			!strings.Contains(e.Error.Message, *detail.Invoice.InvoiceNumber) {
+			t.Errorf("purge %v: %d %s", ids, code, body)
+		}
+	}
+
+	// Nothing was written: both rows, the link, no tombstone, no audit. The
+	// tombstone table is read directly: `InvoicingPaymentSeen` is also true
+	// for a payment that still exists, so it cannot show a missing tombstone.
+	for _, p := range []data_models.InvoicingPayment{linked, clean} {
+		if got, _ := data_models.GetInvoicingPayment(f.db, invoiceFixtureUser, p.ID); got == nil {
+			t.Errorf("a refused purge erased payment %d", p.ID)
+		}
+		var n int
+		f.db.Model(&data_models.InvoicingPaymentTombstone{}).
+			Where("owner_user_id = ? AND source = ? AND transaction_id = ?", invoiceFixtureUser, p.Source, p.TransactionID).Count(&n)
+		if n != 0 {
+			t.Errorf("a refused purge tombstoned payment %d", p.ID)
+		}
+	}
+	if links, _ := data_models.InvoiceIDsForPayment(f.db, linked.ID); len(links) != 1 || links[0] != issued {
+		t.Errorf("a refused purge must keep the issued invoice's link: %v", links)
+	}
+	if got := countAuditEvents(t, f.db); got != before {
+		t.Errorf("a refused purge wrote audit rows: %d -> %d", before, got)
+	}
+
+	// Restore is not purge: it erases nothing, so it is not refused.
+	if code, _, body := rowAction(f, "payments", "restore", linked.ID); code != http.StatusOK {
+		t.Errorf("restore: %d %s", code, body)
+	}
+}
+
 func TestRemovedPayment_CannotBeInvoiced(t *testing.T) {
 	f := newRemoveFixture(t)
 	rowAction(f, "payments", "remove", f.payments[1].ID)
