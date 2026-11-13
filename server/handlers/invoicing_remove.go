@@ -154,6 +154,25 @@ func PaymentsRowActionHandler(action string) gin.HandlerFunc {
 	}
 }
 
+// issuedInvoiceRefusal refuses a payment that an issued (not cancelled)
+// invoice lists: 409 payment_on_invoice, naming the invoice. Remove and purge
+// share it, so the two refusals read the same.
+func issuedInvoiceRefusal(tx *gorm.DB, owner uint, p data_models.InvoicingPayment) (*rowRefusal, error) {
+	issuedID, err := data_models.IssuedInvoiceForPayment(tx, p.ID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("issued check %d: %w", p.ID, err)
+	}
+	if issuedID == 0 {
+		return nil, nil
+	}
+	label := fmt.Sprintf("%d", issuedID)
+	if inv, err := data_models.GetInvoicingInvoice(tx, owner, issuedID); err == nil && inv != nil {
+		label = invoiceLabel(*inv)
+	}
+	return refuseRow(http.StatusConflict, "payment_on_invoice",
+		"payment %s is on issued invoice %s; cancel that invoice first", paymentLabel(p), label), nil
+}
+
 func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (*rowRefusal, error) {
 	// The issuing lock orders this against a draft create, a payment_ids
 	// edit or an issue that would link or freeze one of these payments, as
@@ -181,22 +200,25 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 			if p.RemovedAt != nil {
 				return refuseRow(http.StatusConflict, "already_removed", "payment %s is already removed", paymentLabel(*p)), nil
 			}
-			issuedID, err := data_models.IssuedInvoiceForPayment(tx, p.ID, 0)
-			if err != nil {
-				return nil, fmt.Errorf("issued check %d: %w", id, err)
-			}
-			if issuedID != 0 {
-				label := fmt.Sprintf("%d", issuedID)
-				if inv, err := data_models.GetInvoicingInvoice(tx, owner, issuedID); err == nil && inv != nil {
-					label = invoiceLabel(*inv)
-				}
-				return refuseRow(http.StatusConflict, "payment_on_invoice",
-					"payment %s is on issued invoice %s; cancel that invoice first", paymentLabel(*p), label), nil
+			if refusal, err := issuedInvoiceRefusal(tx, owner, *p); refusal != nil || err != nil {
+				return refusal, err
 			}
 		case rowRestore, rowPurge:
 			if p.RemovedAt == nil {
 				return refuseRow(http.StatusConflict, "not_removed",
 					"payment %s is not removed; only a removed payment can be %s", paymentLabel(*p), pastTense(action)), nil
+			}
+			// Purge is the one step that cannot be undone, and it deletes
+			// link rows. A removed payment is never on an issued invoice
+			// today: draft create, draft edit and issue all refuse
+			// payment_removed (checkInvoiceablePayments). Purge checks
+			// anyway, as the legacy delete did, so a future path that forgets
+			// that guard cannot make it erase a payment an issued invoice
+			// still lists (system_3 #10647-A1, security c66061).
+			if action == rowPurge {
+				if refusal, err := issuedInvoiceRefusal(tx, owner, *p); refusal != nil || err != nil {
+					return refusal, err
+				}
 			}
 		}
 		payments = append(payments, *p)
