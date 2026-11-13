@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -431,86 +430,4 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"category": cat})
-}
-
-// DeleteExpenseHandler removes a hand-entered or imported expense: DELETE
-// /invoicing/expenses/:id. Unlike a payment, an expense is never on an
-// invoice, so this skips the issued-invoice and unlink checks entirely.
-func DeleteExpenseHandler(c *gin.Context) {
-	db := c.MustGet("db").(*gorm.DB)
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil || id == 0 {
-		RespondWithError(c, http.StatusBadRequest, "Invalid expense id")
-		return
-	}
-	tx := db.Begin()
-	if err := data_models.LockInvoicingBook(tx, invoicingUserID(c)); err != nil {
-		tx.Rollback()
-		log.Printf("Error locking for expense %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	if err := lockExpenseRow(tx, invoicingUserID(c), uint(id)); err != nil {
-		tx.Rollback()
-		log.Printf("Error locking expense %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	e, err := data_models.GetInvoicingExpense(tx, invoicingUserID(c), uint(id))
-	if err != nil {
-		tx.Rollback()
-		log.Printf("Error reading expense %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	if e == nil {
-		tx.Rollback()
-		RespondWithError(c, http.StatusNotFound, "Expense not found")
-		return
-	}
-	// A receipt on this expense goes in the same transaction (system_3
-	// #10602, security review c65885 point 6): no orphan row is left behind.
-	receipt, err := data_models.GetInvoicingExpenseReceipt(tx, invoicingUserID(c), e.ID)
-	if err != nil {
-		tx.Rollback()
-		log.Printf("Error reading receipt for expense %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	if receipt != nil {
-		if _, err := data_models.DeleteInvoicingExpenseReceipt(tx, invoicingUserID(c), e.ID); err != nil {
-			tx.Rollback()
-			log.Printf("Error deleting receipt for expense %d: %v", id, err)
-			RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-			return
-		}
-	}
-	if err := tx.Delete(e).Error; err != nil {
-		tx.Rollback()
-		log.Printf("Error deleting expense %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	details := auditDetails(gin.H{"before": e})
-	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionDelete, invoicingEntityExpense, e.ID, details); err != nil {
-		tx.Rollback()
-		log.Printf("Error auditing expense delete %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	if receipt != nil {
-		receiptDetails := auditDetails(gin.H{"before": gin.H{"sha256": receipt.SHA256, "content_type": receipt.ContentType, "bytes": receipt.SizeBytes}})
-		if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionDelete, invoicingEntityExpenseReceipt, e.ID, receiptDetails); err != nil {
-			tx.Rollback()
-			log.Printf("Error auditing receipt delete for expense %d: %v", id, err)
-			RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-			return
-		}
-	}
-	if err := tx.Commit().Error; err != nil {
-		log.Printf("Error committing expense delete %d: %v", id, err)
-		RespondWithError(c, http.StatusInternalServerError, "Error deleting expense")
-		return
-	}
-	c.Status(http.StatusNoContent)
 }

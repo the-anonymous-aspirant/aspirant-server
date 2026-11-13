@@ -406,14 +406,14 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.POST("/payments/manual", handlers.CreateManualPaymentHandler)
 		invoicing.GET("/payers/candidates", handlers.ListPayerCandidatesHandler)
 		invoicing.POST("/payers", handlers.AddPayersHandler)
-		invoicing.DELETE("/payments/:id", handlers.DeletePaymentHandler)
 		invoicing.GET("/expenses", handlers.ListInvoicingExpensesHandler)
 		invoicing.POST("/expenses/manual", handlers.CreateManualExpenseHandler)
 		invoicing.POST("/expenses/import-n26/confirm", handlers.ImportN26ExpensesConfirmHandler)
-		invoicing.DELETE("/expenses/:id", handlers.DeleteExpenseHandler)
 		// Remove, restore and delete for good (system_3 #10555-A2, design
 		// §3.143 Decision 6): bulk forms take {"ids": [...]}, single forms the
-		// path id; both are all or nothing.
+		// path id; both are all or nothing. Purge is the only way to delete a
+		// payment or an expense: the legacy DELETE /payments/:id and
+		// /expenses/:id are retired (system_3 #10647-A2).
 		for _, a := range []string{"remove", "restore", "purge"} {
 			invoicing.POST("/payments/"+a, handlers.PaymentsRowActionHandler(a))
 			invoicing.POST("/payments/:id/"+a, handlers.PaymentsRowActionHandler(a))

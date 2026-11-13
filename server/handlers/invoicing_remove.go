@@ -29,8 +29,9 @@ import (
 // refuses the whole request, and nothing is written. The single forms
 // (/:id/remove and so on) are the same core with one id.
 //
-// The legacy DELETE /payments/:id and /expenses/:id are untouched: the
-// served client's row delete still calls them until its Remove ships
+// Purge is the only delete. The legacy DELETE /payments/:id and
+// /expenses/:id, which erased any non-issued row at once, are retired
+// (system_3 #10647-A2): no client has called them since the Remove shipped
 // (#10555-C1, C2).
 
 const (

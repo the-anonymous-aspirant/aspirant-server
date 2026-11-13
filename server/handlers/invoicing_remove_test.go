@@ -9,10 +9,43 @@ import (
 	"time"
 
 	"aspirant-online/server/data_models"
+
+	"github.com/gin-gonic/gin"
 )
 
 // system_3 #10555-A2 (design §3.143 Decision 6): remove, restore and delete
 // for good, for payments and expenses, single and bulk, all or nothing.
+
+// registerPaymentRowActions and registerExpenseRowActions register the remove,
+// restore and purge routes, bulk and single, as routes.go does. Purge is the
+// only delete since the legacy DELETE routes were retired (system_3
+// #10647-A2), so every fixture that deletes registers these. Each router gets
+// them once: gin panics on a route registered twice.
+func registerPaymentRowActions(r gin.IRoutes) {
+	for _, a := range []string{"remove", "restore", "purge"} {
+		r.POST("/invoicing/payments/"+a, PaymentsRowActionHandler(a))
+		r.POST("/invoicing/payments/:id/"+a, PaymentsRowActionHandler(a))
+	}
+}
+
+func registerExpenseRowActions(r gin.IRoutes) {
+	for _, a := range []string{"remove", "restore", "purge"} {
+		r.POST("/invoicing/expenses/"+a, ExpensesRowActionHandler(a))
+		r.POST("/invoicing/expenses/:id/"+a, ExpensesRowActionHandler(a))
+	}
+}
+
+// deleteForGood deletes a row the only way there is: remove it, then purge
+// it. It returns the purge's status and body; a refused remove is returned
+// as is, without the purge.
+func deleteForGood(r *gin.Engine, kind string, id uint) (int, string) {
+	w := invoicingDo(r, "POST", fmt.Sprintf("/invoicing/%s/%d/remove", kind, id), "")
+	if w.Code != http.StatusOK {
+		return w.Code, w.Body.String()
+	}
+	w = invoicingDo(r, "POST", fmt.Sprintf("/invoicing/%s/%d/purge", kind, id), "")
+	return w.Code, w.Body.String()
+}
 
 func newRemoveFixture(t *testing.T) *invoiceFixture {
 	t.Helper()
@@ -21,12 +54,8 @@ func newRemoveFixture(t *testing.T) *invoiceFixture {
 		&data_models.InvoicingBookSelection{}, &data_models.InvoicingBookPreset{})
 	f.r.GET("/invoicing/expenses", ListInvoicingExpensesHandler)
 	f.r.GET("/invoicing/export/book-report.csv", ExportBookReportHandler)
-	for _, a := range []string{"remove", "restore", "purge"} {
-		f.r.POST("/invoicing/payments/"+a, PaymentsRowActionHandler(a))
-		f.r.POST("/invoicing/payments/:id/"+a, PaymentsRowActionHandler(a))
-		f.r.POST("/invoicing/expenses/"+a, ExpensesRowActionHandler(a))
-		f.r.POST("/invoicing/expenses/:id/"+a, ExpensesRowActionHandler(a))
-	}
+	// The payment routes come with setupPaymentsRouter, under newEditFixture.
+	registerExpenseRowActions(f.r)
 	return f
 }
 
@@ -415,7 +444,7 @@ func TestRowAction_AnotherOwnersRowsAreNotFound(t *testing.T) {
 	f := newRemoveFixture(t)
 	_, e, _ := createExpense(t, f.r, `{"paid_on":"2026-07-01","amount_cents":1500}`)
 	other := setupInvoiceRouter(f.db, invoiceFixtureUser+1)
-	other.POST("/invoicing/payments/:id/remove", PaymentsRowActionHandler("remove"))
+	// The payment row routes come with setupInvoiceRouter (system_3 #10647-A2).
 	other.POST("/invoicing/expenses/:id/remove", ExpensesRowActionHandler("remove"))
 	for _, path := range []string{
 		fmt.Sprintf("/invoicing/payments/%d/remove", f.payments[3].ID),

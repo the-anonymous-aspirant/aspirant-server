@@ -22,9 +22,10 @@ func setupExpensesDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := setupInvoicingDB(t)
 	// InvoicingExpenseReceipt is always migrated alongside InvoicingExpense
-	// in production (database.go); DeleteExpenseHandler reads it to cascade
-	// a receipt's delete with its expense (system_3 #10602).
-	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{}, &data_models.InvoicingExpenseReceipt{})
+	// in production (database.go); purge reads it to take a receipt with its
+	// expense (system_3 #10602, #10537-A1), and writes the expense tombstone.
+	db.AutoMigrate(&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{},
+		&data_models.InvoicingExpenseReceipt{}, &data_models.InvoicingExpenseTombstone{})
 	return db
 }
 
@@ -32,7 +33,7 @@ func setupExpensesRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r := setupInvoicingRouter(db, userID)
 	r.GET("/invoicing/expenses", ListInvoicingExpensesHandler)
 	r.POST("/invoicing/expenses/manual", CreateManualExpenseHandler)
-	r.DELETE("/invoicing/expenses/:id", DeleteExpenseHandler)
+	registerExpenseRowActions(r) // delete is remove then purge (system_3 #10647-A2)
 	r.GET("/invoicing/expense-categories", ListInvoicingExpenseCategoriesHandler)
 	r.POST("/invoicing/expense-categories", CreateExpenseCategoryHandler)
 	return r
@@ -107,17 +108,18 @@ func TestManualExpense_CreateListAndDelete(t *testing.T) {
 		t.Errorf("category filter: %+v", got)
 	}
 
-	if w := invoicingDo(r, "DELETE", fmt.Sprintf("/invoicing/expenses/%d", e.ID), ""); w.Code != http.StatusNoContent {
-		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	// Delete is remove then purge (system_3 #10647-A2).
+	if code, body := deleteForGood(r, "expenses", e.ID); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
 	}
 	if got, _ := data_models.GetInvoicingExpense(db, expenseFixtureUser, e.ID); got != nil {
 		t.Errorf("expense still stored after delete")
 	}
-	if w := invoicingDo(r, "DELETE", fmt.Sprintf("/invoicing/expenses/%d", e.ID), ""); w.Code != http.StatusNotFound {
-		t.Errorf("delete again: %d", w.Code)
+	if w := invoicingDo(r, "POST", fmt.Sprintf("/invoicing/expenses/%d/purge", e.ID), ""); w.Code != http.StatusNotFound {
+		t.Errorf("purge again: %d", w.Code)
 	}
 	deleteEvents, _ := data_models.ListInvoicingAuditEvents(db, expenseFixtureUser, "expense", e.ID)
-	if len(deleteEvents) != 2 || deleteEvents[0].Action != "delete" {
+	if len(deleteEvents) != 3 || deleteEvents[0].Action != "delete" || deleteEvents[1].Action != "remove" {
 		t.Errorf("delete audit: %+v", deleteEvents)
 	}
 }
@@ -185,11 +187,13 @@ func TestManualExpense_OwnerIsolation(t *testing.T) {
 	if got := listExpenses(t, a, ""); len(got) != 1 {
 		t.Errorf("positive control: owner A's own list is missing its expense: %+v", got)
 	}
-	if w := invoicingDo(b, "DELETE", fmt.Sprintf("/invoicing/expenses/%d", expA.ID), ""); w.Code != http.StatusNotFound {
-		t.Errorf("owner B deleted owner A's expense: %d", w.Code)
+	for _, action := range []string{"remove", "purge"} {
+		if w := invoicingDo(b, "POST", fmt.Sprintf("/invoicing/expenses/%d/%s", expA.ID, action), ""); w.Code != http.StatusNotFound {
+			t.Errorf("owner B's %s of owner A's expense: %d", action, w.Code)
+		}
 	}
-	if got, _ := data_models.GetInvoicingExpense(db, 7, expA.ID); got == nil {
-		t.Errorf("owner A's expense was deleted by B's refused request")
+	if got, _ := data_models.GetInvoicingExpense(db, 7, expA.ID); got == nil || got.RemovedAt != nil {
+		t.Errorf("owner A's expense was removed or deleted by B's refused request: %+v", got)
 	}
 
 	// Security review of PR 175 F1: the category-validity check itself must

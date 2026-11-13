@@ -136,3 +136,40 @@ func TestInvoicingOwnerIsVinoly(t *testing.T) {
 		t.Fatalf("invoicesOwnerUsername = %q, want %q", invoicesOwnerUsername, "vinoly")
 	}
 }
+
+// system_3 #10647-A2: delete for good has exactly one path, POST …/purge
+// (design §3.143 Decision 6). The legacy DELETE /payments/:id and
+// /expenses/:id erased any non-issued row at once, with no remove in front,
+// and no client has called them since the Remove shipped. Read from the real
+// route table, so a re-added registration fails here.
+func TestInvoicingRoutes_DeleteForGoodHasOnePath(t *testing.T) {
+	r := invoicingGateRouter(t)
+	have := map[string]bool{}
+	for _, ri := range r.Routes() {
+		have[ri.Method+" "+ri.Path] = true
+	}
+	for _, retired := range []string{
+		"DELETE /invoicing/payments/:id",
+		"DELETE /invoicing/expenses/:id",
+	} {
+		if have[retired] {
+			t.Errorf("%s is registered; delete for good is remove, then purge", retired)
+		}
+	}
+	// Positive controls: the absence above is read from a table that does
+	// hold the invoicing routes, including the purge routes that replace the
+	// retired ones and the receipt's own DELETE, which stays.
+	for _, kept := range []string{
+		"POST /invoicing/payments/:id/remove",
+		"POST /invoicing/payments/:id/purge",
+		"POST /invoicing/payments/purge",
+		"POST /invoicing/expenses/:id/remove",
+		"POST /invoicing/expenses/:id/purge",
+		"POST /invoicing/expenses/purge",
+		"DELETE /invoicing/expenses/:id/receipt",
+	} {
+		if !have[kept] {
+			t.Errorf("%s is not registered", kept)
+		}
+	}
+}
