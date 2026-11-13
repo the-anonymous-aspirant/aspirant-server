@@ -36,7 +36,7 @@ func TestLockPaymentRow_ScopedToTheOwner(t *testing.T) {
 	}
 
 	// The refusal the caller sees is unchanged: another book's id is a 404.
-	if w := invoicingDo(f.r, "DELETE", fmt.Sprintf("/invoicing/payments/%d", other.ID), ""); w.Code != http.StatusNotFound {
-		t.Errorf("delete another book's payment: %d %s, want 404", w.Code, w.Body.String())
+	if w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/payments/%d/remove", other.ID), ""); w.Code != http.StatusNotFound {
+		t.Errorf("remove another book's payment: %d %s, want 404", w.Code, w.Body.String())
 	}
 }
