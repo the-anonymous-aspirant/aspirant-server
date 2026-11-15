@@ -172,6 +172,13 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		authRoutes.GET("/users/me/scratchpad", handlers.GetScratchpadHandler)
 		authRoutes.PUT("/users/me/scratchpad", handlers.PutScratchpadHandler)
 
+		// Remembered form values (system_3 #11190, §3.154): one record per
+		// user per allowlisted tool, the tool's tier checked in the handler,
+		// the user from the session only.
+		authRoutes.GET("/users/me/form-values/:tool", handlers.GetFormValuesHandler)
+		authRoutes.PUT("/users/me/form-values/:tool", handlers.PutFormValuesHandler)
+		authRoutes.DELETE("/users/me/form-values/:tool", handlers.DeleteFormValuesHandler)
+
 		// Own profile surface (#4170). Scoped to the session user_id — a
 		// caller can only read/edit their own profile. Registered under
 		// /profile rather than /data_models/users/me because a static `me`

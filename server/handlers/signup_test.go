@@ -80,6 +80,9 @@ func newSignupHarness(t *testing.T) *signupHarness {
 	}
 	db.AutoMigrate(
 		&data_models.Role{}, &data_models.User{},
+		// User.DeleteUser also removes the user's remembered form values
+		// (#11190), so a harness that deletes users needs their table.
+		&data_models.UserFormValues{},
 		&data_models.UserDisplayName{}, &data_models.UserToken{},
 		&data_models.BootstrapRecord{},
 		// SignupHandler reads the #5289 kill-switch before it touches the users

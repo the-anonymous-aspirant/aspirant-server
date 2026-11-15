@@ -305,6 +305,11 @@ func AutoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("migrating scratchpads: %w", err)
 	}
 
+	// Step 6a: Remembered form values, one record per user per tool (#11190)
+	if err := migrate(db, &data_models.UserFormValues{}); err != nil {
+		return fmt.Errorf("migrating user_form_values: %w", err)
+	}
+
 	// Step 6b: Single-use expiring user tokens backing email verification and
 	// password recovery (epic #5113, subtask #5219). No seed — tokens are
 	// minted at runtime only. One table serves both flows; the TTL and the
