@@ -395,8 +395,25 @@ func (u *User) UpdateUser(db *gorm.DB) error {
 }
 
 // DeleteUser deletes a user from the database
+// DeleteUser soft-deletes the user (gorm.Model sets deleted_at; the row stays)
+// and, in the same transaction, hard-deletes their remembered form values
+// (system_3 #11190, §3.154 "deleting the user removes their records"). A
+// foreign key with ON DELETE CASCADE would never fire on a soft delete, so the
+// removal has to be explicit here.
 func (u *User) DeleteUser(db *gorm.DB) error {
-	return db.Delete(u).Error
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if err := DeleteAllFormValuesForUser(tx, u.ID); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Delete(u).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit().Error
 }
 
 func GetUserById(db *gorm.DB, id string) (*User, error) {
