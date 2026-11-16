@@ -449,6 +449,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.GET("/export/book-report.csv", handlers.ExportBookReportHandler)
 		invoicing.GET("/invoices", handlers.ListInvoicesHandler)
 		invoicing.POST("/invoices", handlers.CreateInvoiceDraftHandler)
+		invoicing.POST("/invoices/generate", handlers.GenerateInvoiceDraftsHandler)
 		invoicing.GET("/invoices/:id", handlers.GetInvoiceHandler)
 		invoicing.PUT("/invoices/:id", handlers.UpdateInvoiceDraftHandler)
 		invoicing.DELETE("/invoices/:id", handlers.DeleteInvoiceDraftHandler)

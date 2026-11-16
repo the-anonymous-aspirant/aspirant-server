@@ -261,6 +261,60 @@ type createDraftRequest struct {
 	PaymentIDs []uint `json:"payment_ids"`
 }
 
+// createDraftFromPayments writes one draft over the given payments, inside the
+// caller's transaction: one line per payment (its note as the description,
+// quantity 1, the amount as the price), the client when every payment names
+// the same one, the payment dates as the service dates, the links, and the
+// audit event. The payments must already have passed checkInvoiceablePayments.
+// Shared by Create invoice and Generate invoices (system_3 #11504), so a
+// generated draft is prefilled exactly as a hand-started one is.
+func createDraftFromPayments(tx *gorm.DB, owner uint, payments []data_models.InvoicingPayment, kleinunternehmer bool, audit gin.H) (data_models.InvoicingInvoice, error) {
+	inv := data_models.InvoicingInvoice{OwnerUserID: owner, Status: data_models.InvoiceStatusDraft, VatRateBP: 1900, Currency: payments[0].Currency}
+	sameClient := payments[0].ClientID
+	earliest, latest := payments[0].PaidOn, payments[0].PaidOn
+	for _, p := range payments[1:] {
+		if sameClient != nil && (p.ClientID == nil || *p.ClientID != *sameClient) {
+			sameClient = nil
+		}
+		if p.PaidOn.Before(earliest) {
+			earliest = p.PaidOn
+		}
+		if p.PaidOn.After(latest) {
+			latest = p.PaidOn
+		}
+	}
+	inv.ClientID = sameClient
+	inv.ServiceDateFrom, inv.ServiceDateTo = &earliest, &latest
+
+	items := make([]data_models.InvoicingLineItem, 0, len(payments))
+	for i, p := range payments {
+		items = append(items, data_models.InvoicingLineItem{
+			Position:       i + 1,
+			Description:    p.Note,
+			QuantityMilli:  1000,
+			UnitPriceCents: p.GrossCents,
+			LineTotalCents: p.GrossCents,
+		})
+	}
+	recomputeTotals(&inv, items, kleinunternehmer)
+	if err := tx.Create(&inv).Error; err != nil {
+		return inv, err
+	}
+	for i := range items {
+		items[i].InvoiceID = inv.ID
+		if err := tx.Create(&items[i]).Error; err != nil {
+			return inv, err
+		}
+	}
+	for _, p := range payments {
+		if err := tx.Create(&data_models.InvoicingInvoicePayment{InvoiceID: inv.ID, PaymentID: p.ID}).Error; err != nil {
+			return inv, err
+		}
+	}
+	err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreate, invoicingEntityInvoice, inv.ID, auditDetails(audit))
+	return inv, err
+}
+
 // CreateInvoiceDraftHandler starts a draft from paid-work payments, prefilled
 // from data only: one line per payment (its note as the description — empty
 // when the payment has none — quantity 1, the amount as the price), the client
@@ -308,53 +362,8 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 		return
 	}
 
-	inv := data_models.InvoicingInvoice{OwnerUserID: invoicingUserID(c), Status: data_models.InvoiceStatusDraft, VatRateBP: 1900, Currency: payments[0].Currency}
-	sameClient := payments[0].ClientID
-	earliest, latest := payments[0].PaidOn, payments[0].PaidOn
-	for _, p := range payments[1:] {
-		if sameClient != nil && (p.ClientID == nil || *p.ClientID != *sameClient) {
-			sameClient = nil
-		}
-		if p.PaidOn.Before(earliest) {
-			earliest = p.PaidOn
-		}
-		if p.PaidOn.After(latest) {
-			latest = p.PaidOn
-		}
-	}
-	inv.ClientID = sameClient
-	inv.ServiceDateFrom, inv.ServiceDateTo = &earliest, &latest
-
-	items := make([]data_models.InvoicingLineItem, 0, len(payments))
-	for i, p := range payments {
-		items = append(items, data_models.InvoicingLineItem{
-			Position:       i + 1,
-			Description:    p.Note,
-			QuantityMilli:  1000,
-			UnitPriceCents: p.GrossCents,
-			LineTotalCents: p.GrossCents,
-		})
-	}
-	recomputeTotals(&inv, items, klein)
-	if err := tx.Create(&inv).Error; err != nil {
-		respondInvoicingInternal(c, tx, "creating invoice", err)
-		return
-	}
-	for i := range items {
-		items[i].InvoiceID = inv.ID
-		if err := tx.Create(&items[i]).Error; err != nil {
-			respondInvoicingInternal(c, tx, "creating invoice", err)
-			return
-		}
-	}
-	for _, p := range payments {
-		if err := tx.Create(&data_models.InvoicingInvoicePayment{InvoiceID: inv.ID, PaymentID: p.ID}).Error; err != nil {
-			respondInvoicingInternal(c, tx, "creating invoice", err)
-			return
-		}
-	}
-	if err := data_models.RecordInvoicingAuditEvent(tx, invoicingUserID(c), invoicingActionCreate, invoicingEntityInvoice, inv.ID,
-		auditDetails(gin.H{"payment_ids": req.PaymentIDs})); err != nil {
+	inv, err := createDraftFromPayments(tx, invoicingUserID(c), payments, klein, gin.H{"payment_ids": req.PaymentIDs})
+	if err != nil {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
 		return
 	}
