@@ -7,6 +7,7 @@ import (
 	"net/mail"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"aspirant-online/server/data_models"
@@ -81,6 +82,12 @@ const signupResponseMessage = "If that username and address are available, a ver
 // check runs before the users table is touched at all.
 const signupClosedMessage = "Sign-up is currently closed."
 
+// resendResponseMessage is returned for every outcome of /verify-email/resend
+// that depends on the users table: no such address, already confirmed,
+// waiting for confirmation, and a token that could not be minted. One
+// constant, for the same reason as signupResponseMessage.
+const resendResponseMessage = "If that address has an account waiting for confirmation, a new link is on its way."
+
 type signupInput struct {
 	Username string `json:"username" binding:"required"`
 	Email    string `json:"email" binding:"required"`
@@ -89,6 +96,10 @@ type signupInput struct {
 
 type verifyEmailInput struct {
 	Token string `json:"token" binding:"required"`
+}
+
+type resendVerificationInput struct {
+	Email string `json:"email" binding:"required"`
 }
 
 // publicBaseURL is the origin links in outbound mail point at.
@@ -132,6 +143,61 @@ func sendOrLog(c *gin.Context, to, subject, body, context string) {
 	if err := sender.Send(to, subject, body); err != nil {
 		log.Printf("ERROR: sending %s mail: %v", context, err)
 	}
+}
+
+// backgroundMail counts the sends deliverLater has started and not finished.
+// Tests wait on it before reading what was sent or closing the database;
+// nothing in production waits on it.
+var backgroundMail sync.WaitGroup
+
+// deliverLater composes and sends one message after the handler has answered
+// (security c70050 on system_3 #11143).
+//
+// sendOrLog sends inline, so a request that mails answers only after the SMTP
+// round trip, and one that does not answers at once. On an endpoint that
+// mails only some addresses, that difference in time says which ones. Here the
+// work runs in a goroutine the handler does not wait for, so a slow or
+// blocking relay costs the goroutine and never the request.
+//
+// compose runs in the goroutine too, because it may write (mint a token), and
+// a write that only some outcomes make is the same tell as the send. It
+// returns ok=false to send nothing.
+//
+// Two rules keep this safe off the request path:
+//   - Nothing here touches the gin context. Gin reuses it once the handler
+//     returns, so the caller reads what it needs (the sender, ids) first.
+//   - Nothing here logs an address, typed or stored: the kind of mail and the
+//     outcome only. A relay's error can quote the recipient, so it is redacted.
+//
+// system_3 #11393 moves the /password/forgot and /signup sends onto this.
+func deliverLater(sender email.Sender, kind string, compose func() (to, subject, body string, ok bool)) {
+	backgroundMail.Add(1)
+	go func() {
+		defer backgroundMail.Done()
+		to, subject, body, ok := compose()
+		if !ok {
+			return
+		}
+		if sender == nil {
+			log.Printf("ERROR: %s mail not sent: no mail sender", kind)
+			return
+		}
+		if err := sender.Send(to, subject, body); err != nil {
+			log.Printf("ERROR: %s mail not sent: %s", kind, redactAddresses(err.Error()))
+		}
+	}()
+}
+
+// redactAddresses replaces every whitespace-separated word holding an "@" with
+// "<address>", so an error a relay wrote can be logged without the recipient.
+func redactAddresses(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if strings.Contains(w, "@") {
+			words[i] = "<address>"
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // SignupHandler creates an unverified Viewer account and mails a verification
@@ -428,4 +494,77 @@ func VerifyEmailHandler(c *gin.Context) {
 
 	log.Printf("Email verified for user %d", token.UserID)
 	RespondWithSuccess(c, gin.H{}, "Your address is confirmed. You can sign in now.")
+}
+
+// ResendVerificationHandler mails a new confirmation link to an account whose
+// address was never confirmed (system_3 #11143; design c70048, cleared by
+// security c70050). Without it, an account whose link was spent, expired or
+// cut short could never sign in.
+//
+// Every outcome that depends on the users table answers resendResponseMessage
+// in the same bytes: no such address, already confirmed, waiting for
+// confirmation, and a lookup that failed. It also answers in the same time,
+// because the token and the mail are made after the response (deliverLater):
+// the request path is one SELECT whatever the answer. An older link keeps
+// working (verify_email does not retire its siblings, data_models/user_token.go).
+//
+// Rate limiting is PublicAuthRateLimit("email") in routes.go: per IP, and per
+// recipient on the address lower-cased and trimmed. The lookup below
+// normalises the same way, so one inbox is one budget and one row however the
+// address is typed.
+func ResendVerificationHandler(c *gin.Context) {
+	db := c.MustGet("db").(*gorm.DB)
+
+	// A closed site, or one that cannot deliver, refuses first and for
+	// everyone, as /signup does: the refusal does not depend on the address,
+	// and GET /signup/status already publishes the same fact.
+	open, err := data_models.SignupEnabled(db)
+	if err != nil {
+		log.Printf("ERROR: verification resend could not read the signup_enabled setting: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Could not process the request")
+		return
+	}
+	sender := mailerFrom(c)
+	if !open || !email.Delivers(sender) {
+		RespondWithError(c, http.StatusForbidden, signupClosedMessage)
+		return
+	}
+
+	var input resendVerificationInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		RespondWithError(c, http.StatusBadRequest, "An email address is required")
+		return
+	}
+	address := strings.ToLower(strings.TrimSpace(input.Email))
+	if _, err := mail.ParseAddress(address); err != nil {
+		// A shape check describes the request, not the database.
+		RespondWithError(c, http.StatusBadRequest, "That does not look like an email address")
+		return
+	}
+
+	// Live rows only (gorm's default scope), so a soft-deleted account answers
+	// like an unknown one.
+	var user data_models.User
+	lookupErr := db.Where("LOWER(email) = ?", address).First(&user).Error
+	if lookupErr != nil && !gorm.IsRecordNotFoundError(lookupErr) {
+		log.Printf("ERROR: verification resend lookup failed: %v", lookupErr)
+	}
+	waiting := lookupErr == nil && user.EmailVerifiedAt == nil
+
+	RespondWithSuccess(c, gin.H{}, resendResponseMessage)
+
+	if !waiting {
+		return
+	}
+	// Read before the goroutine: the gin context is not ours after return.
+	userID, username, to := user.ID, user.Username, user.Email
+	deliverLater(sender, "verification resend", func() (string, string, string, bool) {
+		token, err := data_models.IssueUserToken(db, userID, data_models.PurposeVerifyEmail)
+		if err != nil {
+			log.Printf("ERROR: verification resend could not mint a token for user %d: %v", userID, err)
+			return "", "", "", false
+		}
+		// To the stored address, never the typed one.
+		return to, "Confirm your address", verificationMailBody(username, token), true
+	})
 }

@@ -11,7 +11,8 @@ import (
 )
 
 // Abuse limits for the public account endpoints (system_3 epic #5113,
-// subtask #5222): /signup, /verify-email, /password/forgot, /password/reset.
+// subtask #5222): /signup, /verify-email, /verify-email/resend (system_3
+// #11143), /password/forgot, /password/reset.
 //
 // These are unauthenticated, they write to the database, and two of them make
 // this server send mail to an address the caller supplies. That last property
@@ -114,10 +115,11 @@ func ResetPublicAuthRateLimiter() {
 // would be sent to, and each gets its own per-recipient bucket. Pass them for
 // the endpoints that send mail:
 //
-//	/signup           -> "email", "username"
-//	/password/forgot  -> "email"
-//	/verify-email     -> none (the body is a token; nothing is sent)
-//	/password/reset   -> none
+//	/signup                -> "email", "username"
+//	/password/forgot       -> "email"
+//	/verify-email/resend   -> "email" (a new confirmation link, #11143)
+//	/verify-email          -> none (the body is a token; nothing is sent)
+//	/password/reset        -> none
 //
 // /signup needs both. Its duplicate-signup notice goes to the address on file,
 // so an attacker who knows only a victim's *username* can aim mail at them

@@ -140,6 +140,11 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 	// the note on GetSignupStatusHandler.
 	router.GET("/signup/status", handlers.GetSignupStatusHandler)
 	router.POST("/verify-email", middleware.PublicAuthRateLimit(), handlers.VerifyEmailHandler)
+	// A new confirmation link for an account whose link was spent or expired
+	// (system_3 #11143). Like /password/forgot it takes an address and mails
+	// it, so it is limited per recipient ("email") as well as per IP, and it
+	// answers one constant in the same time for every address.
+	router.POST("/verify-email/resend", middleware.PublicAuthRateLimit("email"), handlers.ResendVerificationHandler)
 	// Password recovery (#5113-C1). /password/forgot answers identically for a
 	// known and an unknown address — it takes an address and nothing else, so a
 	// distinguishable answer would make it a bulk address-membership oracle.
