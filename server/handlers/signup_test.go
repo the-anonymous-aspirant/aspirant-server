@@ -474,6 +474,9 @@ func TestLiveIdentifiersAreStillUniqueInTheDatabase(t *testing.T) {
 	}{
 		{"username held by a live account", "here", "other@example.com"},
 		{"email held by a live account", "other", "here@example.com"},
+		// #11418: the index is on LOWER(email), so a case variant is the same
+		// address and is refused too.
+		{"email held by a live account, in another case", "other", "HERE@Example.COM"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dup := data_models.User{
@@ -945,5 +948,55 @@ func dropColumn(t *testing.T, db *gorm.DB, table, column string) {
 		if err := db.Exec(stmt).Error; err != nil {
 			t.Fatalf("rebuilding %s (%s): %v", table, stmt, err)
 		}
+	}
+}
+
+// --- an address is one address whatever its case (system_3 #11418) ---------
+
+// Sign-up with a case variant of a live account's address is the same as an
+// exact collision: nothing is created, the answer is the ordinary accepted
+// one, and the notice goes to the address as the OWNER stored it, never to
+// the variant the requester typed.
+func TestSignupWithACaseVariantOfALiveAddressCreatesNothing(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "mara", "Mara@Example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+	h.mail.sent = nil
+	before := h.userCount(t)
+
+	w := h.signup(t, "someone", "mara@example.com", goodPassword)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the ordinary accepted answer", w.Code)
+	}
+	if got := h.userCount(t); got != before {
+		t.Errorf("users = %d after a case-variant sign-up, want %d (nothing created)", got, before)
+	}
+	if got := len(h.mail.to("mara@example.com")); got != 0 {
+		t.Errorf("sent %d messages to the typed variant; want 0", got)
+	}
+	if got := len(h.mail.to("Mara@Example.com")); got != 1 {
+		t.Errorf("sent %d notices to the stored address; want 1", got)
+	}
+}
+
+// The case-folded index is still partial: a soft-deleted account's address is
+// released under any case, so its real owner can register it again.
+func TestASoftDeletedAddressIsReleasedUnderAnyCase(t *testing.T) {
+	h := newSignupHarness(t)
+
+	if w := h.signup(t, "gone", "Gone@Example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("seed signup failed: %d", w.Code)
+	}
+	if err := h.db.Delete(h.user(t, "gone")).Error; err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	if w := h.signup(t, "back", "gone@example.com", goodPassword); w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if got := h.user(t, "back").Email; got != "gone@example.com" {
+		t.Errorf("stored email = %q, want the address as typed", got)
 	}
 }

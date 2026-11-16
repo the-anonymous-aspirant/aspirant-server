@@ -67,7 +67,7 @@ func ForgotPasswordHandler(c *gin.Context) {
 	}
 
 	var user data_models.User
-	err := db.Where("email = ?", address).First(&user).Error
+	err := db.Where(data_models.EmailMatches, address).First(&user).Error
 	if err != nil {
 		if !gorm.IsRecordNotFoundError(err) {
 			log.Printf("ERROR: forgot-password lookup: %v", err)

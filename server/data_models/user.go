@@ -362,10 +362,23 @@ func backfillEmailVerified(db *gorm.DB) error {
 // SQLite implements a column-level UNIQUE as an undroppable
 // sqlite_autoindex_users_N, and needs no drop, because a fresh table built
 // from the tag-less struct above never has one.
+//
+// Email uniqueness ignores case (system_3 #11418). An address's case does not
+// pick a different mailbox in practice, so `Mara@x.se` and `mara@x.se` are one
+// person, and two live accounts holding them would share an inbox while only
+// one of them could be found by a case-folding lookup. The index is on
+// LOWER(email), and every lookup by address compares `LOWER(email) = LOWER(?)`
+// so Postgres folds both sides by the same rule (see EmailMatches). Stored
+// addresses are left as typed. The old case-sensitive idx_users_email_live is
+// dropped AFTER the new one exists, the same create-first order as above:
+// case-insensitive uniqueness implies the case-sensitive kind, so the table is
+// never unprotected, and if the create fails (a case-duplicate pair of live
+// rows) the old index is still in force and the error is returned.
 func EnsureUserIdentifierUniqueIndexes(db *gorm.DB) error {
 	for _, stmt := range []string{
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_live ON users (username) WHERE deleted_at IS NULL",
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live ON users (email) WHERE deleted_at IS NULL",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci_live ON users (LOWER(email)) WHERE deleted_at IS NULL",
+		"DROP INDEX IF EXISTS idx_users_email_live",
 	} {
 		if err := db.Exec(stmt).Error; err != nil {
 			return err
@@ -383,6 +396,12 @@ func EnsureUserIdentifierUniqueIndexes(db *gorm.DB) error {
 	}
 	return nil
 }
+
+// EmailMatches is the WHERE clause that finds a user by address regardless of
+// case, matching idx_users_email_ci_live. Pass the address as typed; LOWER is
+// applied on both sides in SQL so the comparison and the index fold case by
+// the same rule (system_3 #11418).
+const EmailMatches = "LOWER(email) = LOWER(?)"
 
 // CreateUser creates a new user
 func (u *User) CreateUser(db *gorm.DB) error {
