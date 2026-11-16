@@ -92,6 +92,11 @@ func newSignupHarness(t *testing.T) *signupHarness {
 		&data_models.UserFormValues{},
 		&data_models.UserDisplayName{}, &data_models.UserToken{},
 		&data_models.BootstrapRecord{},
+	)
+	// ...and, since #11384, everything else it deletes or unlinks in the same
+	// transaction. A missing table there is an error that rolls the delete back.
+	db.AutoMigrate(userContentModels()...)
+	db.AutoMigrate(
 		// SignupHandler reads the #5289 kill-switch before it touches the users
 		// table, and a missing table is a read ERROR, not an absent row — so
 		// without this every case in this file 500s. That is the flag failing
