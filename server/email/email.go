@@ -34,6 +34,7 @@
 package email
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -64,6 +65,16 @@ const (
 // here, 25 is for server-to-server relay and every candidate provider
 // authenticates on the submission port.
 const defaultPort = "587"
+
+// A relay that stops answering must not hold a send forever. smtp.SendMail has
+// no timeout at all; since every public auth mail is now sent from a goroutine
+// (deliverLater), a hung relay would leak one goroutine per send rather than
+// hold one request (security c70167 on system_3 #11391, landed by #11393).
+// Variables, not constants, so a test can shorten them.
+var (
+	dialTimeout = 10 * time.Second
+	sendTimeout = 60 * time.Second
+)
 
 // Sender delivers one message. Implementations must treat every argument as
 // untrusted: `to` and `subject` reach this package from unauthenticated
@@ -284,7 +295,7 @@ func (s SMTPSender) Send(to, subject, body string) error {
 
 	send := s.sendMail
 	if send == nil {
-		send = smtp.SendMail
+		send = sendMailWithDeadline
 	}
 
 	port := s.Port
@@ -300,6 +311,69 @@ func (s SMTPSender) Send(to, subject, body string) error {
 		return fmt.Errorf("email: send to %s failed: %w", to, err)
 	}
 	return nil
+}
+
+// sendMailWithDeadline is smtp.SendMail with a dial timeout and a deadline on
+// the whole session. It keeps what SendMail enforces: STARTTLS whenever the
+// server offers it (with the host verified), PlainAuth's own refusal to send
+// credentials over a connection that is not TLS (other than localhost), AUTH
+// required when credentials are given, and no CR or LF in the envelope.
+func sendMailWithDeadline(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	for _, v := range append([]string{from}, to...) {
+		if strings.ContainsAny(v, "\r\n") {
+			return errors.New("smtp: A line must not contain CR or LF")
+		}
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+	if err != nil {
+		return err
+	}
+	if err := conn.SetDeadline(time.Now().Add(sendTimeout)); err != nil {
+		conn.Close()
+		return err
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	defer c.Close()
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+			return err
+		}
+	}
+	if a != nil {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return errors.New("smtp: server doesn't support AUTH")
+		}
+		if err := c.Auth(a); err != nil {
+			return err
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
 
 // SenderFromEnv builds the Sender the process should use.

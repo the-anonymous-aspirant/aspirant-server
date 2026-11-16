@@ -35,7 +35,7 @@ func seedVerifiedUser(t *testing.T, h *signupHarness, username, address, passwor
 	if w := h.post(t, "/verify-email", map[string]string{"token": token}); w.Code != http.StatusOK {
 		t.Fatalf("verify: %d %s", w.Code, w.Body.String())
 	}
-	h.mail.sent = nil
+	h.mail.reset()
 	return h.user(t, username)
 }
 
@@ -265,7 +265,7 @@ func TestResetDoesNotVerifyAnUnverifiedAccount(t *testing.T) {
 	if w := h.signup(t, "bob", "bob@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("signup: %d", w.Code)
 	}
-	h.mail.sent = nil
+	h.mail.reset()
 
 	if w := h.forgot(t, "bob@example.com"); w.Code != http.StatusOK {
 		t.Fatalf("forgot: %d", w.Code)
