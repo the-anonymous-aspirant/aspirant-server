@@ -1000,7 +1000,7 @@ func TestSignupWithACaseVariantOfALiveAddressCreatesNothing(t *testing.T) {
 	if w := h.signup(t, "mara", "Mara@Example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("seed signup failed: %d", w.Code)
 	}
-	h.mail.sent = nil
+	h.mail.reset()
 	before := h.userCount(t)
 
 	w := h.signup(t, "someone", "mara@example.com", goodPassword)
