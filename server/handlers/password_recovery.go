@@ -78,20 +78,26 @@ func ForgotPasswordHandler(c *gin.Context) {
 		return
 	}
 
-	token, issueErr := data_models.IssueUserToken(db, user.ID, data_models.PurposePasswordReset)
-	if issueErr != nil {
-		log.Printf("ERROR: issuing reset token for user %d: %v", user.ID, issueErr)
-		forgotAccepted(c)
-		return
-	}
-
-	// Issuing retired this user's earlier unconsumed reset tokens — see the
-	// policy table in data_models/user_token.go. That matters most here: asking
-	// for a reset is what someone does when they think they have lost control
-	// of the account, so an older link, possibly the one an attacker holds,
-	// must stop working the moment a new one is requested.
-	sendOrLog(c, user.Email, "Reset your password", resetMailBody(user.Username, token), "password-reset")
+	// Answer first; mint and send off the request path (system_3 #11393). The
+	// token write and the SMTP round trip happen only for a registered
+	// address, so done inline they made it answer more slowly than an unknown
+	// one.
+	sender := mailerFrom(c)
 	forgotAccepted(c)
+	userID, username, to := user.ID, user.Username, user.Email
+	deliverLater(sender, "password-reset", func() (string, string, string, bool) {
+		// Issuing retires this user's earlier unconsumed reset tokens — see the
+		// policy table in data_models/user_token.go. That matters most here:
+		// asking for a reset is what someone does when they think they have
+		// lost control of the account, so an older link, possibly the one an
+		// attacker holds, must stop working the moment a new one is requested.
+		token, err := data_models.IssueUserToken(db, userID, data_models.PurposePasswordReset)
+		if err != nil {
+			log.Printf("ERROR: issuing reset token for user %d: %v", userID, err)
+			return "", "", "", false
+		}
+		return to, "Reset your password", resetMailBody(username, token), true
+	})
 }
 
 func forgotAccepted(c *gin.Context) {

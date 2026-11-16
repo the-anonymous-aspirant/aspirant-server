@@ -112,8 +112,8 @@ func TestSignupClosedRefusesAndCreatesNothing(t *testing.T) {
 	if got := h.userCount(t); got != 0 {
 		t.Fatalf("expected no account to be created, user count = %d", got)
 	}
-	if len(h.mail.sent) != 0 {
-		t.Fatalf("expected no mail, sent %d", len(h.mail.sent))
+	if h.mail.count() != 0 {
+		t.Fatalf("expected no mail, sent %d", h.mail.count())
 	}
 
 	if !bytes.Contains(h.status(t).Body.Bytes(), []byte(`"signup_enabled":false`)) {
@@ -354,8 +354,8 @@ func TestSignupRefusesWhenTheFlagIsOpenButMailCannotBeDelivered(t *testing.T) {
 	if got := h.userCount(t); got != 0 {
 		t.Fatalf("expected no account to be created, user count = %d", got)
 	}
-	if len(h.mail.sent) != 0 {
-		t.Fatalf("expected no mail, sent %d", len(h.mail.sent))
+	if h.mail.count() != 0 {
+		t.Fatalf("expected no mail, sent %d", h.mail.count())
 	}
 }
 

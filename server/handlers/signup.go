@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Public self-service sign-up and email verification (system_3 epic #5113,
@@ -128,23 +129,6 @@ func mailerFrom(c *gin.Context) email.Sender {
 	return sender
 }
 
-// sendOrLog delivers a message, logging any failure.
-//
-// The error is deliberately swallowed at the call sites. Whether the mail left
-// the building is not something the caller of a public sign-up endpoint gets to
-// learn: "we could not send to that address" and "we did send to that address"
-// are different answers to the question of whether the address is registered.
-func sendOrLog(c *gin.Context, to, subject, body, context string) {
-	sender := mailerFrom(c)
-	if sender == nil {
-		log.Printf("ERROR: no mail sender in context; %s mail to %s was not sent", context, to)
-		return
-	}
-	if err := sender.Send(to, subject, body); err != nil {
-		log.Printf("ERROR: sending %s mail: %v", context, err)
-	}
-}
-
 // backgroundMail counts the sends deliverLater has started and not finished.
 // Tests wait on it before reading what was sent or closing the database;
 // nothing in production waits on it.
@@ -153,8 +137,8 @@ var backgroundMail sync.WaitGroup
 // deliverLater composes and sends one message after the handler has answered
 // (security c70050 on system_3 #11143).
 //
-// sendOrLog sends inline, so a request that mails answers only after the SMTP
-// round trip, and one that does not answers at once. On an endpoint that
+// An inline send makes a request that mails answer only after the SMTP round
+// trip, and one that does not answer at once. On an endpoint that
 // mails only some addresses, that difference in time says which ones. Here the
 // work runs in a goroutine the handler does not wait for, so a slow or
 // blocking relay costs the goroutine and never the request.
@@ -169,11 +153,24 @@ var backgroundMail sync.WaitGroup
 //   - Nothing here logs an address, typed or stored: the kind of mail and the
 //     outcome only. A relay's error can quote the recipient, so it is redacted.
 //
-// system_3 #11393 moves the /password/forgot and /signup sends onto this.
+// Every mail the public auth endpoints send goes through here: /password/forgot,
+// /signup's verification mail and duplicate-account notice (system_3 #11393),
+// and /verify-email/resend. Whether a mail left the building is never part of
+// any answer, so a send failure is logged and swallowed.
+//
+// A panic in compose or the send is recovered and logged with the kind only.
+// Off the request path, gin's recovery middleware no longer catches it, and an
+// unrecovered panic in a goroutine ends the whole server (security c70167 on
+// #11391). The panic value is not logged: it can quote an address.
 func deliverLater(sender email.Sender, kind string, compose func() (to, subject, body string, ok bool)) {
 	backgroundMail.Add(1)
 	go func() {
 		defer backgroundMail.Done()
+		defer func() {
+			if recover() != nil {
+				log.Printf("ERROR: %s mail: the send panicked and was recovered; nothing was sent", kind)
+			}
+		}()
 		to, subject, body, ok := compose()
 		if !ok {
 			return
@@ -295,8 +292,15 @@ func SignupHandler(c *gin.Context) {
 		// request — they are equal in the email-collision case, but in the
 		// username-collision case the requester supplied a different address
 		// and mailing them would confirm that the username is taken.
-		onExistingAccountSignupAttempt(c, existing, username)
+		//
+		// A fresh sign-up spends a bcrypt hash below; this path spends one
+		// too, so a taken address does not answer faster than a free one
+		// (system_3 #11393). Moving the mail off the request path alone would
+		// have flipped the old tell, not removed it.
+		equalizeSignupCost(input.Password)
+		sender := mailerFrom(c)
 		signupAccepted(c)
+		onExistingAccountSignupAttempt(sender, existing, username)
 		return
 	case !gorm.IsRecordNotFoundError(err):
 		log.Printf("ERROR: signup existence check: %v", err)
@@ -336,18 +340,28 @@ func SignupHandler(c *gin.Context) {
 		return
 	}
 
-	token, err := data_models.IssueUserToken(db, user.ID, data_models.PurposeVerifyEmail)
-	if err != nil {
-		// The account exists but has no link. Requesting another verification
-		// mail is the recovery, and the account cannot log in meanwhile, so
-		// nothing is exposed by leaving it.
-		log.Printf("ERROR: signup issuing verification token for user %d: %v", user.ID, err)
-		signupAccepted(c)
-		return
-	}
-
-	sendOrLog(c, address, "Confirm your address", verificationMailBody(username, token), "verification")
+	// Answer first, then mint and send off the request path (system_3 #11393):
+	// the token write and the SMTP round trip happen only on this outcome.
+	sender := mailerFrom(c)
 	signupAccepted(c)
+	userID := user.ID
+	deliverLater(sender, "verification", func() (string, string, string, bool) {
+		token, err := data_models.IssueUserToken(db, userID, data_models.PurposeVerifyEmail)
+		if err != nil {
+			// The account exists but has no link. Requesting another
+			// verification mail is the recovery, and the account cannot log
+			// in meanwhile, so nothing is exposed by leaving it.
+			log.Printf("ERROR: signup issuing verification token for user %d: %v", userID, err)
+			return "", "", "", false
+		}
+		return address, "Confirm your address", verificationMailBody(username, token), true
+	})
+}
+
+// equalizeSignupCost spends what a fresh sign-up spends hashing a password,
+// and discards it. A variable so a test can see it was called.
+var equalizeSignupCost = func(password string) {
+	_, _ = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 }
 
 // signupAccepted writes the single response every database-dependent path of
@@ -362,7 +376,7 @@ func signupAccepted(c *gin.Context) {
 // This is not only courtesy. Without it the endpoint would be a silent oracle
 // for the person probing it and invisible to the person being probed; with it,
 // the only party who learns anything is the one who already has the account.
-func onExistingAccountSignupAttempt(c *gin.Context, existing data_models.User, attemptedUsername string) {
+func onExistingAccountSignupAttempt(sender email.Sender, existing data_models.User, attemptedUsername string) {
 	body := fmt.Sprintf(`Hello,
 
 Someone just tried to create an account on %s using details that match your
@@ -376,7 +390,10 @@ nothing about your account has changed.
 
 — %s`, publicBaseURL(), attemptedUsername, publicBaseURL())
 
-	sendOrLog(c, existing.Email, "Someone tried to sign up with your details", body, "duplicate-signup notice")
+	to := existing.Email
+	deliverLater(sender, "duplicate-signup notice", func() (string, string, string, bool) {
+		return to, "Someone tried to sign up with your details", body, true
+	})
 }
 
 // onSignupInsertCollision handles the insert losing to a unique index that the
@@ -418,7 +435,7 @@ func onSignupInsertCollision(c *gin.Context, db *gorm.DB, username, address stri
 
 	log.Printf("signup: create for %q lost a race to a concurrent insert; notifying the account owner: %v",
 		username, insertErr)
-	onExistingAccountSignupAttempt(c, colliding, username)
+	onExistingAccountSignupAttempt(mailerFrom(c), colliding, username)
 }
 
 // findLiveCollidingUser reads back the live row whose unique index the insert
