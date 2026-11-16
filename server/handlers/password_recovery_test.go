@@ -342,3 +342,27 @@ func TestResetClearsTheLoginRateLimitBucket(t *testing.T) {
 		t.Errorf("login after recovery = %d, want 200 — the reset did not release the lockout", code)
 	}
 }
+
+// --- the address's case (system_3 #11418) -----------------------------------
+
+// An account is found by its address in any case. The reset link goes to the
+// address as stored, not to the variant typed into the form.
+func TestForgotFindsTheAccountByACaseVariant(t *testing.T) {
+	h := newRecoveryHarness(t)
+	loadSignupTestJWTSecret(t)
+	seedVerifiedUser(t, h, "mara", "Mara@Example.com", goodPassword)
+
+	if w := h.forgot(t, "mara@EXAMPLE.com"); w.Code != http.StatusOK {
+		t.Fatalf("forgot: %d %s", w.Code, w.Body.String())
+	}
+	if got := len(h.mail.to("mara@EXAMPLE.com")); got != 0 {
+		t.Errorf("sent %d messages to the typed variant; want 0", got)
+	}
+	token := h.tokenFromMail(t, "Mara@Example.com")
+	if w := h.reset(t, token, newPassword); w.Code != http.StatusOK {
+		t.Fatalf("reset: %d %s", w.Code, w.Body.String())
+	}
+	if w := h.login(t, "mara", newPassword); w.Code != http.StatusOK {
+		t.Errorf("the new password does not authenticate: %d", w.Code)
+	}
+}
