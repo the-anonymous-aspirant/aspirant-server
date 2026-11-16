@@ -400,6 +400,11 @@ func (u *User) UpdateUser(db *gorm.DB) error {
 // (system_3 #11190, §3.154 "deleting the user removes their records"). A
 // foreign key with ON DELETE CASCADE would never fire on a soft delete, so the
 // removal has to be explicit here.
+//
+// The same transaction also removes the rest of the user's personal content
+// and unlinks them from shared game rooms (system_3 #11384, security c70010 on
+// #11380, groups 1 and 2) — see deleteUserContent. Any step's error rolls the
+// whole delete back, so a user is never half-deleted.
 func (u *User) DeleteUser(db *gorm.DB) error {
 	tx := db.Begin()
 	if tx.Error != nil {
@@ -409,11 +414,83 @@ func (u *User) DeleteUser(db *gorm.DB) error {
 		tx.Rollback()
 		return err
 	}
+	if err := deleteUserContent(tx, u.ID); err != nil {
+		tx.Rollback()
+		return err
+	}
 	if err := tx.Delete(u).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
 	return tx.Commit().Error
+}
+
+// deleteUserContent removes what belongs to the user alone and unlinks them
+// from what they share with other players (system_3 #11384).
+//
+// Hard-deleted, Unscoped() so a model that soft-deletes itself loses the row
+// rather than marking it: the scratchpad; goal trees with their nodes, edges
+// and every comment on those nodes (whoever wrote it — the comments belong to
+// the tree); the user's own comments on other people's trees; display names;
+// tokens; the constellation profile and player goals; Easter-hunt clicks and
+// scores; game scores.
+//
+// Unlinked, because the rows carry other players' history: the user's room
+// memberships are removed (RoomStateMember is built from them at read time,
+// so it has no rows of its own), and a room they created keeps existing with
+// CreatorUserID 0, the value IsRoomCreator already reads as "no creator
+// recorded" — its transparency toggles freeze as for a pre-#4835 room.
+//
+// Not here, by decision: the invoicing book and the account row's username
+// and email wait on the operator (c70010).
+func deleteUserContent(tx *gorm.DB, userID uint) error {
+	var treeIDs []uint
+	if err := tx.Unscoped().Model(&GoalTree{}).Where("user_id = ?", userID).Pluck("id", &treeIDs).Error; err != nil {
+		return err
+	}
+	if len(treeIDs) > 0 {
+		var nodeIDs []uint
+		if err := tx.Unscoped().Model(&GoalNode{}).Where("tree_id IN (?)", treeIDs).Pluck("id", &nodeIDs).Error; err != nil {
+			return err
+		}
+		if len(nodeIDs) > 0 {
+			if err := tx.Unscoped().Where("node_id IN (?)", nodeIDs).Delete(&GoalComment{}).Error; err != nil {
+				return err
+			}
+		}
+		for _, step := range []struct {
+			model interface{}
+			where string
+		}{
+			{&GoalEdge{}, "tree_id IN (?)"},
+			{&GoalNode{}, "tree_id IN (?)"},
+			{&GoalTree{}, "id IN (?)"},
+		} {
+			if err := tx.Unscoped().Where(step.where, treeIDs).Delete(step.model).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, model := range []interface{}{
+		&GoalComment{}, // the user's own comments on other people's trees
+		&Scratchpad{},
+		&UserDisplayName{},
+		&UserToken{},
+		&ConstellationProfile{},
+		&PlayerGoal{},
+		&EasterHuntClick{},
+		&EasterHuntScore{},
+		&GameScore{},
+		&RoomMember{},
+	} {
+		if err := tx.Unscoped().Where("user_id = ?", userID).Delete(model).Error; err != nil {
+			return err
+		}
+	}
+
+	return tx.Unscoped().Model(&Room{}).Where("creator_user_id = ?", userID).
+		UpdateColumn("creator_user_id", 0).Error
 }
 
 func GetUserById(db *gorm.DB, id string) (*User, error) {

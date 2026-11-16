@@ -28,6 +28,8 @@ func setupFormValuesDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 	db.AutoMigrate(&data_models.UserFormValues{}, &data_models.Role{}, &data_models.User{})
+	// User.DeleteUser removes the rest of the user's content too (#11384).
+	db.AutoMigrate(userContentModels()...)
 	t.Cleanup(func() { db.Close() })
 	return db
 }
