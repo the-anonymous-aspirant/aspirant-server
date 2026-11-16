@@ -3,9 +3,11 @@ package email
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- SenderFromEnv selection ------------------------------------------------
@@ -627,3 +629,49 @@ type senderFunc func(to, subject, body string) error
 func (f senderFunc) Send(to, subject, body string) error { return f(to, subject, body) }
 
 var _ Sender = senderFunc(nil)
+
+// A relay that accepts the connection and then says nothing must not hold the
+// send forever: every public auth mail is sent from a goroutine, so without a
+// deadline a hung relay leaks one goroutine per send (security c70167 on
+// system_3 #11391, landed by #11393).
+func TestSMTPSenderGivesUpOnARelayThatNeverAnswers(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	hold := make(chan struct{})
+	defer close(hold)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { <-hold; conn.Close() }() // accept, then never speak
+		}
+	}()
+
+	prevDial, prevSend := dialTimeout, sendTimeout
+	dialTimeout, sendTimeout = time.Second, 300*time.Millisecond
+	t.Cleanup(func() { dialTimeout, sendTimeout = prevDial, prevSend })
+
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	s := SMTPSender{Host: "127.0.0.1", Port: port, From: "noreply@example.test", Username: "u", Password: "p"}
+	start := time.Now()
+	err = s.Send("someone@example.test", "subject", "body")
+	if err == nil {
+		t.Fatal("a relay that never answered produced a successful send")
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("the send waited %s on a silent relay; the session deadline is %s", took, sendTimeout)
+	}
+}
+
+// Header injection through the envelope is refused before any connection.
+func TestSendMailWithDeadlineRefusesCRLFInTheEnvelope(t *testing.T) {
+	err := sendMailWithDeadline("127.0.0.1:1", nil, "a@example.test\r\nRCPT TO:<x@example.test>", []string{"b@example.test"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "CR or LF") {
+		t.Fatalf("err = %v, want a CR/LF refusal", err)
+	}
+}

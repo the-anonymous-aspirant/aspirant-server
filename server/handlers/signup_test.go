@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"aspirant-online/server/data_models"
 	"aspirant-online/server/email"
@@ -42,7 +43,38 @@ func (s *captureSender) Send(to, subject, body string) error {
 	return s.err
 }
 
+// count, reset and to all wait for the mails deliverLater has started:
+// /signup and /password/forgot send off the request path (system_3 #11393),
+// so a read or a reset straight after the request would race the send.
+//
+// The wait is bounded. A test that holds a send on purpose (blockingSender)
+// reads while it is held, and an unbounded wait there never returns; after
+// the bound the read sees what has arrived, which is what that test checks.
+func settleBackgroundMail() {
+	done := make(chan struct{})
+	go func() { backgroundMail.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+}
+
+func (s *captureSender) count() int {
+	settleBackgroundMail()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sent)
+}
+
+func (s *captureSender) reset() {
+	settleBackgroundMail()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = nil
+}
+
 func (s *captureSender) to(addr string) []capturedMail {
+	settleBackgroundMail()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []capturedMail
@@ -319,7 +351,7 @@ func TestSignupNotifiesTheOwnerNotTheRequester(t *testing.T) {
 	if w := h.signup(t, "owner", "owner@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("seed signup failed: %d", w.Code)
 	}
-	h.mail.sent = nil
+	h.mail.reset()
 
 	if w := h.signup(t, "owner", "attacker@example.com", goodPassword); w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
@@ -387,7 +419,7 @@ func TestSignupWithASoftDeletedAccountsIdentifiers(t *testing.T) {
 		{"username released by a deleted account", "gone", "someone_new@example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h.mail.sent = nil
+			h.mail.reset()
 			before := h.userCount(t)
 
 			w := h.signup(t, tc.username, tc.address, goodPassword)
@@ -438,7 +470,7 @@ func TestSignupOverALiveAccountsIdentifiersStillCreatesNothing(t *testing.T) {
 	}
 
 	fresh := h.signup(t, "unrelated", "unrelated@example.com", goodPassword)
-	h.mail.sent = nil
+	h.mail.reset()
 	before := h.userCount(t)
 
 	w := h.signup(t, "someone_new", "here@example.com", goodPassword)
