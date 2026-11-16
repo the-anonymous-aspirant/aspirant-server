@@ -251,6 +251,21 @@ func UpdateUserHandler(c *gin.Context) {
 			RespondWithError(c, http.StatusBadRequest, "Invalid role")
 			return
 		}
+		// No one lowers their own access (system_3 #11176, security c68795 on
+		// #11004). On a cell with one admin, blocking or demoting yourself
+		// locks the only admin out of Admin, and the way back is the database.
+		// DeleteUserHandler already refuses your own account; this is the same
+		// rule for the tier. It is checked against the account's STORED role,
+		// and before anything is saved, so a refusal changes nothing and
+		// revokes no session. Same tier, a raise, other fields of your own
+		// account, and any change to another account are unaffected.
+		if callerID, ok := c.Get("user_id"); ok {
+			if id, isUint := callerID.(uint); isUint && id == user.ID && tierOf(role.RoleName) < tierOf(user.Role.RoleName) {
+				RespondWithError(c, http.StatusBadRequest,
+					"You cannot block your own account or lower its access. Another admin has to do it.")
+				return
+			}
+		}
 		user.RoleID = role.ID
 	}
 
