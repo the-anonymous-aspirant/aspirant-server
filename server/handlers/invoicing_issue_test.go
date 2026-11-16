@@ -35,6 +35,7 @@ func setupInvoiceRouter(db *gorm.DB, userID uint) *gin.Engine {
 	r := setupPaymentsRouter(db, userID)
 	r.GET("/invoicing/invoices", ListInvoicesHandler)
 	r.POST("/invoicing/invoices", CreateInvoiceDraftHandler)
+	r.POST("/invoicing/invoices/generate", GenerateInvoiceDraftsHandler)
 	r.GET("/invoicing/invoices/:id", GetInvoiceHandler)
 	r.PUT("/invoicing/invoices/:id", UpdateInvoiceDraftHandler)
 	r.DELETE("/invoicing/invoices/:id", DeleteInvoiceDraftHandler)
