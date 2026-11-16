@@ -33,7 +33,7 @@ type signupSettingInput struct {
 // be turned into an existence oracle because it takes no input.
 //
 // Deliberately NOT behind PublicAuthRateLimit. That limiter's per-IP buckets
-// are shared across /signup, /verify-email, /password/forgot and /password/reset
+// are shared across /signup, /verify-email, /verify-email/resend, /password/forgot and /password/reset
 // and are sized (10/min, 20/15min) against the ~5 requests one person's whole
 // sign-up-and-recover journey costs — see the sizing note in
 // middleware/public_auth_rate_limit.go, which was widened once already after a
