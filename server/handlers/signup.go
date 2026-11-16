@@ -219,7 +219,7 @@ func SignupHandler(c *gin.Context) {
 	// From here on every exit is signupAccepted: the answers below depend on
 	// what is in the users table, and that is exactly what must not be visible.
 	var existing data_models.User
-	err := db.Where("username = ? OR email = ?", username, address).First(&existing).Error
+	err := db.Where("username = ? OR "+data_models.EmailMatches, username, address).First(&existing).Error
 	switch {
 	case err == nil:
 		// Taken. Tell the person who actually owns the address that someone
@@ -317,7 +317,7 @@ nothing about your account has changed.
 // existence check did not see.
 //
 // Both the existence check and the unique indexes are now scoped to live rows
-// (idx_users_username_live / idx_users_email_live, #7009), so a soft-deleted
+// (idx_users_username_live / idx_users_email_ci_live, #7009, #11418), so a soft-deleted
 // account can no longer reject this insert at all — that sign-up now succeeds,
 // which is the point of the change. What is left is the genuine race the
 // original comment here described: a concurrent sign-up inserted a LIVE row
@@ -364,7 +364,7 @@ func onSignupInsertCollision(c *gin.Context, db *gorm.DB, username, address stri
 // notice.
 func findLiveCollidingUser(db *gorm.DB, username, address string) (user data_models.User, found bool) {
 	err := db.
-		Where("username = ? OR email = ?", username, address).
+		Where("username = ? OR "+data_models.EmailMatches, username, address).
 		First(&user).Error
 	if err != nil {
 		return data_models.User{}, false
