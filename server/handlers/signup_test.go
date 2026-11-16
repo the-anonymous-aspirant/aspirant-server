@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"aspirant-online/server/data_models"
@@ -22,6 +23,8 @@ import (
 // captureSender records what would have been mailed. It satisfies
 // email.Sender, so the handlers exercise the same seam they use in production.
 type captureSender struct {
+	// mu: deliverLater sends from a goroutine (system_3 #11143).
+	mu   sync.Mutex
 	sent []capturedMail
 	err  error
 }
@@ -33,11 +36,15 @@ type capturedMail struct {
 }
 
 func (s *captureSender) Send(to, subject, body string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sent = append(s.sent, capturedMail{to: to, subject: subject, body: body})
 	return s.err
 }
 
 func (s *captureSender) to(addr string) []capturedMail {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []capturedMail
 	for _, m := range s.sent {
 		if m.to == addr {
@@ -111,6 +118,10 @@ func newSignupHarness(t *testing.T) *signupHarness {
 		t.Fatalf("SeedRoles: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	// Registered after the close, so it runs before it (cleanups run last-in,
+	// first-out): a resend mints its token in a goroutine (#11143), and that
+	// write must not land on a closed database.
+	t.Cleanup(backgroundMail.Wait)
 
 	h := &signupHarness{db: db, mail: &captureSender{}}
 	r := gin.New()
@@ -118,6 +129,7 @@ func newSignupHarness(t *testing.T) *signupHarness {
 	r.Use(func(c *gin.Context) { c.Set("mailer", h.sender()); c.Next() })
 	r.POST("/signup", SignupHandler)
 	r.POST("/verify-email", VerifyEmailHandler)
+	r.POST("/verify-email/resend", ResendVerificationHandler)
 	r.POST("/login", LoginHandler)
 	h.router = r
 
