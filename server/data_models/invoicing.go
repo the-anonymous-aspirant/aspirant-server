@@ -99,11 +99,11 @@ type InvoicingClient struct {
 	Email       string `json:"email" gorm:"type:text;not null;default:''"`
 	PayPalEmail string `json:"paypal_email" gorm:"column:paypal_email;type:text;not null;default:''"`
 	// Notes are Flower's own notes on the client (system_3 #9962). They are
-	// hers alone: never on an invoice, its PDF, its frozen client snapshot or
+	// zirs alone: never on an invoice, its PDF, its frozen client snapshot or
 	// an export (see ForInvoice).
 	Notes string `json:"notes" gorm:"type:text;not null;default:''"`
 	// Phone and the profile links are how Flower reaches the client (system_3
-	// #9971). Like the notes they are hers, not the invoice's: ForInvoice
+	// #9971). Like the notes they are zirs, not the invoice's: ForInvoice
 	// leaves them out. Links are stored canonical or empty.
 	Phone        string    `json:"phone" gorm:"type:text;not null;default:''"`
 	InstagramURL string    `json:"instagram_url" gorm:"column:instagram_url;type:text;not null;default:''"`
@@ -114,8 +114,8 @@ type InvoicingClient struct {
 
 func (InvoicingClient) TableName() string { return "invoicing_clients" }
 
-// ForInvoice is the client as an invoice may carry it: everything but her
-// private notes and her ways of reaching the client (phone, Instagram,
+// ForInvoice is the client as an invoice may carry it: everything but zir
+// private notes and zir ways of reaching the client (phone, Instagram,
 // Telegram). The issue-time ClientSnapshot and the PDF are built from this,
 // so none of them reach a stored invoice or anything rendered from one.
 func (cl InvoicingClient) ForInvoice() InvoicingClient {

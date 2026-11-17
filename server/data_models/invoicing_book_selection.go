@@ -12,10 +12,10 @@ import (
 // operator c65429): one category per row stays the decision, and a selection
 // of categories says which rows count. The selection is stored on the server
 // for its owner, so the Book, its CSV, Transactions' "Not in the Book" flag
-// and her other devices all agree. She can save selections as named presets.
+// and zir other devices all agree. Ze can save selections as named presets.
 
 // BookPresetWorkOnly is the built-in preset's id. It is not a row: it is
-// BookWorkOnly(), so it can never be changed or deleted, and a category she
+// BookWorkOnly(), so it can never be changed or deleted, and a category ze
 // adds later counts under it.
 const BookPresetWorkOnly = "work_only"
 
@@ -102,7 +102,7 @@ type InvoicingBookSelection struct {
 	OwnerUserID uint `json:"-" gorm:"column:owner_user_id;not null;unique_index:idx_invoicing_book_selection_owner"`
 	BookCountingColumns
 	// Preset is what the selection was last set from: BookPresetWorkOnly, one
-	// of her presets' ids in decimal, or empty for none.
+	// of zir presets' ids in decimal, or empty for none.
 	Preset    string    `json:"-" gorm:"type:text;not null;default:''"`
 	UpdatedAt time.Time `json:"-"`
 }
@@ -134,7 +134,7 @@ func (p *InvoicingBookPreset) SetCounting(b BookCounting) { p.BookCountingColumn
 func (s *InvoicingBookSelection) SetCounting(b BookCounting) { s.BookCountingColumns = columnsFor(b) }
 
 // GetInvoicingBookSelection returns the owner's stored selection, or nil
-// when she has none (the Book then counts with Work only).
+// when ze has none (the Book then counts with Work only).
 func GetInvoicingBookSelection(db *gorm.DB, owner uint) (*InvoicingBookSelection, error) {
 	var s InvoicingBookSelection
 	err := db.Where("owner_user_id = ?", owner).First(&s).Error

@@ -481,11 +481,11 @@ func TestN26ConfirmValidation(t *testing.T) {
 	}
 }
 
-// --- system_3 #9881: a credit whose payer is PayPal is her own withdrawal ---
+// --- system_3 #9881: a credit whose payer is PayPal is zir own withdrawal ---
 
 func TestN26PayPalSender(t *testing.T) {
 	for name, want := range map[string]bool{
-		"PAYPAL":                              true, // her real confirmations' sender line
+		"PAYPAL":                              true, // the real confirmations' sender line
 		"PayPal Europe S.a.r.l. et Cie S.C.A": true, // the company name a statement prints
 		"paypal":                              true,
 		"Mara Esempio":                        false,
@@ -534,7 +534,7 @@ func TestN26DropPayPalTransfers(t *testing.T) {
 }
 
 // Through the real pipeline: one ordinary confirmation and one whose sender
-// is PAYPAL, as in her files. The ordinary one is offered; the PayPal one is
+// is PAYPAL, as in the real files. The ordinary one is offered; the PayPal one is
 // counted under its file and offered nowhere.
 func TestN26ImportPipelineLeavesOutPayPalTransfers(t *testing.T) {
 	requirePdftotext(t)
@@ -796,7 +796,7 @@ func TestN26FlagExpenseCandidates(t *testing.T) {
 }
 
 // Confirm stores the owner's chosen outgoing rows as imported expenses, once,
-// in her own book, and never as payments.
+// in zir own book, and never as payments.
 func TestN26ExpensesConfirm(t *testing.T) {
 	db := setupN26ExpensesDB(t)
 	r := setupN26ExpensesRouter(db, 7)
@@ -844,7 +844,7 @@ func TestN26ExpensesConfirm(t *testing.T) {
 		t.Fatalf("re-flag: %v %+v", err, cands[0])
 	}
 
-	// Another owner confirming the same row stores it in her own book.
+	// Another owner confirming the same row stores it in their own book.
 	r8 := setupN26ExpensesRouter(db, 8)
 	w = confirmN26Expenses(t, r8, asExpenseConfirmRows(cands, ""))
 	json.Unmarshal(w.Body.Bytes(), &cresp)

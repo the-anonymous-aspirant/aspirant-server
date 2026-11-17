@@ -14,7 +14,7 @@ const ExpenseCategoryOther = "other"
 // DefaultExpenseCategories are seeded into a book the first time its owner
 // touches expense categories (system_3 #10414-A/#10424, operator-confirmed
 // list, c63803 on #9656: "That list is fine"). Unlike PaymentCategories,
-// this is not a closed vocabulary: the owner can add her own on top of it
+// this is not a closed vocabulary: the owner can add zir own on top of it
 // (#10424), so the table, not a Go const list, is the source of truth after
 // seeding.
 var DefaultExpenseCategories = []string{
@@ -24,7 +24,7 @@ var DefaultExpenseCategories = []string{
 }
 
 // InvoicingExpenseCategory is one expense category in the owner's book: one
-// of the ten seeded starter types, or one she added herself on top (#10424).
+// of the ten seeded starter types, or one ze added zirself on top (#10424).
 // CountsAs is the report's Anlage EKS line (design_agent, report 886 §5, c63823
 // on #10424): a starter category counts as itself; a user-added one must name
 // one of the ten starter types, so every category the report sums resolves to
@@ -39,7 +39,7 @@ type InvoicingExpenseCategory struct {
 
 func (InvoicingExpenseCategory) TableName() string { return "invoicing_expense_categories" }
 
-// ExpenseCategoryPrivate is the built-in category for an expense she records
+// ExpenseCategoryPrivate is the built-in category for an expense ze records
 // but never counts (system_3 #10555-A3, design §3.143 Decision 8). Every book
 // has it; it is listed last, cannot be created, renamed or deleted, and no
 // Book selection may include it. Its counts_as is itself, a value outside the
@@ -65,9 +65,9 @@ func IsStarterExpenseCategory(name string) bool {
 }
 
 // EnsureDefaultExpenseCategories seeds the owner's book with
-// DefaultExpenseCategories, each counting as itself, if she has no
+// DefaultExpenseCategories, each counting as itself, if ze has no
 // categories yet. Idempotent: a book that already has any category rows
-// (seeded or her own) is left alone.
+// (seeded or zir own) is left alone.
 func EnsureDefaultExpenseCategories(db *gorm.DB, owner uint) error {
 	var n int
 	if err := db.Model(&InvoicingExpenseCategory{}).Where("owner_user_id = ?", owner).Count(&n).Error; err != nil {
@@ -97,7 +97,7 @@ func ensurePrivateExpenseCategory(db *gorm.DB, owner uint) error {
 }
 
 // ListInvoicingExpenseCategories returns the owner's categories, seeding the
-// defaults first if she has none, oldest (so seeded order) first, with
+// defaults first if ze has none, oldest (so seeded order) first, with
 // Private always last whatever its id (§3.143 Decision 8).
 func ListInvoicingExpenseCategories(db *gorm.DB, owner uint) ([]InvoicingExpenseCategory, error) {
 	if err := EnsureDefaultExpenseCategories(db, owner); err != nil {
@@ -123,7 +123,7 @@ func ListInvoicingExpenseCategories(db *gorm.DB, owner uint) ([]InvoicingExpense
 }
 
 // IsExpenseCategoryForOwner reports whether name is one of the owner's
-// categories, seeding the defaults first if she has none.
+// categories, seeding the defaults first if ze has none.
 func IsExpenseCategoryForOwner(db *gorm.DB, owner uint, name string) (bool, error) {
 	if err := EnsureDefaultExpenseCategories(db, owner); err != nil {
 		return false, err
@@ -158,13 +158,13 @@ type InvoicingExpense struct {
 	ClientID      *uint     `json:"client_id"`
 	Entry         string    `json:"entry" gorm:"type:text;not null;default:'manual'"`
 	Reference     string    `json:"reference" gorm:"type:text;not null;default:''"`
-	// Payee is who a hand-entered expense was paid to, if she says
+	// Payee is who a hand-entered expense was paid to, if ze says
 	// (system_3 #10555-A1, design §3.143 Decision 3). An import keeps its
 	// payee in Reference, as it always has.
 	Payee string `json:"payee" gorm:"type:text;not null;default:''"`
 	// RemovedAt is when the owner removed the expense (system_3 #10555-A2,
 	// design §3.143 Decision 6): it is kept, but out of the list, the Book and
-	// its CSV until she restores it. Never named deleted_at: gorm v1 reads
+	// its CSV until ze restores it. Never named deleted_at: gorm v1 reads
 	// that column as a soft-delete marker and hides the row from every query,
 	// the removed view included.
 	RemovedAt *time.Time `json:"removed_at" gorm:"column:removed_at"`
