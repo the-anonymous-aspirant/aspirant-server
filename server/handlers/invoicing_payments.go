@@ -361,7 +361,7 @@ func paypalExpenseCandidates(rows []paypalExpenseRow) []paypalExpenseCandidate {
 
 // flagPayPalExpenseCandidates marks a candidate already stored as a PayPal
 // expense under its transaction id, or colliding on date and amount with any
-// of the owner's expenses (one she entered by hand, typically).
+// of the owner's expenses (one ze entered by hand, typically).
 func flagPayPalExpenseCandidates(db *gorm.DB, owner uint, cands []paypalExpenseCandidate) error {
 	for i := range cands {
 		c := &cands[i]
@@ -401,7 +401,7 @@ const maxPayPalExpenseConfirmRows = 500
 var paypalTransactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 // paypalExpenseConfirmRow is one outgoing row the owner confirmed: the
-// candidate's fields plus the category she picked (empty means "other").
+// candidate's fields plus the category ze picked (empty means "other").
 type paypalExpenseConfirmRow struct {
 	TransactionID string `json:"transaction_id"`
 	PaidOn        string `json:"paid_on"`
@@ -422,7 +422,7 @@ type paypalExpenseConfirmSummary struct {
 // confirmed as work expenses (system_3 #10414-B2): POST
 // /invoicing/expenses/import-paypal/confirm with {rows: [...]}. Each becomes
 // an InvoicingExpense with source "paypal", entry "import", the payee in
-// Reference and the category she picked (one of her own, default "other").
+// Reference and the category ze picked (one of zir own, default "other").
 // Rows already stored under their (source, transaction id) count as
 // duplicates. An invalid row fails the whole request, because the client
 // only posts back rows the import offered.

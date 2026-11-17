@@ -260,7 +260,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 	inv.InvoiceNumber = &invoiceNumber
 	inv.IssueDate = &issueDate
 	inv.ProfileSnapshot = auditDetails(profile)
-	// Frozen without her private notes (system_3 #9962) or her ways of
+	// Frozen without zir private notes (system_3 #9962) or zir ways of
 	// reaching the client (#9971); the PDF below renders from the same value.
 	frozenClient := client.ForInvoice()
 	inv.ClientSnapshot = auditDetails(frozenClient)

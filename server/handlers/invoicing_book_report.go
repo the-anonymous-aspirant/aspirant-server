@@ -21,7 +21,7 @@ import (
 // (ExportClientsCSVHandler's own precedent): a bookkeeping report has no
 // invoice-numbering integrity to check.
 //
-// It counts the same rows as the Book, under her current selection (system_3
+// It counts the same rows as the Book, under zir current selection (system_3
 // #10555-B2, design §3.143 Decision 7, operator c65431): an incoming payment
 // counts when its category is in the selection's money in, an expense when
 // its category is in its money out, and Private never. Removed rows never
@@ -146,9 +146,9 @@ func bookCountsExpense(b data_models.BookCounting, category string) bool {
 }
 
 // bookSelectionFileName names the selection for the report's file name, the
-// way the Book's select names it (§3.143 Decisions 7 and 8): "work-only", her
+// way the Book's select names it (§3.143 Decisions 7 and 8): "work-only", zir
 // preset's name ("jobcenter"), either with "-changed" when the ticks differ
-// from it, or "custom" when the selection names no preset (she deleted the
+// from it, or "custom" when the selection names no preset (ze deleted the
 // one it came from). The result is lowercase ASCII letters, digits and '-'
 // only, so it is safe inside the Content-Disposition header's quotes.
 func bookSelectionFileName(s bookSelectionView, presets []bookPresetView) string {

@@ -197,7 +197,7 @@ func TestManualExpense_OwnerIsolation(t *testing.T) {
 	}
 
 	// Security review of PR 175 F1: the category-validity check itself must
-	// be owner-scoped, not just the expense rows. Owner A adds her own
+	// be owner-scoped, not just the expense rows. Owner A adds their own
 	// category; owner B must not be able to file an expense under it.
 	if w := invoicingDo(a, "POST", "/invoicing/expense-categories", `{"name":"A's own category"}`); w.Code != http.StatusCreated {
 		t.Fatalf("create category for A: %d %s", w.Code, w.Body.String())
@@ -228,7 +228,7 @@ func TestExpenseCategories_SeededOnFirstUse(t *testing.T) {
 	}
 }
 
-// The operator's own ask (#10424, c63803): she can add a category on top of
+// The operator's own ask (#10424, c63803): the owner can add a category on top of
 // the starting list, and it is then usable on an expense. Its counts_as
 // defaults to "other" (design_agent, c63823) when not given.
 func TestExpenseCategories_AddAndUse(t *testing.T) {
@@ -238,7 +238,7 @@ func TestExpenseCategories_AddAndUse(t *testing.T) {
 		t.Fatalf("create category: %d %s", w.Code, w.Body.String())
 	}
 	got := listExpenseCategories(t, r)
-	// Her own category comes after the starters; Private stays last.
+	// Zir own category comes after the starters; Private stays last.
 	last := got[len(got)-2]
 	if len(got) != len(data_models.DefaultExpenseCategories)+2 || last.Name != "Studio snacks" || last.CountsAs != "other" || got[len(got)-1].Name != data_models.ExpenseCategoryPrivate {
 		t.Fatalf("categories after add: %+v", got)
@@ -265,7 +265,7 @@ func TestExpenseCategories_CountsAs(t *testing.T) {
 		t.Fatalf("create with counts_as: %d %s", w.Code, w.Body.String())
 	}
 	got := listExpenseCategories(t, r)
-	// Hers is the last before Private, which is always last (#10555-A3).
+	// Zirs is the last before Private, which is always last (#10555-A3).
 	if got[len(got)-2].Name != "Guitar strings" || got[len(got)-2].CountsAs != "materials and supplies" {
 		t.Errorf("counts_as not honoured: %+v", got[len(got)-2])
 	}

@@ -4,8 +4,8 @@ import "github.com/jinzhu/gorm"
 
 // ImportPrior is what the owner's book already holds for an imported row's
 // (source, transaction id), as every import path must tell it apart (system_3
-// #10555-B1, §3.143 Decision 6): a row she still has, a row she removed (it
-// can be restored on Transactions), or a row she deleted for good (only its
+// #10555-B1, §3.143 Decision 6): a row ze still has, a row ze removed (it
+// can be restored on Transactions), or a row ze deleted for good (only its
 // tombstone is left, so a re-import never brings it back).
 type ImportPrior int
 

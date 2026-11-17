@@ -286,7 +286,7 @@ func ListInvoicingExpensesHandler(c *gin.Context) {
 }
 
 // ListInvoicingExpenseCategoriesHandler lists the owner's expense
-// categories, seeding the defaults first if she has none yet: GET
+// categories, seeding the defaults first if ze has none yet: GET
 // /invoicing/expense-categories.
 func ListInvoicingExpenseCategoriesHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
@@ -339,7 +339,7 @@ func isExpenseCategoryForOwnerLocked(db *gorm.DB, owner uint, name string) (bool
 // ask c63803 on #9656): POST /invoicing/expense-categories with name and
 // optional counts_as (one of data_models.DefaultExpenseCategories, default
 // "other" — the report line this category's entries add into, design_agent
-// c63823). Case-insensitively deduplicated against her existing categories,
+// c63823). Case-insensitively deduplicated against zir existing categories,
 // which also refuses a new category taking a starter type's name, since the
 // starters are rows in the same list.
 func CreateExpenseCategoryHandler(c *gin.Context) {
@@ -370,7 +370,7 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_field", fmt.Sprintf("name must be one line of 1-%d characters", maxExpenseCategoryNameRunes))
 		return
 	}
-	// Private is built in and never counts (§3.143 Decision 8): she cannot
+	// Private is built in and never counts (§3.143 Decision 8): ze cannot
 	// make a second one under another case, nor any category that counts as it.
 	if strings.EqualFold(name, data_models.ExpenseCategoryPrivate) {
 		respondError(c, http.StatusConflict, "reserved_category", "Private is a built-in category for expenses that never count")

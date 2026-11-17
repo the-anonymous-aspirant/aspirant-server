@@ -215,9 +215,9 @@ func clientsCSVStamp(t time.Time) string {
 	return t.In(data_models.BerlinLocation()).Format(clientsCSVStampLayout)
 }
 
-// ExportClientsCSVHandler exports her client list, one row per client in
-// name order (system_3 #10012, from #9978, operator c61628). Her notes are
-// never a column: they are hers alone, never on an invoice or an export
+// ExportClientsCSVHandler exports zir client list, one row per client in
+// name order (system_3 #10012, from #9978, operator c61628). Zir notes are
+// never a column: they are zirs alone, never on an invoice or an export
 // (#9978 decision 1, #9962). Every text cell goes through spreadsheetSafe,
 // so a phone like "+49 …" is written as "'+49 …" and stays text. There is
 // no validation gate: a client list has no integrity rules to check.

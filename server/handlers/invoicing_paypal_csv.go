@@ -78,7 +78,7 @@ type paypalRow struct {
 	SenderEmail    string
 	Note           string
 	// Category is the payment category the row imports with: uncategorised,
-	// or refund for money returned to her (#9862-A1).
+	// or refund for money returned to zir (#9862-A1).
 	Category string
 }
 
@@ -611,7 +611,7 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 			res.Skipped[paypalSkipFee]++
 		default:
 			res.Skipped[paypalSkipOutgoing]++
-			// Money she paid out is a would-be work expense. A refund she
+			// Money ze paid out is a would-be work expense. A refund ze
 			// paid a buyer is reduced income, not an expense, so it stays
 			// skip-only. A row the file cannot describe cleanly is left out
 			// of the candidates rather than failing the file: outgoing rows
@@ -686,7 +686,7 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	// A reversal may come before or after the row it reverses in the file,
 	// so the cancelling runs once every row is classified. A reversal undoes
 	// a row only when it moves the same amount the other way: a "Chargeback
-	// Reversal" returns money to her under the original payment's reference,
+	// Reversal" returns money to zir under the original payment's reference,
 	// and that payment stands.
 	for _, row := range candidates {
 		signed := row.GrossCents

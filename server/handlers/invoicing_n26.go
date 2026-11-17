@@ -61,10 +61,10 @@ const (
 )
 
 // isPayPalSender reports whether an N26 credit's payer is PayPal. Money that
-// reaches her N26 account from PayPal is her own withdrawal: the same money
-// as the PayPal payments it sums, which the PayPal import already holds (her
+// reaches zir N26 account from PayPal is zir own withdrawal: the same money
+// as the PayPal payments it sums, which the PayPal import already holds (zir
 // main income channel, system_3 #9881). Imported as an incoming payment it
-// could be invoiced a second time. Her real transfer confirmations print the
+// could be invoiced a second time. The real transfer confirmations print the
 // bare word PAYPAL as the sender; statements are expected to print PayPal's
 // company name, which contains it too. Only the sender name is read, never
 // the note, so a customer's own transfer that mentions PayPal stays a payment.
@@ -206,7 +206,7 @@ var (
 	n26StatementRowPattern = regexp.MustCompile(`^\s*(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s{2,}([+-]?\d[\d.]*,\d{2})\s*(?:EUR|€)?\s*$`)
 	// n26GermanStatementRowPattern is one statement transaction line in N26's
 	// real German layout (system_3 #10534, against the operator's own
-	// statement and Kontoaktivität export — her N26 is in German, unlike the
+	// statement and Kontoaktivität export — their N26 is in German, unlike the
 	// Italian look-alike this importer was first built against): counterparty
 	// first, the booking date (Verbuchungsdatum) in the middle, the signed
 	// amount glued to its currency mark at line end. A detail block of a few
@@ -423,7 +423,7 @@ func isN26AccountStatement(text string) bool {
 // candidate back to the payment confirm. AmountCents is the money that went
 // out, as a positive number. PayeeName is the counterparty the statement
 // names. The two flags mirror n26Candidate's, read against the owner's
-// expenses instead of her payments.
+// expenses instead of zir payments.
 type n26ExpenseCandidate struct {
 	TransactionID       string `json:"transaction_id"`
 	PaidOn              string `json:"paid_on"`
@@ -476,9 +476,9 @@ func parseN26StatementSkipped(text string) (map[string]int, error) {
 // (Gutschriften, Lastschriften, or a Mastercard purchase), the
 // counterparty's IBAN/BIC when it prints one, an optional reference line,
 // and the value date (Wertstellung) — ended by a blank line. Both stay
-// supported: her N26 export is German, Flowah's (#9760) may be Italian, and
-// neither real file proves the other layout's statement path (operator,
-// comment 65185 on #9656).
+// supported: the operator's N26 export is German, Flowah's (#9760) may be
+// Italian, and neither real file proves the other layout's statement path
+// (operator, comment 65185 on #9656).
 //
 // A positive amount is a payment candidate, a negative one an expense
 // candidate (#10414-B); PaidOn is a German row's Wertstellung date when its
@@ -720,14 +720,14 @@ func flagN26Candidates(db *gorm.DB, owner uint, cands []n26Candidate) error {
 
 // flagN26ExpenseCandidates is flagN26Candidates for outgoing rows: a
 // candidate already stored as an N26 expense under its id, or colliding on
-// date and amount with any of the owner's expenses (one she entered by hand
+// date and amount with any of the owner's expenses (one ze entered by hand
 // before importing the statement, typically).
 func flagN26ExpenseCandidates(db *gorm.DB, owner uint, cands []n26ExpenseCandidate) error {
 	for i := range cands {
 		c := &cands[i]
 		// Removed and deleted-for-good expenses count as seen too: before
 		// #10555-B1 the expense tombstone was never read here, so a re-import
-		// offered an expense she had deleted for good as new.
+		// offered an expense ze had deleted for good as new.
 		prior, err := data_models.InvoicingExpensePrior(db, owner, invoicingPaymentSourceN26, c.TransactionID)
 		if err != nil {
 			return err
@@ -1064,7 +1064,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 }
 
 // n26ExpenseConfirmRow is one outgoing row the owner confirmed: the
-// candidate's fields, plus the category she picked (empty means "other").
+// candidate's fields, plus the category ze picked (empty means "other").
 type n26ExpenseConfirmRow struct {
 	TransactionID string `json:"transaction_id"`
 	PaidOn        string `json:"paid_on"`
@@ -1083,7 +1083,7 @@ type n26ExpenseConfirmRequest struct {
 // confirmed as work expenses (system_3 #10414-B): POST
 // /invoicing/expenses/import-n26/confirm. Each becomes an InvoicingExpense
 // with source "n26", entry "import", the payee in Reference, and the category
-// she picked (one of her own expense categories, default "other"). Rows
+// ze picked (one of zir own expense categories, default "other"). Rows
 // already stored under their (source, transaction id) count as duplicates
 // and are skipped. An invalid row fails the whole request, because the
 // client only ever posts back rows the parse endpoint produced. It is the
