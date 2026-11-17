@@ -370,6 +370,14 @@ func AddPayersHandler(c *gin.Context) {
 			if email != "" && !emailTaken(email) {
 				nc.PayPalEmail = email
 			}
+			// The same address is also the only contact detail the import
+			// carries for this payer, so the new client's card shows it
+			// (system_3 #11507). It is set on the client being created and
+			// never on an existing one; an address the client form would
+			// refuse is left out, so the card can still be saved later.
+			if email != "" && validOptionalEmail(email) {
+				nc.Email = email
+			}
 			if err := tx.Create(&nc).Error; err != nil {
 				fail(tx, "create client", err)
 				return
