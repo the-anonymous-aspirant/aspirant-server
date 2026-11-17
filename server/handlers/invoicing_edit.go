@@ -38,6 +38,8 @@ var (
 		// hand-entry create does (system_3 #10696, design §3.143 Decision 5:
 		// "Paid by" keeps §3.142's behaviour in edit mode).
 		"new_client_name": true,
+		// The new client's address and email, as on create (system_3 #11507).
+		"new_client_address": true, "new_client_email": true,
 	}
 	paymentEditableImported = map[string]bool{"note": true, "category": true, "client_id": true}
 
@@ -273,9 +275,21 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 
 	next := *p
 	newClientName := ""
+	var newDetails newClientDetails
 	for _, k := range keys {
 		raw := body[k]
 		switch k {
+		case "new_client_address", "new_client_email":
+			s, ok := editString(raw)
+			if !ok {
+				bad(k, "must be a string")
+				return
+			}
+			if k == "new_client_address" {
+				newDetails.Address = strings.ReplaceAll(s, "\r", "")
+			} else {
+				newDetails.Email = s
+			}
 		case "new_client_name":
 			s, ok := editString(raw)
 			if !ok {
@@ -386,13 +400,18 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		next.Reference = strings.ToUpper(next.Reference)
 	}
 
+	if field, msg := newClientDetailsRefusal(newClientName, newDetails); msg != "" {
+		bad(field, msg)
+		return
+	}
+
 	// A new name adds the client in this transaction and links it, so the
 	// edit's audit event records the new client_id (system_3 #10696). Any
 	// refusal below rolls the client back with the edit.
 	diffKeys := keys
 	var newClient *data_models.InvoicingClient
 	if newClientName != "" {
-		cl, existing, err := addPayerClient(tx, owner, newClientName, "payment_edit")
+		cl, existing, err := addPayerClient(tx, owner, newClientName, newDetails, "payment_edit")
 		if err != nil {
 			fail(tx, "new client", err)
 			return
