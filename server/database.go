@@ -267,7 +267,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&data_models.InvoicingInvoicePayment{},
 		&data_models.InvoicingPaymentTombstone{},  // #10009: deleted payments stay out of re-imports
 		&data_models.InvoicingExpenseTombstone{},  // #10555-A2: expenses deleted for good leave a tombstone too
-		&data_models.InvoicingBookSelection{},     // #10555-A3: what the Book counts, and her presets
+		&data_models.InvoicingBookSelection{},     // #10555-A3: what the Book counts, and zir presets
 		&data_models.InvoicingBookPreset{},
 		&data_models.InvoicingInvoicePDF{},
 		&data_models.InvoicingProfileLogo{}, // #9858: the issuer's logo

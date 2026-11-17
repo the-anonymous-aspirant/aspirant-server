@@ -12,8 +12,8 @@ import (
 )
 
 // system_3 #10555-A1 (design §3.143 Decision 5): editing a payment or an
-// expense. A hand-entered row may change every field she typed; an imported
-// row only her own notes on it. The invoice locks hold on every edit.
+// expense. A hand-entered row may change every field ze typed; an imported
+// row only zir own notes on it. The invoice locks hold on every edit.
 
 // newEditFixture is the invoice fixture (four imported PayPal payments, a
 // client, a profile, the clock at 2026-10-21) plus the expense routes.

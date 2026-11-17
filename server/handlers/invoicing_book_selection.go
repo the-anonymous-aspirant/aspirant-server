@@ -15,14 +15,14 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
-// What the Book counts, and her presets (system_3 #10555-A3, design §3.143
+// What the Book counts, and zir presets (system_3 #10555-A3, design §3.143
 // Decision 8, operator c65429):
 //
 //	GET    /invoicing/book/selection     the current selection and every preset
 //	PUT    /invoicing/book/selection     set it
 //	POST   /invoicing/book/presets       save a selection under a name
-//	PUT    /invoicing/book/presets/:id   update one of her presets
-//	DELETE /invoicing/book/presets/:id   delete one of her presets
+//	PUT    /invoicing/book/presets/:id   update one of zir presets
+//	DELETE /invoicing/book/presets/:id   delete one of zir presets
 //
 // "Work only" is built in (id "work_only"): it cannot be updated or deleted.
 // Private never counts: no selection or preset may include it. Every write
@@ -113,9 +113,9 @@ func checkBookCounting(tx *gorm.DB, owner uint, b data_models.BookCounting) (*ro
 }
 
 // workOnlyRule refuses expense_all anywhere but Work only (design_agent c66120
-// on #10555-A3): a preset, and any selection she changed, counts exactly the
-// expense categories she ticked, so a category added later is never counted
-// without her tick (D13). Only Work only is a rule.
+// on #10555-A3): a preset, and any selection ze changed, counts exactly the
+// expense categories ze ticked, so a category added later is never counted
+// without zir tick (D13). Only Work only is a rule.
 func workOnlyRule(b data_models.BookCounting, preset bool) *rowRefusal {
 	if !b.ExpenseAll {
 		return nil
@@ -127,7 +127,7 @@ func workOnlyRule(b data_models.BookCounting, preset bool) *rowRefusal {
 }
 
 // presetForSelection resolves the preset a selection says it came from:
-// Work only, one of her presets, or none. Its counting is returned too.
+// Work only, one of zir presets, or none. Its counting is returned too.
 func presetForSelection(tx *gorm.DB, owner uint, id string) (*data_models.BookCounting, *rowRefusal, error) {
 	switch id {
 	case "":
@@ -251,7 +251,7 @@ func bindBody(c *gin.Context, allowed ...string) (map[string]json.RawMessage, bo
 
 // PutInvoicingBookSelectionHandler serves PUT /invoicing/book/selection with
 // {income, expense_all, expense, preset}. preset names what the ticks came
-// from ("work_only", one of her presets' ids, or empty); it is optional.
+// from ("work_only", one of zir presets' ids, or empty); it is optional.
 func PutInvoicingBookSelectionHandler(c *gin.Context) {
 	body, ok := bindBody(c, "income", "expense_all", "expense", "preset")
 	if !ok {
@@ -299,7 +299,7 @@ func PutInvoicingBookSelectionHandler(c *gin.Context) {
 }
 
 // presetName validates a preset's name: one line, 1-60 characters, not the
-// built-in's, and not one she already uses (case-insensitively).
+// built-in's, and not one ze already uses (case-insensitively).
 func presetName(tx *gorm.DB, owner uint, raw json.RawMessage, exceptID uint) (string, *rowRefusal, error) {
 	var name string
 	if json.Unmarshal(raw, &name) != nil {

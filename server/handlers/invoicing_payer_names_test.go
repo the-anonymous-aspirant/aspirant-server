@@ -35,7 +35,7 @@ func TestSameClientName(t *testing.T) {
 			t.Errorf("%q and %q should be the same client", p[0], p[1])
 		}
 	}
-	// Decision 4's "close" pairs are not "the same": they stop for her
+	// Decision 4's "close" pairs are not "the same": they stop for zir
 	// choice in the form (#10539-B1) rather than linking silently.
 	notSame := [][2]string{
 		{"Mara Esempio", "Mara Rossi"},

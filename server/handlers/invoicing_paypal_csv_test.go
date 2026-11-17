@@ -229,7 +229,7 @@ func TestParsePayPal_CurrencyMustBeAnISOCode(t *testing.T) {
 }
 
 // #9862-A1: the Type strings of a real statement (upload 112, read in c60929
-// on system_3 #9862), as synthetic rows. Her statement itself never enters
+// on system_3 #9862), as synthetic rows. The statement itself never enters
 // the repo.
 const reversalHeader = "Date,Name,Type,Status,Currency,Gross,Transaction ID,Reference Txn ID\n"
 
@@ -260,7 +260,7 @@ func TestParsePayPal_PaymentReversedByReferenceIsDropped(t *testing.T) {
 }
 
 // A reversal only undoes a row moving the same amount the other way. A
-// chargeback reversal returns money to her under the payment's reference,
+// chargeback reversal returns money to zir under the payment's reference,
 // and the payment stands; so does one whose amount does not match.
 func TestParsePayPal_ReversalInTheSameDirectionKeepsThePayment(t *testing.T) {
 	res := mustParse(t, reversalHeader+
@@ -301,7 +301,7 @@ func TestParsePayPal_IncomingRefundIsPreCategorised(t *testing.T) {
 		t.Errorf("payment: %+v", r)
 	}
 	if res.Skipped["outgoing"] != 1 {
-		t.Errorf("the refund she paid out is skipped as outgoing: %v", res.Skipped)
+		t.Errorf("the refund ze paid out is skipped as outgoing: %v", res.Skipped)
 	}
 }
 
@@ -549,7 +549,7 @@ func TestImportPayPal_OutgoingRowsAreOfferedThenConfirmed(t *testing.T) {
 		t.Fatalf("re-upload flags: %+v", again)
 	}
 
-	// Another owner's import is flagged against her own book only, and her
+	// Another owner's import is flagged against their own book only, and their
 	// confirm stores into it with the default category.
 	_, r8 := setupPayPalExpensesRouterOn(db, 8)
 	theirs := decodePayPalExpenseCandidates(t, uploadCSV(t, r8, paypalFixtureEN, ""))

@@ -117,7 +117,7 @@ func TestDeletePayment_OnADraftUnlinksItAndTheDraftSaysItsTotalIsUncovered(t *te
 	if len(after.Payments) != 1 || after.Payments[0].ID != f.payments[1].ID {
 		t.Fatalf("draft payments after: %+v", after.Payments)
 	}
-	// The line items are hers and stay; the total is unchanged and now says
+	// The line items are zirs and stay; the total is unchanged and now says
 	// the payments no longer cover it.
 	if len(after.LineItems) != len(before.LineItems) || after.Invoice.TotalCents != before.Invoice.TotalCents {
 		t.Errorf("line items %d->%d, total %d->%d", len(before.LineItems), len(after.LineItems), before.Invoice.TotalCents, after.Invoice.TotalCents)

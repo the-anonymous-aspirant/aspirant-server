@@ -12,7 +12,7 @@ _New entries are files in [changelog.d/](changelog.d/README.md), one per PR, nam
 
 - **Invoicing app owner: `flowah` → `vinoly`** (system_3 #8633). The user
   already had a login, `vinoly`, which also owns Jobs, and the operator
-  confirmed it is hers (c53249). `invoicesOwnerUsername` moves to it, so the
+  confirmed it is zirs (c53249). `invoicesOwnerUsername` moves to it, so the
   `/invoicing` group's owner+Admin gate now lets `vinoly` through. No account
   was ever created under the old name. The Jobs gate is unchanged.
 

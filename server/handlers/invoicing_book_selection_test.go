@@ -188,7 +188,7 @@ func TestBookPresets_CRUDAndTheBuiltin(t *testing.T) {
 		t.Errorf("another owner deleted it: %d %s", code, body)
 	}
 	if _, theirs, _, _ := bookCall(t, other, "GET", "/invoicing/book/selection", ""); len(theirs.Presets) != 1 {
-		t.Errorf("another owner sees her presets: %+v", theirs.Presets)
+		t.Errorf("another owner sees the first owner's presets: %+v", theirs.Presets)
 	}
 	// Delete: the selection keeps its ticks and names no preset.
 	if code, _, _, body := bookCall(t, r, "DELETE", "/invoicing/book/presets/"+id, ""); code != http.StatusOK {

@@ -14,7 +14,7 @@ import (
 	"github.com/jinzhu/gorm"
 )
 
-// system_3 #10012 (from #9978, operator c61628): her client list as a CSV.
+// system_3 #10012 (from #9978, operator c61628): zir client list as a CSV.
 
 // clientsCSVUser signs in to the export and owns every seeded client unless a
 // test names another owner (system_3 #10054).
@@ -94,7 +94,7 @@ func TestExportClientsCSV_HeaderRowsAndOrder(t *testing.T) {
 	}
 }
 
-// #9978 decision 1: her notes are never exported, even when set.
+// #9978 decision 1: zir notes are never exported, even when set.
 func TestExportClientsCSV_NotesAreNeverExported(t *testing.T) {
 	db := setupInvoicingDB(t)
 	r := clientsCSVRouter(db)

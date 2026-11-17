@@ -20,7 +20,7 @@ import (
 )
 
 // Hand-entered payments (system_3 #8409): an invoice must not depend on a
-// PayPal import. The owner enters a payment she received; it is stored like
+// PayPal import. The owner enters a payment ze received; it is stored like
 // an imported one, as incoming paid work, and audited. The §10 guardrails are
 // unchanged: drafts, issuing and immutability go through the same handlers.
 
