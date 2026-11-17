@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -194,12 +195,27 @@ type relationshipActionDTO struct {
 	Undone     bool   `json:"undone"`
 }
 
+// historyNotice is the one line a caller shows when steps were passed over
+// because the other player is no longer in the room (system_3 #11432; the
+// wording for one step is the operator's, c70520).
+func historyNotice(skipped int) string {
+	if skipped == 1 {
+		return "skipped: that player left the room"
+	}
+	return fmt.Sprintf("skipped %d steps: those players left the room", skipped)
+}
+
 // applyUndoRedo runs an undo/redo step and returns the resulting graph. A benign
 // empty-stack condition (ErrNothingToUndo / ErrNothingToRedo) is not an error:
 // it responds 200 with the unchanged graph and applied=false, so a UI "back" at
 // the start of history is a no-op, not a failure.
-func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, viewerID uint, err error, empty error) {
-	applied := true
+//
+// `skipped` counts the steps passed over on the way because the other player
+// of their pair is no longer in the room, and `notice` says so in one line; it
+// is absent when nothing was skipped. applied is false when every step left
+// was skipped.
+func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, viewerID uint, step data_models.HistoryStep, err error, empty error) {
+	applied := step.Applied
 	if err == empty {
 		applied = false
 	} else if status, msg, handled := mapRelationshipError(err); handled {
@@ -219,7 +235,11 @@ func applyUndoRedo(c *gin.Context, db *gorm.DB, room data_models.Room, viewerID 
 		RespondWithError(c, http.StatusInternalServerError, "Error reading relationships")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"relationships": out, "applied": applied})
+	body := gin.H{"relationships": out, "applied": applied, "skipped": step.Skipped}
+	if step.Skipped > 0 {
+		body["notice"] = historyNotice(step.Skipped)
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // UndoRelationshipHandler reverts the caller's most recent relationship edit.
@@ -229,8 +249,8 @@ func UndoRelationshipHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	err := data_models.UndoRelationship(db, room, actor)
-	applyUndoRedo(c, db, room, actor, err, data_models.ErrNothingToUndo)
+	step, err := data_models.UndoRelationship(db, room, actor)
+	applyUndoRedo(c, db, room, actor, step, err, data_models.ErrNothingToUndo)
 }
 
 // RedoRelationshipHandler re-applies the caller's most recently undone edit.
@@ -240,8 +260,8 @@ func RedoRelationshipHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	err := data_models.RedoRelationship(db, room, actor)
-	applyUndoRedo(c, db, room, actor, err, data_models.ErrNothingToRedo)
+	step, err := data_models.RedoRelationship(db, room, actor)
+	applyUndoRedo(c, db, room, actor, step, err, data_models.ErrNothingToRedo)
 }
 
 // GetRelationshipHistoryHandler returns the caller's own retained edit history.

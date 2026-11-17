@@ -51,20 +51,20 @@ func TestHistory_SetThenUndoRestoresPrior(t *testing.T) {
 		t.Fatalf("after set2 want type %d, got %d", t2, got)
 	}
 
-	if err := UndoRelationship(db, room, 1); err != nil {
+	if _, err := UndoRelationship(db, room, 1); err != nil {
 		t.Fatalf("undo1: %v", err)
 	}
 	if got := activeType(db, room.ID, 1, 2); got != t1 {
 		t.Fatalf("after undo want prior type %d, got %d", t1, got)
 	}
-	if err := UndoRelationship(db, room, 1); err != nil {
+	if _, err := UndoRelationship(db, room, 1); err != nil {
 		t.Fatalf("undo2: %v", err)
 	}
 	if got := activeType(db, room.ID, 1, 2); got != 0 {
 		t.Fatalf("after undo to origin want no active edge, got type %d", got)
 	}
 	// Nothing left to undo.
-	if err := UndoRelationship(db, room, 1); err != ErrNothingToUndo {
+	if _, err := UndoRelationship(db, room, 1); err != ErrNothingToUndo {
 		t.Fatalf("want ErrNothingToUndo, got %v", err)
 	}
 }
@@ -78,19 +78,19 @@ func TestHistory_RedoReappliesInOrder(t *testing.T) {
 	UndoRelationship(db, room, 1) // -> t1
 	UndoRelationship(db, room, 1) // -> none
 
-	if err := RedoRelationship(db, room, 1); err != nil { // redo the t1 set first
+	if _, err := RedoRelationship(db, room, 1); err != nil { // redo the t1 set first
 		t.Fatalf("redo1: %v", err)
 	}
 	if got := activeType(db, room.ID, 1, 2); got != t1 {
 		t.Fatalf("after redo1 want %d, got %d", t1, got)
 	}
-	if err := RedoRelationship(db, room, 1); err != nil { // redo the t2 set
+	if _, err := RedoRelationship(db, room, 1); err != nil { // redo the t2 set
 		t.Fatalf("redo2: %v", err)
 	}
 	if got := activeType(db, room.ID, 1, 2); got != t2 {
 		t.Fatalf("after redo2 want %d, got %d", t2, got)
 	}
-	if err := RedoRelationship(db, room, 1); err != ErrNothingToRedo {
+	if _, err := RedoRelationship(db, room, 1); err != ErrNothingToRedo {
 		t.Fatalf("want ErrNothingToRedo, got %v", err)
 	}
 }
@@ -108,7 +108,7 @@ func TestHistory_ClearOfRejectionUndoesLikeAnything(t *testing.T) {
 	if got := activeType(db, room.ID, 1, 2); got != 0 {
 		t.Fatalf("after clear want no active edge, got %d", got)
 	}
-	if err := UndoRelationship(db, room, 1); err != nil {
+	if _, err := UndoRelationship(db, room, 1); err != nil {
 		t.Fatalf("undo clear: %v", err)
 	}
 	if got := activeType(db, room.ID, 1, 2); got != rejection {
@@ -125,7 +125,7 @@ func TestHistory_NewEditTruncatesRedoStack(t *testing.T) {
 	UndoRelationship(db, room, 1) // t1, one action undone
 	// A new edit invalidates the redo stack.
 	SetRelationshipWithHistory(db, room, 1, 1, 3, t1)
-	if err := RedoRelationship(db, room, 1); err != ErrNothingToRedo {
+	if _, err := RedoRelationship(db, room, 1); err != ErrNothingToRedo {
 		t.Fatalf("a new edit must clear the redo stack; want ErrNothingToRedo, got %v", err)
 	}
 }
@@ -146,11 +146,11 @@ func TestHistory_CapPerPlayer(t *testing.T) {
 	}
 	// Only the newest cap actions can be undone; the (cap+1)th undo is empty.
 	for i := 0; i < HistoryCapPerPlayer; i++ {
-		if err := UndoRelationship(db, room, 1); err != nil {
+		if _, err := UndoRelationship(db, room, 1); err != nil {
 			t.Fatalf("undo %d within cap: %v", i, err)
 		}
 	}
-	if err := UndoRelationship(db, room, 1); err != ErrNothingToUndo {
+	if _, err := UndoRelationship(db, room, 1); err != ErrNothingToUndo {
 		t.Fatalf("dropped-oldest actions must be un-undoable; want ErrNothingToUndo, got %v", err)
 	}
 }
@@ -165,17 +165,17 @@ func TestHistory_PerPlayerStacksIndependent(t *testing.T) {
 		t.Fatalf("last-write want %d, got %d", t2, got)
 	}
 	// Player 2 undoes their own edit → restores player 1's t1.
-	if err := UndoRelationship(db, room, 2); err != nil {
+	if _, err := UndoRelationship(db, room, 2); err != nil {
 		t.Fatalf("p2 undo: %v", err)
 	}
 	if got := activeType(db, room.ID, 1, 2); got != t1 {
 		t.Fatalf("p2 undo should restore p1's %d, got %d", t1, got)
 	}
 	// Player 2 has nothing more; player 1 still has its own action.
-	if err := UndoRelationship(db, room, 2); err != ErrNothingToUndo {
+	if _, err := UndoRelationship(db, room, 2); err != ErrNothingToUndo {
 		t.Fatalf("p2 stack should be empty, got %v", err)
 	}
-	if err := UndoRelationship(db, room, 1); err != nil {
+	if _, err := UndoRelationship(db, room, 1); err != nil {
 		t.Fatalf("p1 should still have its action: %v", err)
 	}
 }
@@ -228,7 +228,7 @@ func TestWriteAuthz_UndoRedoRefuseNonEndpointGrandfathered(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("seed grandfathered action: %v", err)
 	}
-	if err := UndoRelationship(db, room, 3); err != ErrRelNotEndpoint {
+	if _, err := UndoRelationship(db, room, 3); err != ErrRelNotEndpoint {
 		t.Fatalf("undo of a cross-party action by non-endpoint want ErrRelNotEndpoint, got %v", err)
 	}
 
@@ -239,7 +239,221 @@ func TestWriteAuthz_UndoRedoRefuseNonEndpointGrandfathered(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("seed undone grandfathered action: %v", err)
 	}
-	if err := RedoRelationship(db, room, 3); err != ErrRelNotEndpoint {
+	if _, err := RedoRelationship(db, room, 3); err != ErrRelNotEndpoint {
 		t.Fatalf("redo of a cross-party action by non-endpoint want ErrRelNotEndpoint, got %v", err)
+	}
+}
+
+// --- system_3 #11432: a step whose other player is gone is passed over ------
+//
+// Before this, an undo that had to put an edge back to a player who had left
+// the room was refused by SetRelationship and stayed on top of the stack, so
+// every later undo met it again and the older steps were out of reach. Redo
+// had the same shape. The operator's rule (c70520): skip that step, mark it
+// done, and carry on with the next.
+
+// undoneFlags reads the actor's actions oldest first, as their undone flags.
+func undoneFlags(t *testing.T, db *gorm.DB, roomID, actor uint) []bool {
+	t.Helper()
+	actions, err := PlayerHistory(db, roomID, actor)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	out := make([]bool, len(actions))
+	for i, a := range actions {
+		out[i] = a.Undone
+	}
+	return out
+}
+
+func sameFlags(a, b []bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// The other player goes in one of the two ways a seat ends: they leave
+// (left_at set), or their account is deleted and the membership row goes
+// (system_3 #11384).
+var waysToGo = []struct {
+	name string
+	gone func(t *testing.T, db *gorm.DB, room Room, userID uint)
+}{
+	{"leaves the room", func(t *testing.T, db *gorm.DB, room Room, userID uint) {
+		t.Helper()
+		if _, err := LeaveRoom(db, userID, room.Code); err != nil {
+			t.Fatalf("leave: %v", err)
+		}
+	}},
+	{"account deleted", func(t *testing.T, db *gorm.DB, room Room, userID uint) {
+		t.Helper()
+		if err := db.Unscoped().Where("room_id = ? AND user_id = ?", room.ID, userID).Delete(&RoomMember{}).Error; err != nil {
+			t.Fatalf("remove membership: %v", err)
+		}
+	}},
+}
+
+func TestHistory_UndoSkipsAStepWhoseOtherPlayerIsGone(t *testing.T) {
+	for _, way := range waysToGo {
+		t.Run(way.name, func(t *testing.T) {
+			db, room, t1, t2 := newHistoryDB(t)
+			defer db.Close()
+			// Actor 1, oldest first: an edge to 2; an edge to 3; that edge re-typed.
+			for _, set := range []struct{ to, typeID uint }{{2, t1}, {3, t1}, {3, t2}} {
+				if _, err := SetRelationshipWithHistory(db, room, 1, 1, set.to, set.typeID); err != nil {
+					t.Fatalf("set 1-%d: %v", set.to, err)
+				}
+			}
+			way.gone(t, db, room, 3)
+			// Positive control: the newest step is the one that cannot apply.
+			// Its undo puts the 1-3 edge back to t1, and that set is refused.
+			if _, err := SetRelationship(db, room, 1, 3, t1); err != ErrRelNotMember {
+				t.Fatalf("control: setting an edge to the departed player = %v, want ErrRelNotMember", err)
+			}
+
+			// One undo: the re-type is skipped, and the step behind it applies
+			// (it clears the 1-3 edge, which needs no second member).
+			step, err := UndoRelationship(db, room, 1)
+			if err != nil {
+				t.Fatalf("undo: %v", err)
+			}
+			if !step.Applied || step.Skipped != 1 {
+				t.Errorf("undo = %+v, want one step applied and one skipped", step)
+			}
+			if got := undoneFlags(t, db, room.ID, 1); !sameFlags(got, []bool{false, true, true}) {
+				t.Errorf("undone flags = %v, want [false true true]: the skipped step is marked too", got)
+			}
+			if got := activeType(db, room.ID, 1, 3); got != 0 {
+				t.Errorf("the 1-3 edge is still active with type %d, want none", got)
+			}
+
+			// The oldest step is still reachable, which is what used to be lost.
+			step, err = UndoRelationship(db, room, 1)
+			if err != nil || !step.Applied || step.Skipped != 0 {
+				t.Fatalf("second undo = %+v, %v; want the 1-2 step applied", step, err)
+			}
+			if got := activeType(db, room.ID, 1, 2); got != 0 {
+				t.Errorf("the 1-2 edge is still active with type %d, want none", got)
+			}
+			if _, err := UndoRelationship(db, room, 1); err != ErrNothingToUndo {
+				t.Errorf("third undo = %v, want ErrNothingToUndo", err)
+			}
+		})
+	}
+}
+
+func TestHistory_UndoWithOnlySkippableStepsAppliesNothing(t *testing.T) {
+	db, room, t1, t2 := newHistoryDB(t)
+	defer db.Close()
+	// Player 3 makes the edge; player 1 re-types it. Player 1's only step is
+	// one whose undo puts 3's edge back.
+	if _, err := SetRelationshipWithHistory(db, room, 3, 3, 1, t1); err != nil {
+		t.Fatalf("set by 3: %v", err)
+	}
+	if _, err := SetRelationshipWithHistory(db, room, 1, 1, 3, t2); err != nil {
+		t.Fatalf("set by 1: %v", err)
+	}
+	if _, err := LeaveRoom(db, 3, room.Code); err != nil {
+		t.Fatalf("leave: %v", err)
+	}
+	events := func() int {
+		var n int
+		db.Model(&RelationshipEvent{}).Where("room_id = ?", room.ID).Count(&n)
+		return n
+	}
+	before := events()
+
+	step, err := UndoRelationship(db, room, 1)
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if step.Applied || step.Skipped != 1 {
+		t.Errorf("undo = %+v, want nothing applied and one skipped", step)
+	}
+	// A skipped step changes no edge and writes no room-history event.
+	if got := activeType(db, room.ID, 1, 3); got != t2 {
+		t.Errorf("the 1-3 edge has type %d, want it left at %d", got, t2)
+	}
+	if after := events(); after != before {
+		t.Errorf("room-history events went from %d to %d, want no new event for a skipped step", before, after)
+	}
+	if _, err := UndoRelationship(db, room, 1); err != ErrNothingToUndo {
+		t.Errorf("next undo = %v, want ErrNothingToUndo", err)
+	}
+}
+
+func TestHistory_RedoSkipsAStepWhoseOtherPlayerIsGone(t *testing.T) {
+	for _, way := range waysToGo {
+		t.Run(way.name, func(t *testing.T) {
+			db, room, t1, _ := newHistoryDB(t)
+			defer db.Close()
+			// Actor 1 sets an edge to 3, then to 2, and undoes both.
+			for _, to := range []uint{3, 2} {
+				if _, err := SetRelationshipWithHistory(db, room, 1, 1, to, t1); err != nil {
+					t.Fatalf("set 1-%d: %v", to, err)
+				}
+			}
+			for i := 0; i < 2; i++ {
+				if _, err := UndoRelationship(db, room, 1); err != nil {
+					t.Fatalf("undo %d: %v", i+1, err)
+				}
+			}
+			way.gone(t, db, room, 3)
+
+			// Redo takes the 1-3 set first. It cannot apply, so it is marked
+			// done and the 1-2 set behind it is applied in the same call.
+			step, err := RedoRelationship(db, room, 1)
+			if err != nil {
+				t.Fatalf("redo: %v", err)
+			}
+			if !step.Applied || step.Skipped != 1 {
+				t.Errorf("redo = %+v, want one step applied and one skipped", step)
+			}
+			if got := undoneFlags(t, db, room.ID, 1); !sameFlags(got, []bool{false, false}) {
+				t.Errorf("undone flags = %v, want [false false]", got)
+			}
+			if got := activeType(db, room.ID, 1, 2); got != t1 {
+				t.Errorf("the 1-2 edge has type %d, want %d", got, t1)
+			}
+			if got := activeType(db, room.ID, 1, 3); got != 0 {
+				t.Errorf("an edge to the departed player came back with type %d", got)
+			}
+			if _, err := RedoRelationship(db, room, 1); err != ErrNothingToRedo {
+				t.Errorf("next redo = %v, want ErrNothingToRedo", err)
+			}
+		})
+	}
+}
+
+// Only the OTHER player's absence is skipped. If the actor is the one who is
+// gone, the refusal comes back as before and the stack is left alone, so a
+// stray call cannot empty a player's history.
+func TestHistory_ActorGoneIsRefusedNotSkipped(t *testing.T) {
+	db, room, t1, t2 := newHistoryDB(t)
+	defer db.Close()
+	if _, err := SetRelationshipWithHistory(db, room, 1, 1, 2, t1); err != nil {
+		t.Fatalf("set1: %v", err)
+	}
+	if _, err := SetRelationshipWithHistory(db, room, 1, 1, 2, t2); err != nil {
+		t.Fatalf("set2: %v", err)
+	}
+	if _, err := LeaveRoom(db, 1, room.Code); err != nil {
+		t.Fatalf("leave: %v", err)
+	}
+	step, err := UndoRelationship(db, room, 1)
+	if err != ErrRelNotMember {
+		t.Fatalf("undo by a departed actor = %+v, %v; want ErrRelNotMember", step, err)
+	}
+	if step.Skipped != 0 || step.Applied {
+		t.Errorf("undo = %+v, want nothing applied or skipped", step)
+	}
+	if got := undoneFlags(t, db, room.ID, 1); !sameFlags(got, []bool{false, false}) {
+		t.Errorf("undone flags = %v, want [false false]: the stack is untouched", got)
 	}
 }
