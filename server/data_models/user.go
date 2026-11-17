@@ -429,6 +429,21 @@ func (u *User) DeleteUser(db *gorm.DB) error {
 	if tx.Error != nil {
 		return tx.Error
 	}
+	// Before anything is deleted: an account that still has invoicing records
+	// is refused whole (system_3 #11590; see userHasInvoicingData).
+	if has, err := userHasInvoicingData(tx, u.ID); err != nil {
+		tx.Rollback()
+		return err
+	} else if has {
+		tx.Rollback()
+		return ErrUserHasInvoicingData
+	}
+	// What is left in the invoicing tables is not a book and goes with the
+	// account: seeded expense categories and deletion tombstones.
+	if err := deleteUserInvoicingRemnants(tx, u.ID); err != nil {
+		tx.Rollback()
+		return err
+	}
 	if err := DeleteAllFormValuesForUser(tx, u.ID); err != nil {
 		tx.Rollback()
 		return err
