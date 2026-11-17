@@ -343,6 +343,12 @@ func DeleteUserHandler(c *gin.Context) {
 	}
 
 	if err := user.DeleteUser(db); err != nil {
+		// Refused, with nothing deleted: the account still has an invoicing
+		// book (system_3 #11590). The admin page shows this sentence as is.
+		if errors.Is(err, data_models.ErrUserHasInvoicingData) {
+			RespondWithError(c, http.StatusConflict, "This user still has invoicing records, which must be exported and removed before the account can be deleted")
+			return
+		}
 		log.Printf("Error deleting user: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error deleting user")
 		return

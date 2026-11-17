@@ -20,7 +20,7 @@ import (
 // in (#11384). Any test harness that deletes a user migrates them, as a real
 // database has them; a missing one is an error that rolls the delete back.
 func userContentModels() []interface{} {
-	return []interface{}{
+	models := []interface{}{
 		&data_models.Scratchpad{},
 		&data_models.GoalTree{}, &data_models.GoalNode{}, &data_models.GoalEdge{}, &data_models.GoalComment{},
 		&data_models.UserDisplayName{}, &data_models.UserToken{},
@@ -29,6 +29,9 @@ func userContentModels() []interface{} {
 		&data_models.EasterHuntClick{}, &data_models.EasterHuntScore{},
 		&data_models.GameScore{},
 	}
+	// The invoicing tables the delete reads before it deletes anything
+	// (system_3 #11590; user_delete_invoicing_guard_test.go).
+	return append(models, userInvoicingModels()...)
 }
 
 func setupDeleteContentDB(t *testing.T) *gorm.DB {
