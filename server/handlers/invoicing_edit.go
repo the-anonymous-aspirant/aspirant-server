@@ -19,10 +19,10 @@ import (
 
 // Editing a payment or an expense (system_3 #10555-A1, design §3.143
 // Decision 5). What may change depends on how the row got into the book: a
-// hand-entered row is hers, so every field she typed may change; an imported
+// hand-entered row is zirs, so every field ze typed may change; an imported
 // row's date, amount and payer are the bank's record of what happened, so
-// only her own notes on it (note, category, client) may change. To fix a
-// bank fact she removes the row and enters it by hand.
+// only zir own notes on it (note, category, client) may change. To fix a
+// bank fact ze removes the row and enters it by hand.
 //
 // The per-field rules restate the hand-entry rules in
 // invoicing_manual_payments.go and invoicing_manual_expenses.go from the same
@@ -255,7 +255,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 	}
 	if !p.IsManual() {
 		// An imported payment's payer is the bank's record (§3.143 Decision
-		// 5): she can link a client, not add one from here.
+		// 5): ze can link a client, not add one from here.
 		if _, sent := body["new_client_name"]; sent {
 			tx.Rollback()
 			respondError(c, http.StatusBadRequest, "bank_fact_field",

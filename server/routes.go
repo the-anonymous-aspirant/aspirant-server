@@ -445,7 +445,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.DELETE("/expenses/:id/receipt", handlers.DeleteInvoicingExpenseReceiptHandler)
 		invoicing.GET("/expense-categories", handlers.ListInvoicingExpenseCategoriesHandler)
 		invoicing.POST("/expense-categories", handlers.CreateExpenseCategoryHandler)
-		// What the Book counts, and her presets (system_3 #10555-A3, design
+		// What the Book counts, and zir presets (system_3 #10555-A3, design
 		// §3.143 Decision 8).
 		invoicing.GET("/book/selection", handlers.GetInvoicingBookSelectionHandler)
 		invoicing.PUT("/book/selection", handlers.PutInvoicingBookSelectionHandler)
@@ -541,7 +541,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 
 		// Failed invoice-import uploads (system_3 #10536): Admin-tier only,
 		// never the /invoicing group -- these are the owner's own uploaded
-		// bank documents, kept for the operator, not for her (security ruling
+		// bank documents, kept for the operator, not for zir (security ruling
 		// c65222 §2). The path deliberately does not start with "/invoicing/"
 		// either: TestInvoicingRoutes_OnlyOwnerAndAdminPassTheGate treats that
 		// whole prefix as owner-or-Admin by convention, which this is not.

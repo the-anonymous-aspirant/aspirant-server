@@ -15,7 +15,7 @@ import (
 // Download several invoices as one PDF (#9940-A2 / #9956-A1, operator
 // c61402): the owner ticks rows on the Invoices tab and gets one file
 // holding each ticked invoice's stored PDF, ordered by invoice number
-// ascending (the ZIP's own order), not tick order, so she can predict it and
+// ascending (the ZIP's own order), not tick order, so ze can predict it and
 // check it against the list (design_agent Design ack, c61504 on #9960).
 //
 // Only an issued invoice is accepted (design ack D2, binding this route too):
@@ -84,7 +84,7 @@ func ExportInvoicesMergedPDFHandler(c *gin.Context) {
 
 // invoicesForMerge fetches the given invoice ids, ordered by (prefix,
 // number) ascending -- the ZIP's own order, independent of the order ids
-// were requested in (design ack c61504: "She can predict it and check it
+// were requested in (design ack c61504: "They can predict it and check it
 // against the list"). It refuses the whole request, rather than silently
 // dropping a row, on the first id that does not exist or is not issued, so
 // a stale client can never get a shorter file than it asked for (ack D13).

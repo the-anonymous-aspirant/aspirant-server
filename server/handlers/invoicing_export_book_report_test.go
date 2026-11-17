@@ -222,7 +222,7 @@ func TestExportBookReport_OwnerIsolation(t *testing.T) {
 }
 
 // system_3 #10555-B2 (design §3.143 Decision 7, operator c65431): the report
-// counts the same rows as the Book, under her current selection, and its
+// counts the same rows as the Book, under zir current selection, and its
 // file is named after that selection.
 
 func bookReportCSV(t *testing.T, r *gin.Engine) ([][]string, string) {
@@ -314,7 +314,7 @@ func TestExportBookReport_CountsOnlyTheSelectedCategories(t *testing.T) {
 	if got, want := readBookReportRow(rows, "travel"), []string{"travel", "10,00", "10,00"}; joinRow(got) != joinRow(want) {
 		t.Errorf("travel: got %q want %q", got, want)
 	}
-	// An expense category she did not tick is not a row of the report.
+	// An expense category ze did not tick is not a row of the report.
 	if got := readBookReportRow(rows, "advice"); got != nil {
 		t.Errorf("an uncounted category is a row: %q", got)
 	}

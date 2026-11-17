@@ -87,7 +87,7 @@ func TestExportInvoicesMergedPDF_Refusals(t *testing.T) {
 }
 
 // Order is by invoice number ascending, not the order ids were given in
-// (design ack c61504: "She can predict it and check it against the list.").
+// (design ack c61504: "They can predict it and check it against the list.").
 // Exercised directly on invoicesForMerge, not through the HTTP response
 // bytes: gopdf embeds a non-deterministic element (two back-to-back calls
 // with IDENTICAL input already produce different bytes at the same length),

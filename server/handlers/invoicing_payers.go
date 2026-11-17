@@ -15,7 +15,7 @@ import (
 )
 
 // Payers from payments into the client book (system_3 #10548, under #10539;
-// design §3.142 Decisions 4-6). The owner ticks which senders of her incoming
+// design §3.142 Decisions 4-6). The owner ticks which senders of zir incoming
 // payments become clients; one transaction adds them and links every payment
 // of each ticked row. Nothing here runs on its own: every row starts unticked
 // in the dialog that calls these endpoints.

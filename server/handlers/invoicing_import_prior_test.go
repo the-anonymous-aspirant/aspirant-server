@@ -13,7 +13,7 @@ import (
 )
 
 // system_3 #10555-B1, §3.143 Decision 6: a re-import meets a row the owner
-// removed, and a row she deleted for good, honestly. The review flags a
+// removed, and a row ze deleted for good, honestly. The review flags a
 // removed row (no checkbox) and a deleted one, and every confirm counts both
 // apart from plain duplicates, for payments and expenses, on the N26 PDF, N26
 // CSV and PayPal paths.
