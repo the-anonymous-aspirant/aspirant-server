@@ -475,6 +475,15 @@ func (u *User) DeleteUser(db *gorm.DB) error {
 // CreatorUserID 0, the value IsRoomCreator already reads as "no creator
 // recorded" — its transparency toggles freeze as for a pre-#4835 room.
 //
+// Their relationship edges go with the seat (system_3 #11427, security c70255
+// on #11426): every constellation_relationships row with the user at either
+// end, in every room, cleared ones included. BuildRoomState reads a room's
+// edges without checking membership, so an edge left behind was still served
+// to the other players. The rooms' undo and redo history
+// (constellation_relationship_actions and _events) stays: it holds bare ids,
+// not edge rows, and SetRelationship refuses a pair with a non-member, so no
+// undo or redo can bring such an edge back.
+//
 // Not here, by decision: the invoicing book and the account row's username
 // and email wait on the operator (c70010).
 func deleteUserContent(tx *gorm.DB, userID uint) error {
@@ -521,6 +530,13 @@ func deleteUserContent(tx *gorm.DB, userID uint) error {
 		if err := tx.Unscoped().Where("user_id = ?", userID).Delete(model).Error; err != nil {
 			return err
 		}
+	}
+
+	// No cleared_at filter: ClearRelationship keeps a cleared row, and it names
+	// the user as much as an active one does.
+	if err := tx.Unscoped().Where("from_user_id = ? OR to_user_id = ?", userID, userID).
+		Delete(&Relationship{}).Error; err != nil {
+		return err
 	}
 
 	return tx.Unscoped().Model(&Room{}).Where("creator_user_id = ?", userID).

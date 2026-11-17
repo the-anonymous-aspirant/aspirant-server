@@ -25,7 +25,7 @@ func userContentModels() []interface{} {
 		&data_models.GoalTree{}, &data_models.GoalNode{}, &data_models.GoalEdge{}, &data_models.GoalComment{},
 		&data_models.UserDisplayName{}, &data_models.UserToken{},
 		&data_models.ConstellationProfile{}, &data_models.PlayerGoal{},
-		&data_models.Room{}, &data_models.RoomMember{},
+		&data_models.Room{}, &data_models.RoomMember{}, &data_models.Relationship{},
 		&data_models.EasterHuntClick{}, &data_models.EasterHuntScore{},
 		&data_models.GameScore{},
 	}
@@ -213,5 +213,104 @@ func TestDeletingAUserRemovesTheirContentAndUnlinksSharedRooms(t *testing.T) {
 	db.Unscoped().First(&u, gone.ID)
 	if u.DeletedAt == nil {
 		t.Error("the user row was not soft-deleted")
+	}
+}
+
+// Deleting a user removes every relationship edge that names them, in every
+// direction and whether or not it was cleared, and leaves the other players'
+// edges alone (system_3 #11427, security c70255 on #11426). Before this, the
+// other players in a room were still served edges to a user with no seat.
+func TestDeletingAUserRemovesTheirRelationshipEdges(t *testing.T) {
+	db := setupDeleteContentDB(t)
+	// What BuildRoomState reads besides the tables a delete touches.
+	db.AutoMigrate(&data_models.RelationshipType{}, &data_models.RelationshipAction{}, &data_models.DiceRoll{}, &data_models.GoalCard{})
+	role := data_models.Role{RoleName: "Member"}
+	mustCreate(t, db, &role)
+	gone := data_models.User{Username: "invented-gone", Email: "gone@example.test", RoleID: role.ID}
+	mustCreate(t, db, &gone)
+	kept := data_models.User{Username: "invented-kept", Email: "kept@example.test", RoleID: role.ID}
+	mustCreate(t, db, &kept)
+	third := data_models.User{Username: "invented-third", Email: "third@example.test", RoleID: role.ID}
+	mustCreate(t, db, &third)
+
+	kind := data_models.RelationshipType{Code: "X", Label: "Invented", Colour: "#123456", DisplayOrder: 1}
+	mustCreate(t, db, &kind)
+	room := data_models.Room{Code: "INV02", PlayerCount: 3, Status: "active", CreatorUserID: kept.ID}
+	mustCreate(t, db, &room)
+	for slot, u := range []data_models.User{gone, kept, third} {
+		mustCreate(t, db, &data_models.RoomMember{RoomID: room.ID, UserID: u.ID, Slot: slot + 1})
+	}
+	// A second room, so "every room" is not just the one being read.
+	other := data_models.Room{Code: "INV03", PlayerCount: 2, Status: "active", CreatorUserID: third.ID}
+	mustCreate(t, db, &other)
+
+	cleared := time.Now().Add(-time.Hour)
+	edge := func(roomID, from, to uint, clearedAt *time.Time) {
+		t.Helper()
+		mustCreate(t, db, &data_models.Relationship{RoomID: roomID, FromUserID: from, ToUserID: to, TypeID: kind.ID, ClearedAt: clearedAt})
+	}
+	edge(room.ID, gone.ID, kept.ID, nil)       // the deleted user as the source
+	edge(room.ID, third.ID, gone.ID, nil)      // and as the target
+	edge(room.ID, gone.ID, third.ID, &cleared) // a cleared edge names them too
+	edge(other.ID, kept.ID, gone.ID, nil)      // in a room they have no seat in
+	edge(room.ID, kept.ID, third.ID, nil)      // two other players: this one stays
+
+	const namesGone = "from_user_id = ? OR to_user_id = ?"
+	if n := count(t, db, &data_models.Relationship{}, namesGone, gone.ID, gone.ID); n != 4 {
+		t.Fatalf("seed: %d edge(s) name the deleted user, want 4", n)
+	}
+	// Positive control on the read: before the delete, the kept user is served
+	// the edge to the deleted user. Without this, an empty list after the
+	// delete could mean the read never returned such edges at all.
+	namingGone := func(viewer uint) (naming, total int) {
+		t.Helper()
+		var current data_models.Room
+		if err := db.First(&current, room.ID).Error; err != nil {
+			t.Fatalf("read the room: %v", err)
+		}
+		state, err := data_models.BuildRoomState(db, current, viewer)
+		if err != nil {
+			t.Fatalf("BuildRoomState for user %d: %v", viewer, err)
+		}
+		for _, r := range state.Relationships {
+			if r.FromUserID == gone.ID || r.ToUserID == gone.ID {
+				naming++
+			}
+		}
+		return naming, len(state.Relationships)
+	}
+	if naming, total := namingGone(kept.ID); naming != 1 || total != 2 {
+		t.Fatalf("before the delete the kept user sees %d edge(s) naming the deleted user of %d, want 1 of 2", naming, total)
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("db", db)
+		c.Set("user_id", uint(999)) // an admin who is none of the three
+		c.Next()
+	})
+	r.DELETE("/users/:id", DeleteUserHandler)
+	if w := fvDo(t, r, "DELETE", fmt.Sprintf("/users/%d", gone.ID), ""); w.Code != http.StatusOK {
+		t.Fatalf("delete user: %d %s", w.Code, w.Body.String())
+	}
+
+	// Counted Unscoped: gone, not marked.
+	if n := count(t, db, &data_models.Relationship{}, namesGone, gone.ID, gone.ID); n != 0 {
+		t.Errorf("%d edge(s) still name the deleted user, want 0", n)
+	}
+	// The edge between the two other players is intact and still active.
+	var survivors []data_models.Relationship
+	if err := db.Find(&survivors).Error; err != nil {
+		t.Fatalf("read the remaining edges: %v", err)
+	}
+	if len(survivors) != 1 || survivors[0].FromUserID != kept.ID || survivors[0].ToUserID != third.ID || survivors[0].ClearedAt != nil {
+		t.Errorf("remaining edges = %+v, want exactly the active kept-to-third edge", survivors)
+	}
+	// What the remaining members are served.
+	for _, viewer := range []data_models.User{kept, third} {
+		if naming, total := namingGone(viewer.ID); naming != 0 || total != 1 {
+			t.Errorf("%s sees %d edge(s) naming the deleted user of %d, want 0 of 1", viewer.Username, naming, total)
+		}
 	}
 }
