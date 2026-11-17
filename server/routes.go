@@ -94,6 +94,13 @@ func SetupMiddleware(r *gin.Engine) {
 // RegisterRoutes sets up all the routes for the server
 // It organizes routes by authentication level and functionality
 func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
+	// No response is storable by a cache unless its handler says otherwise
+	// (system_3 #11494). First, so it also covers what the auth middleware
+	// refuses and the router's own 404. It is registered here, not in
+	// SetupMiddleware, so every router built from the route table has it,
+	// the tests' included.
+	router.Use(middleware.NoStoreByDefault())
+
 	// Add DB to context for all routes
 	router.Use(func(c *gin.Context) {
 		c.Set("db", db)
