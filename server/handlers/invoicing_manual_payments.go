@@ -36,6 +36,53 @@ var manualPaymentFields = map[string]bool{
 	"paid_on": true, "gross_cents": true, "currency": true, "method": true,
 	"reference": true, "sender_name": true, "note": true, "client_id": true,
 	"new_client_name": true,
+	// A new client's address and email, typed with its name (system_3
+	// #11507): optional, and only with new_client_name.
+	"new_client_address": true, "new_client_email": true,
+}
+
+// maxNewClientAddressRunes bounds the address typed with a new client's name.
+// The client form itself sets no bound; this one is generous for a postal
+// address of several lines.
+const maxNewClientAddressRunes = 500
+
+// newClientDetails is what a hand entry may say about the client it adds,
+// beyond the name (system_3 #11507). Both are optional and both are the
+// owner's own typing: nothing here is read from an import.
+type newClientDetails struct {
+	Address string
+	Email   string
+}
+
+// newClientDetailsRefusal says why details cannot be accepted, or "" if they
+// can. They need a new client to belong to: with client_id, or with no client
+// at all, they would be dropped silently, so they are refused instead. The
+// field it names comes back first.
+func newClientDetailsRefusal(newClientName string, d newClientDetails) (string, string) {
+	if d.Address == "" && d.Email == "" {
+		return "", ""
+	}
+	if newClientName == "" {
+		field := "new_client_address"
+		if d.Address == "" {
+			field = "new_client_email"
+		}
+		return field, "can only be given together with new_client_name"
+	}
+	if utf8.RuneCountInString(d.Address) > maxNewClientAddressRunes || hasControlCharsExceptNewline(d.Address) || hasFormatChars(d.Address) {
+		return "new_client_address", fmt.Sprintf("must be at most %d characters of plain text", maxNewClientAddressRunes)
+	}
+	if !validOptionalEmail(d.Email) {
+		return "new_client_email", "must be a valid address when given"
+	}
+	return "", ""
+}
+
+// hasControlCharsExceptNewline is hasControlChars for a field that may hold
+// several lines: a line feed is allowed, a carriage return is dropped by the
+// caller, and every other control character is refused.
+func hasControlCharsExceptNewline(s string) bool {
+	return hasControlChars(strings.ReplaceAll(s, "\n", ""))
 }
 
 // validOneLineName is the rule a payer name typed by hand meets, whether it
@@ -217,6 +264,18 @@ func CreateManualPaymentHandler(c *gin.Context) {
 			return
 		}
 	}
+	var clientDetails newClientDetails
+	if clientDetails.Address, ok = str("new_client_address"); !ok {
+		return
+	}
+	clientDetails.Address = strings.ReplaceAll(clientDetails.Address, "\r", "")
+	if clientDetails.Email, ok = str("new_client_email"); !ok {
+		return
+	}
+	if field, msg := newClientDetailsRefusal(newClientName, clientDetails); msg != "" {
+		bad(field, msg)
+		return
+	}
 	note, ok := str("note")
 	if !ok {
 		return
@@ -273,7 +332,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	// the first one's client here.
 	var newClient *data_models.InvoicingClient
 	if newClientName != "" {
-		cl, existing, err := addPayerClient(tx, invoicingUserID(c), newClientName, "manual_payment")
+		cl, existing, err := addPayerClient(tx, invoicingUserID(c), newClientName, clientDetails, "manual_payment")
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Error adding a client for a manual payment: %v", err)
@@ -379,8 +438,10 @@ func newClientNameRefusal(name string) string {
 // addPayerClient adds name to the owner's client book inside tx, audited, unless
 // Decision 4's "the same" client is already there: then it returns that client
 // as existing and adds nothing, so the caller can refuse with it rather than
-// make a silent duplicate. via names the path in the audit event.
-func addPayerClient(tx *gorm.DB, owner uint, name, via string) (*data_models.InvoicingClient, *data_models.InvoicingClient, error) {
+// make a silent duplicate. details are what the owner typed with the name; an
+// existing client is never changed by them. via names the path in the audit
+// event.
+func addPayerClient(tx *gorm.DB, owner uint, name string, details newClientDetails, via string) (*data_models.InvoicingClient, *data_models.InvoicingClient, error) {
 	existing, err := findSameClient(tx, owner, name)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading the client book: %w", err)
@@ -388,7 +449,7 @@ func addPayerClient(tx *gorm.DB, owner uint, name, via string) (*data_models.Inv
 	if existing != nil {
 		return nil, existing, nil
 	}
-	cl := data_models.InvoicingClient{OwnerUserID: owner, Name: name}
+	cl := data_models.InvoicingClient{OwnerUserID: owner, Name: name, Address: details.Address, Email: details.Email}
 	if err := tx.Create(&cl).Error; err != nil {
 		return nil, nil, fmt.Errorf("creating the client: %w", err)
 	}
