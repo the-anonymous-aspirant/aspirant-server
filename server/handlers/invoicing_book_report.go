@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"aspirant-online/server/data_models"
 
@@ -29,9 +31,26 @@ import (
 // includes payments marked Gift, Loan, Refund, Other or Uncategorised: a
 // stated change to the report (c65404). The file is named after the
 // selection, e.g. book-report-work-only-2026-11-11-1430.csv.
+//
+// One month alone (system_3 #11634, #11497 item 12; operator c70883 on
+// #10985): with ?month=YYYY-MM only the entries paid in that month are
+// counted. The rows are the same; the columns are that month and Gesamt, and
+// the month's column is there even when nothing was counted in it, so the
+// file always says which month it is for. The file is then named
+// book-report-<selection>-month-YYYY-MM-<stamp>.csv. Without the parameter
+// nothing changes. A month that is not a calendar month written YYYY-MM is
+// refused before anything is read, and no export is recorded.
 func ExportBookReportHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	owner := invoicingUserID(c)
+
+	month := strings.TrimSpace(c.Query("month"))
+	if month != "" {
+		if _, err := time.Parse("2006-01", month); err != nil {
+			RespondWithError(c, http.StatusBadRequest, "month must be a calendar month written YYYY-MM, for example 2026-07")
+			return
+		}
+	}
 
 	selection, presets, err := readBookSelection(db, owner)
 	if err != nil {
@@ -69,6 +88,11 @@ func ExportBookReportHandler(c *gin.Context) {
 	}
 
 	months := bookReportMonths(payments, expenses)
+	if month != "" {
+		payments = paymentsPaidIn(payments, month)
+		expenses = expensesPaidIn(expenses, month)
+		months = []string{month}
+	}
 
 	incomeByMonth := map[string]int64{}
 	for _, p := range payments {
@@ -113,8 +137,35 @@ func ExportBookReportHandler(c *gin.Context) {
 		return
 	}
 	name := bookSelectionFileName(selection, presets)
-	serveCSV(c, db, exportFilename("book-report-"+name, "csv"), content,
-		gin.H{"kind": "book_report_csv", "months": len(months), "selection": name})
+	fileName := "book-report-" + name
+	details := gin.H{"kind": "book_report_csv", "months": len(months), "selection": name}
+	if month != "" {
+		fileName += "-month-" + month
+		details["month"] = month
+	}
+	serveCSV(c, db, exportFilename(fileName, "csv"), content, details)
+}
+
+// paymentsPaidIn keeps the payments paid in the given YYYY-MM month.
+func paymentsPaidIn(payments []data_models.InvoicingPayment, month string) []data_models.InvoicingPayment {
+	out := make([]data_models.InvoicingPayment, 0, len(payments))
+	for _, p := range payments {
+		if p.PaidOn.Format("2006-01") == month {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// expensesPaidIn keeps the expenses paid in the given YYYY-MM month.
+func expensesPaidIn(expenses []data_models.InvoicingExpense, month string) []data_models.InvoicingExpense {
+	out := make([]data_models.InvoicingExpense, 0, len(expenses))
+	for _, e := range expenses {
+		if e.PaidOn.Format("2006-01") == month {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // bookCountsIncome reports whether an incoming payment of this category

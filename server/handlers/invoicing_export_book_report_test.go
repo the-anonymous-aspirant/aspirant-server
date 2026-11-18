@@ -187,6 +187,117 @@ func TestExportBookReport_AuditsTheExportWithMonthCount(t *testing.T) {
 	}
 }
 
+// One month alone (system_3 #11634): ?month=YYYY-MM counts only that month's
+// entries. The rows are the whole book's; the columns are that month and
+// Gesamt, and the figures are that month's column of the whole-book file.
+func TestExportBookReport_OneMonthAmongSeveral(t *testing.T) {
+	db := setupBookReportDB(t)
+	seedPayment(t, db, bookReportUser, "incoming", "P1", "2026-07-14", 35000)
+	seedPayment(t, db, bookReportUser, "incoming", "P2", "2026-08-03", 20000)
+	seedExpense(t, db, bookReportUser, "E1", "2026-07-20", "materials and supplies", 4599)
+	seedExpense(t, db, bookReportUser, "E2", "2026-08-02", "travel", 1000)
+
+	withInvoicingClock(t, exportClock)
+	w := invoicingDo(bookReportRouter(db), "GET", "/invoicing/export/book-report.csv?month=2026-07", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", w.Code, w.Body.String())
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="book-report-work-only-month-2026-07-2026-11-06-1049.csv"` {
+		t.Errorf("disposition %q", cd)
+	}
+	rows := readClientsCSV(t, w.Body.String())
+	for label, want := range map[string][]string{
+		"Kategorie":              {"Kategorie", "2026-07", "Gesamt"},
+		"Einnahmen":              {"Einnahmen", "350,00", "350,00"},
+		"materials and supplies": {"materials and supplies", "45,99", "45,99"},
+		// August's travel is not in a July file, but its row stays.
+		"travel":          {"travel", "0,00", "0,00"},
+		"Ausgaben gesamt": {"Ausgaben gesamt", "45,99", "45,99"},
+		"Ergebnis":        {"Ergebnis", "304,01", "304,01"},
+	} {
+		got := rows[0]
+		if label != "Kategorie" {
+			got = readBookReportRow(rows, label)
+		}
+		if joinRow(got) != joinRow(want) {
+			t.Errorf("%s: got %q want %q", label, got, want)
+		}
+	}
+
+	// The same rows as the whole-book file, and July's figures match its
+	// July column.
+	whole := readClientsCSV(t, invoicingDo(bookReportRouter(db), "GET", "/invoicing/export/book-report.csv", "").Body.String())
+	if len(whole) != len(rows) {
+		t.Fatalf("rows: %d with a month, %d without", len(rows), len(whole))
+	}
+	for i := range whole {
+		if whole[i][0] != rows[i][0] || whole[i][1] != rows[i][1] {
+			t.Errorf("row %d: whole book %q, July file %q", i, whole[i], rows[i])
+		}
+	}
+}
+
+// A month with nothing counted in it still names itself: its column is there,
+// all zero. The file never comes back without saying which month it is for.
+func TestExportBookReport_AMonthWithNoEntriesKeepsItsColumn(t *testing.T) {
+	db := setupBookReportDB(t)
+	seedPayment(t, db, bookReportUser, "incoming", "P1", "2026-07-14", 35000)
+
+	rows := readClientsCSV(t, invoicingDo(bookReportRouter(db), "GET", "/invoicing/export/book-report.csv?month=2026-03", "").Body.String())
+	if got, want := rows[0], []string{"Kategorie", "2026-03", "Gesamt"}; joinRow(got) != joinRow(want) {
+		t.Fatalf("header: got %q want %q", got, want)
+	}
+	for _, label := range []string{"Einnahmen", "Ausgaben gesamt", "Ergebnis"} {
+		if got, want := readBookReportRow(rows, label), []string{label, "0,00", "0,00"}; joinRow(got) != joinRow(want) {
+			t.Errorf("%s: got %q want %q", label, got, want)
+		}
+	}
+}
+
+// A month that is not a calendar month written YYYY-MM is refused before
+// anything is read: 400, no file, and no export recorded.
+func TestExportBookReport_AMalformedMonthIsRefused(t *testing.T) {
+	db := setupBookReportDB(t)
+	seedPayment(t, db, bookReportUser, "incoming", "P1", "2026-07-14", 35000)
+	before := countAuditEvents(t, db)
+
+	for _, month := range []string{"2026-13", "2026-7", "07-2026", "2026", "juli", "2026-07-14", "2026-00"} {
+		w := invoicingDo(bookReportRouter(db), "GET", "/invoicing/export/book-report.csv?month="+month, "")
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("month=%q: %d, want 400 (%s)", month, w.Code, w.Body.String())
+		}
+		if cd := w.Header().Get("Content-Disposition"); cd != "" {
+			t.Errorf("month=%q: a refused export still sent a file (%q)", month, cd)
+		}
+		if !strings.Contains(w.Body.String(), "YYYY-MM") {
+			t.Errorf("month=%q: the refusal does not say what is expected: %s", month, w.Body.String())
+		}
+	}
+	if n := countAuditEvents(t, db); n != before {
+		t.Errorf("audit rows: %d, want %d: a refused export was recorded", n, before)
+	}
+}
+
+// The export's audit row names the month when one was asked for.
+func TestExportBookReport_AuditsTheMonth(t *testing.T) {
+	db := setupBookReportDB(t)
+	seedPayment(t, db, bookReportUser, "incoming", "P1", "2026-07-14", 35000)
+	seedExpense(t, db, bookReportUser, "E1", "2026-08-02", "travel", 1000)
+
+	if w := invoicingDo(bookReportRouter(db), "GET", "/invoicing/export/book-report.csv?month=2026-07", ""); w.Code != http.StatusOK {
+		t.Fatalf("export: %d", w.Code)
+	}
+	var ev data_models.InvoicingAuditEvent
+	db.Order("id desc").First(&ev)
+	var details map[string]interface{}
+	if err := json.Unmarshal([]byte(ev.Details), &details); err != nil {
+		t.Fatalf("details: %v (%q)", err, ev.Details)
+	}
+	if details["kind"] != "book_report_csv" || details["month"] != "2026-07" || details["months"] != float64(1) {
+		t.Errorf("audit details %v", details)
+	}
+}
+
 // With nothing in the book, the grid still has one row per starter category
 // (and Einnahmen / Ausgaben gesamt / Ergebnis), all zero, no month columns.
 func TestExportBookReport_EmptyBookIsAllZeroNoMonths(t *testing.T) {
