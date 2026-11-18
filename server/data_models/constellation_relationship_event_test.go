@@ -162,10 +162,10 @@ func TestRelationshipEventLogCapturesUndoRedo(t *testing.T) {
 
 	SetRelationshipWithHistory(db, room, 1, 1, 2, code["F"]) // event 1: set F
 	SetRelationshipWithHistory(db, room, 1, 1, 2, code["P"]) // event 2: set P
-	if err := UndoRelationship(db, room, 1); err != nil {    // event 3: restore F
+	if _, err := UndoRelationship(db, room, 1); err != nil { // event 3: restore F
 		t.Fatalf("undo: %v", err)
 	}
-	if err := RedoRelationship(db, room, 1); err != nil { // event 4: re-apply P
+	if _, err := RedoRelationship(db, room, 1); err != nil { // event 4: re-apply P
 		t.Fatalf("redo: %v", err)
 	}
 	events, _ := RoomRelationshipEvents(db, room.ID)

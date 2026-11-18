@@ -94,3 +94,56 @@ func TestHistoryHandlers_NonMemberForbidden(t *testing.T) {
 		t.Fatalf("non-member undo want 403, got %d — %s", w.Code, w.Body.String())
 	}
 }
+
+// system_3 #11432: an undo that meets a step whose other player left answers
+// 200 with the count and the one line, and still applies the step behind it.
+func TestHistoryHandlers_UndoSaysWhatItSkipped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, code, typeID := newHistHandlerDB(t)
+	defer db.Close()
+	data_models.JoinRoom(db, 3, code)
+	types, _ := data_models.GetRelationshipTypes(db)
+	otherType := types[1].ID
+
+	setP := "/constellations/rooms/:code/relationships/set"
+	setT := "/constellations/rooms/" + code + "/relationships/set"
+	rs := relRouterAs(db, 1, http.MethodPost, setP, SetRelationshipHandler)
+	for _, body := range []string{
+		fmt.Sprintf(`{"from_user_id":1,"to_user_id":2,"type_id":%d}`, typeID),
+		fmt.Sprintf(`{"from_user_id":1,"to_user_id":3,"type_id":%d}`, typeID),
+		fmt.Sprintf(`{"from_user_id":1,"to_user_id":3,"type_id":%d}`, otherType),
+	} {
+		if w := relDo(rs, http.MethodPost, setT, body); w.Code != http.StatusOK {
+			t.Fatalf("set want 200, got %d — %s", w.Code, w.Body.String())
+		}
+	}
+
+	undoT := "/constellations/rooms/" + code + "/relationships/undo"
+	ru := relRouterAs(db, 1, http.MethodPost, "/constellations/rooms/:code/relationships/undo", UndoRelationshipHandler)
+
+	if _, err := data_models.LeaveRoom(db, 3, code); err != nil {
+		t.Fatalf("leave: %v", err)
+	}
+	w := relDo(ru, http.MethodPost, undoT, "")
+	got := w.Body.String()
+	for _, want := range []string{`"applied":true`, `"skipped":1`, `"notice":"skipped: that player left the room"`} {
+		if w.Code != http.StatusOK || !strings.Contains(got, want) {
+			t.Fatalf("undo past a departed player: want 200 with %s, got %d — %s", want, w.Code, got)
+		}
+	}
+	// The next undo skips nothing: the count is 0 and there is no notice.
+	w = relDo(ru, http.MethodPost, undoT, "")
+	got = w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(got, `"applied":true`) || !strings.Contains(got, `"skipped":0`) || strings.Contains(got, `"notice"`) {
+		t.Fatalf("plain undo: want 200 applied:true skipped:0 and no notice, got %d — %s", w.Code, got)
+	}
+}
+
+func TestHistoryNotice(t *testing.T) {
+	if got := historyNotice(1); got != "skipped: that player left the room" {
+		t.Errorf("one step: %q", got)
+	}
+	if got := historyNotice(3); got != "skipped 3 steps: those players left the room" {
+		t.Errorf("three steps: %q", got)
+	}
+}
