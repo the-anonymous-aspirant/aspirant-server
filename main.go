@@ -129,12 +129,23 @@ func main() {
 		assetPath = "/data/assets"
 	}
 	assets, err := storage.NewLocalStorage(assetPath)
+	// The store as the erasure sweep sees it: nil when the init failed. A
+	// failed init leaves `assets` a nil pointer, and a nil pointer handed over
+	// as the interface would not compare equal to nil there.
+	var avatarStore storage.StorageBackend
 	if err != nil {
 		log.Printf("WARNING: Asset storage init failed: %v", err)
 		log.Println("WARNING: Asset-dependent routes will not work")
 	} else {
 		log.Printf("Asset storage initialized at %s (%d files indexed)", assetPath, assets.IndexSize())
+		avatarStore = assets
 	}
+
+	// Start the sweep that erases a deleted account's identifiers thirty days
+	// after deletion (system_3 #11591). Once at start and then hourly, like the
+	// failed-import sweep above; it sits here because it needs the asset store
+	// to remove an erased account's picture.
+	handlers.StartIdentifierErasureSweep(db, avatarStore)
 
 	// Initialize the Gin engine
 	r := gin.New() // Use gin.New() instead of gin.Default() to avoid default middleware

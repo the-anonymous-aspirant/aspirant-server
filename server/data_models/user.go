@@ -58,6 +58,64 @@ type User struct {
 	// serialised directly — the browser-facing avatar URL is derived from it
 	// via AvatarURLFor and carried on the response DTOs. Added for #4170.
 	AvatarETag string `json:"-"`
+	// IdentifiersErasedAt is when the hourly sweep erased this deleted
+	// account's identifiers, and nil until it has (system_3 #11591, the
+	// operator's answer c70522 on #11380: thirty days after deletion nothing
+	// personal remains on the row). It is the sweep's marker: the sweep asks
+	// "deleted long enough, and not yet marked", never what the fields hold,
+	// so a second pass finds nothing to do.
+	IdentifiersErasedAt *time.Time `json:"-"`
+}
+
+// IdentifierErasureAfter is how long a deleted account keeps its username,
+// address, password hash, comment and avatar before the sweep erases them.
+const IdentifierErasureAfter = 30 * 24 * time.Hour
+
+// ErasedUsername is what a deleted account's username becomes: built from the
+// id alone, so it says nothing about who the account was. The username index
+// is scoped to live rows (EnsureUserIdentifierUniqueIndexes), so a live
+// account that happens to be called this cannot collide with it.
+func ErasedUsername(id uint) string {
+	return fmt.Sprintf("deleted-%d", id)
+}
+
+// UsersDueForIdentifierErasure lists the accounts deleted more than
+// IdentifierErasureAfter before now that the sweep has not yet erased.
+func UsersDueForIdentifierErasure(db *gorm.DB, now time.Time) ([]User, error) {
+	var users []User
+	err := db.Unscoped().
+		Where("deleted_at IS NOT NULL AND deleted_at < ? AND identifiers_erased_at IS NULL", now.Add(-IdentifierErasureAfter)).
+		Order("id ASC").Find(&users).Error
+	return users, err
+}
+
+// AvatarETagHeldByAnother reports whether any other user row still carries
+// etag: a live account, or a deleted one the sweep has not erased yet. The
+// avatar store is content-addressed, so two accounts that uploaded the same
+// picture share one blob, and it may only go with the last of them. Counted
+// Unscoped for that reason. The condition names the struct field so gorm
+// resolves the column, as profile.go does.
+func AvatarETagHeldByAnother(db *gorm.DB, userID uint, etag string) (bool, error) {
+	var n int
+	err := db.Unscoped().Model(&User{}).Where(&User{AvatarETag: etag}).Where("id <> ?", userID).Count(&n).Error
+	return n > 0, err
+}
+
+// EraseUserIdentifiers removes everything personal from a deleted account's
+// row and stamps it erased. The row stays, soft-deleted, so ids other tables
+// hold keep meaning "an account that existed". The WHERE repeats the sweep's
+// own condition, so a row that is live, or already erased, is never written.
+func EraseUserIdentifiers(db *gorm.DB, userID uint, now time.Time) error {
+	return db.Unscoped().Model(&User{}).
+		Where("id = ? AND deleted_at IS NOT NULL AND identifiers_erased_at IS NULL", userID).
+		UpdateColumns(map[string]interface{}{
+			"Username":            ErasedUsername(userID),
+			"Email":               "",
+			"Password":            "",
+			"Comment":             "",
+			"AvatarETag":          "",
+			"IdentifiersErasedAt": now,
+		}).Error
 }
 
 // AvatarURLFor builds the browser-facing URL the SPA binds to an <img> for a
