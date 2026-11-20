@@ -33,7 +33,28 @@ const (
 var manualExpenseFields = map[string]bool{
 	"paid_on": true, "amount_cents": true, "currency": true,
 	"category": true, "reference": true, "note": true, "client_id": true,
-	"payee": true,
+	"payee": true, "create_category": true,
+}
+
+// createCategoryFlag reads the optional "create_category" of an expense
+// create or edit (system_3 #11579 item B): true means `category` is a name ze
+// typed, saved with the expense as a new category if it is not one already.
+// Writes the 400 itself and returns false on a bad value.
+func createCategoryFlag(c *gin.Context, body map[string]json.RawMessage) (bool, bool) {
+	raw, present := body["create_category"]
+	if !present || string(raw) == "null" {
+		return false, true
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_field", "create_category must be true or false")
+		return false, false
+	}
+	if _, has := body["category"]; v && !has {
+		respondError(c, http.StatusBadRequest, "invalid_field", "create_category needs a category")
+		return false, false
+	}
+	return v, true
 }
 
 var expenseCategoryFields = map[string]bool{"name": true, "counts_as": true}
@@ -133,7 +154,11 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if category == "" {
+	createCategory, ok := createCategoryFlag(c, body)
+	if !ok {
+		return
+	}
+	if category == "" && !createCategory {
 		category = data_models.ExpenseCategoryOther
 	}
 	reference, ok := str("reference")
@@ -170,16 +195,23 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error storing expense")
 		return
 	}
-	valid, err := data_models.IsExpenseCategoryForOwner(tx, invoicingUserID(c), category)
+	// A typed category is made or restored inside this transaction, so a
+	// refusal below rolls it back with the expense (#11579 item 9).
+	var refusalCode, refusal string
+	if createCategory {
+		category, refusalCode, refusal, err = resolveTypedExpenseCategory(tx, invoicingUserID(c), category)
+	} else {
+		refusalCode, refusal, err = checkExpenseCategoryChoice(tx, invoicingUserID(c), category, "")
+	}
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Error checking expense category %q: %v", category, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error storing expense")
 		return
 	}
-	if !valid {
+	if refusal != "" {
 		tx.Rollback()
-		bad("category", "is not one of your expense categories")
+		respondError(c, http.StatusBadRequest, refusalCode, refusal)
 		return
 	}
 	var clientID *uint
@@ -366,8 +398,8 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 		return
 	}
 	name = strings.TrimSpace(name)
-	if name == "" || utf8.RuneCountInString(name) > maxExpenseCategoryNameRunes || strings.Contains(name, "\n") || hasControlChars(name) || hasFormatChars(name) {
-		respondError(c, http.StatusBadRequest, "invalid_field", fmt.Sprintf("name must be one line of 1-%d characters", maxExpenseCategoryNameRunes))
+	if refusal := expenseCategoryNameRefusal(name); refusal != "" {
+		respondError(c, http.StatusBadRequest, "invalid_field", "name "+refusal)
 		return
 	}
 	// Private is built in and never counts (§3.143 Decision 8): ze cannot
@@ -403,12 +435,31 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error storing category")
 		return
 	}
-	for _, existing := range cats {
-		if strings.EqualFold(existing.Name, name) {
+	for i, existing := range cats {
+		if !strings.EqualFold(existing.Name, name) {
+			continue
+		}
+		if !existing.Removed() {
 			tx.Rollback()
 			respondError(c, http.StatusConflict, "duplicate_category", fmt.Sprintf("category %q already exists", existing.Name))
 			return
 		}
+		// A name ze removed comes back as it was, name and counts_as, rather
+		// than as a twin (system_3 #11579). A counts_as sent here is not
+		// applied: changing what a category counts as is not this path's.
+		if err := setExpenseCategoryRemoved(tx, invoicingUserID(c), &cats[i], false); err != nil {
+			tx.Rollback()
+			log.Printf("Error restoring expense category %d: %v", existing.ID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing category")
+			return
+		}
+		if err := tx.Commit().Error; err != nil {
+			log.Printf("Error committing expense category restore: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing category")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"category": cats[i], "restored": true})
+		return
 	}
 	cat := data_models.InvoicingExpenseCategory{OwnerUserID: invoicingUserID(c), Name: name, CountsAs: countsAs}
 	if err := tx.Create(&cat).Error; err != nil {

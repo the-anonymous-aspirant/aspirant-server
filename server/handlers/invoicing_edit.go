@@ -43,11 +43,13 @@ var (
 	}
 	paymentEditableImported = map[string]bool{"note": true, "category": true, "client_id": true}
 
+	// create_category is not a field of the expense: it says the category is
+	// a name ze typed, to be saved with the expense (system_3 #11579).
 	expenseEditableByHand = map[string]bool{
 		"paid_on": true, "amount_cents": true, "category": true, "payee": true,
-		"reference": true, "note": true,
+		"reference": true, "note": true, "create_category": true,
 	}
-	expenseEditableImported = map[string]bool{"category": true, "note": true}
+	expenseEditableImported = map[string]bool{"category": true, "note": true, "create_category": true}
 )
 
 // editBody decodes a PATCH body and checks every key against the fields any
@@ -579,6 +581,12 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_field", field+" "+msg)
 	}
 
+	createCategory, ok := createCategoryFlag(c, body)
+	if !ok {
+		tx.Rollback()
+		return
+	}
+
 	next := *e
 	for _, k := range keys {
 		raw := body[k]
@@ -599,17 +607,27 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 			next.AmountCents = v
 		case "category":
 			s, ok := editString(raw)
-			if !ok || s == "" {
+			if !ok || (s == "" && !createCategory) {
 				bad(k, "is not one of your expense categories")
 				return
 			}
-			valid, err := data_models.IsExpenseCategoryForOwner(tx, owner, s)
+			// A removed category is refused unless it is this expense's own,
+			// unchanged (#11579 item 4). A typed one is made or restored in
+			// this transaction, so a later refusal rolls it back (item 9).
+			var code, msg string
+			var err error
+			if createCategory {
+				s, code, msg, err = resolveTypedExpenseCategory(tx, owner, s)
+			} else {
+				code, msg, err = checkExpenseCategoryChoice(tx, owner, s, e.Category)
+			}
 			if err != nil {
 				fail(tx, "category check", err)
 				return
 			}
-			if !valid {
-				bad(k, "is not one of your expense categories")
+			if msg != "" {
+				tx.Rollback()
+				respondError(c, http.StatusBadRequest, code, msg)
 				return
 			}
 			next.Category = s
@@ -639,7 +657,18 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 
 	before, after := changedFields(keys, expenseEditView(*e), expenseEditView(next))
 	if len(after) == 0 {
-		tx.Rollback()
+		// Nothing on the expense changed. A typed category may still have
+		// been restored (ze typed the name of the expense's own removed
+		// category), and that is kept.
+		if createCategory {
+			if err := tx.Commit().Error; err != nil {
+				log.Printf("Error committing expense %d category: %v", id, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error updating expense")
+				return
+			}
+		} else {
+			tx.Rollback()
+		}
 		c.JSON(http.StatusOK, gin.H{"expense": e})
 		return
 	}

@@ -1,6 +1,7 @@
 package data_models
 
 import (
+	"strings"
 	"time"
 
 	"github.com/jinzhu/gorm"
@@ -35,7 +36,21 @@ type InvoicingExpenseCategory struct {
 	Name        string    `json:"name" gorm:"type:text;not null;unique_index:idx_invoicing_expense_categories_owner_name"`
 	CountsAs    string    `json:"counts_as" gorm:"type:text;not null"`
 	CreatedAt   time.Time `json:"created_at"`
+	// RemovedAt is when the owner removed one of zir own categories (system_3
+	// #11579, design §3.161 Decision 5; until it merges, #11566). A removed
+	// category is kept: every expense that has it keeps it, and the Book, its
+	// selection, presets and CSV count it as before. It is only no longer
+	// offered for an expense that does not already have it. Never named
+	// deleted_at: gorm v1 reads that as a soft-delete marker and would hide
+	// the row from the report that still counts it.
+	RemovedAt *time.Time `json:"removed_at" gorm:"column:removed_at"`
+	// Builtin is true for the ten starters and Private, which nobody can
+	// remove. Computed when listed, not stored.
+	Builtin bool `json:"builtin" gorm:"-"`
 }
+
+// Removed reports whether the owner has removed this category.
+func (c InvoicingExpenseCategory) Removed() bool { return c.RemovedAt != nil }
 
 func (InvoicingExpenseCategory) TableName() string { return "invoicing_expense_categories" }
 
@@ -110,6 +125,7 @@ func ListInvoicingExpenseCategories(db *gorm.DB, owner uint) ([]InvoicingExpense
 	out := make([]InvoicingExpenseCategory, 0, len(cats))
 	var private *InvoicingExpenseCategory
 	for i := range cats {
+		cats[i].Builtin = IsBuiltinExpenseCategory(cats[i].Name)
 		if cats[i].Name == ExpenseCategoryPrivate {
 			private = &cats[i]
 			continue
@@ -122,8 +138,65 @@ func ListInvoicingExpenseCategories(db *gorm.DB, owner uint) ([]InvoicingExpense
 	return out, nil
 }
 
+// GetExpenseCategoryByName returns the owner's category with exactly this
+// name, removed or not, seeding the defaults first; nil when ze has none.
+func GetExpenseCategoryByName(db *gorm.DB, owner uint, name string) (*InvoicingExpenseCategory, error) {
+	if err := EnsureDefaultExpenseCategories(db, owner); err != nil {
+		return nil, err
+	}
+	return firstExpenseCategory(db.Where("owner_user_id = ? AND name = ?", owner, name))
+}
+
+// FindExpenseCategoryFold returns the owner's category whose name equals
+// name ignoring case, removed or not, seeding the defaults first; nil when
+// there is none. Names are unique per owner ignoring case: every create path
+// refuses a case-twin.
+func FindExpenseCategoryFold(db *gorm.DB, owner uint, name string) (*InvoicingExpenseCategory, error) {
+	if err := EnsureDefaultExpenseCategories(db, owner); err != nil {
+		return nil, err
+	}
+	var cats []InvoicingExpenseCategory
+	if err := db.Where("owner_user_id = ?", owner).Order("id asc").Find(&cats).Error; err != nil {
+		return nil, err
+	}
+	// Compared in Go, not with SQL LOWER(): SQLite's lower() folds ASCII
+	// only, Postgres' folds by locale, and the create path's own duplicate
+	// check has always been strings.EqualFold.
+	for i := range cats {
+		if strings.EqualFold(cats[i].Name, name) {
+			cats[i].Builtin = IsBuiltinExpenseCategory(cats[i].Name)
+			return &cats[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// GetExpenseCategory returns the owner's category by id, or nil when the id
+// is unknown or belongs to another book.
+func GetExpenseCategory(db *gorm.DB, owner, id uint) (*InvoicingExpenseCategory, error) {
+	return firstExpenseCategory(db.Where("owner_user_id = ? AND id = ?", owner, id))
+}
+
+func firstExpenseCategory(q *gorm.DB) (*InvoicingExpenseCategory, error) {
+	var c InvoicingExpenseCategory
+	err := q.First(&c).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.Builtin = IsBuiltinExpenseCategory(c.Name)
+	return &c, nil
+}
+
 // IsExpenseCategoryForOwner reports whether name is one of the owner's
-// categories, seeding the defaults first if ze has none.
+// categories, removed ones included, seeding the defaults first if ze has
+// none. It answers "does this book know the name", which is what the Book's
+// selection, its presets and the list filter ask: a removed category still
+// counts while any expense has it (§3.161). Paths that put a category on an
+// expense ask the stricter question instead (handlers'
+// checkExpenseCategoryChoice).
 func IsExpenseCategoryForOwner(db *gorm.DB, owner uint, name string) (bool, error) {
 	if err := EnsureDefaultExpenseCategories(db, owner); err != nil {
 		return false, err
