@@ -445,6 +445,9 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 		invoicing.DELETE("/expenses/:id/receipt", handlers.DeleteInvoicingExpenseReceiptHandler)
 		invoicing.GET("/expense-categories", handlers.ListInvoicingExpenseCategoriesHandler)
 		invoicing.POST("/expense-categories", handlers.CreateExpenseCategoryHandler)
+		// Remove and restore one of zir own categories (system_3 #11579).
+		invoicing.POST("/expense-categories/:id/remove", handlers.ExpenseCategoryActionHandler("remove"))
+		invoicing.POST("/expense-categories/:id/restore", handlers.ExpenseCategoryActionHandler("restore"))
 		// What the Book counts, and zir presets (system_3 #10555-A3, design
 		// §3.143 Decision 8).
 		invoicing.GET("/book/selection", handlers.GetInvoicingBookSelectionHandler)

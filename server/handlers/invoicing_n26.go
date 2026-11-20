@@ -1169,22 +1169,26 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		return
 	}
 	categoryOK := map[string]bool{}
+	categoryRefusal := map[string]string{}
 	seen := map[string]bool{}
 	for i, v := range rows {
 		ok, checked := categoryOK[v.row.Category]
 		if !checked {
-			valid, err := data_models.IsExpenseCategoryForOwner(tx, owner, v.row.Category)
+			// A removed category is refused here too: an import makes new
+			// expenses (system_3 #11579 item 4).
+			_, refusal, err := checkExpenseCategoryChoice(tx, owner, v.row.Category, "")
 			if err != nil {
 				tx.Rollback()
 				log.Printf("Error checking expense category %q: %v", v.row.Category, err)
 				RespondWithError(c, http.StatusInternalServerError, "Error storing expenses")
 				return
 			}
-			ok, categoryOK[v.row.Category] = valid, valid
+			categoryRefusal[v.row.Category] = refusal
+			ok, categoryOK[v.row.Category] = refusal == "", refusal == ""
 		}
 		if !ok {
 			tx.Rollback()
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: category is not one of your expense categories", i))
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, categoryRefusal[v.row.Category]))
 			return
 		}
 		if seen[v.row.TransactionID] {
