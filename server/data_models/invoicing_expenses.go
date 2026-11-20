@@ -243,6 +243,13 @@ type InvoicingExpense struct {
 	RemovedAt *time.Time `json:"removed_at" gorm:"column:removed_at"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+	// HasReceipt says whether a receipt is attached (system_3 #11630-A1). It
+	// is not a column: only the list handler reads it, from
+	// invoicing_expense_receipts, and sets it. Every other response that
+	// carries an expense leaves it nil, so it is left out of the JSON rather
+	// than sent as false: a false there would claim "no receipt" without
+	// having looked.
+	HasReceipt *bool `json:"has_receipt,omitempty" gorm:"-"`
 }
 
 func (InvoicingExpense) TableName() string { return "invoicing_expenses" }

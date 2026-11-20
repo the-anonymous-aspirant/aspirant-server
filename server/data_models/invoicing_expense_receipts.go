@@ -42,6 +42,22 @@ func GetInvoicingExpenseReceipt(db *gorm.DB, owner, expenseID uint) (*InvoicingE
 	return &r, nil
 }
 
+// InvoicingExpenseIDsWithReceipt returns the set of the owner's expense ids
+// that have a receipt attached (system_3 #11630-A1). One query for the whole
+// list, and it reads only expense_id, never a receipt's bytes. Scoped by
+// owner, so another book's receipt never marks an expense as having one.
+func InvoicingExpenseIDsWithReceipt(db *gorm.DB, owner uint) (map[uint]bool, error) {
+	var ids []uint
+	if err := db.Model(&InvoicingExpenseReceipt{}).Where("owner_user_id = ?", owner).Pluck("expense_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	set := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
+}
+
 // SaveInvoicingExpenseReceipt upserts the expense's receipt row (one per
 // expense: a second upload replaces the first).
 func SaveInvoicingExpenseReceipt(db *gorm.DB, r *InvoicingExpenseReceipt, owner, expenseID uint) error {
