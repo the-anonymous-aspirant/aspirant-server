@@ -314,6 +314,19 @@ func ListInvoicingExpensesHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error listing expenses")
 		return
 	}
+	// Each row says whether a receipt is attached, so the tabs can tell
+	// "Receipt" from "Add receipt" without opening each one (system_3
+	// #11630-A1). Read-only: one owner-scoped read of expense ids.
+	withReceipt, err := data_models.InvoicingExpenseIDsWithReceipt(db, invoicingUserID(c))
+	if err != nil {
+		log.Printf("Error reading expense receipts: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error listing expenses")
+		return
+	}
+	for i := range expenses {
+		has := withReceipt[expenses[i].ID]
+		expenses[i].HasReceipt = &has
+	}
 	c.JSON(http.StatusOK, gin.H{"expenses": expenses})
 }
 

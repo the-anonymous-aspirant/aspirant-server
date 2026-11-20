@@ -309,3 +309,54 @@ func TestExpenseCategories_OwnerIsolation(t *testing.T) {
 		t.Errorf("owner B's own seeded list is wrong: %+v", gotB)
 	}
 }
+
+// system_3 #11630-A1: the list says, per expense, whether a receipt is
+// attached, from the owner's own receipts only; other responses leave the
+// field out rather than claim false.
+func TestListExpenses_HasReceipt(t *testing.T) {
+	db, r := newExpenseFixture(t)
+	code, withR, body := createExpense(t, r, `{"paid_on":"2026-07-14","amount_cents":4200,"category":"travel","note":"Train"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	if strings.Contains(body, "has_receipt") {
+		t.Errorf("create response names has_receipt without reading it: %s", body)
+	}
+	code, without, body := createExpense(t, r, `{"paid_on":"2026-07-15","amount_cents":900,"category":"travel","note":"Bus"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	if err := data_models.SaveInvoicingExpenseReceipt(db, &data_models.InvoicingExpenseReceipt{
+		Content: []byte("%PDF-1.4"), ContentType: "application/pdf", Filename: "train.pdf", SHA256: "x", SizeBytes: 8,
+	}, expenseFixtureUser, withR.ID); err != nil {
+		t.Fatalf("save receipt: %v", err)
+	}
+	// Another book's receipt row that names the second expense's id must not
+	// mark it as having one.
+	if err := db.Create(&data_models.InvoicingExpenseReceipt{
+		ExpenseID: without.ID, OwnerUserID: 99, Content: []byte("x"), ContentType: "application/pdf",
+		Filename: "other.pdf", SHA256: "y", SizeBytes: 1, CreatedAt: time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatalf("other owner's receipt: %v", err)
+	}
+
+	got := map[uint]*bool{}
+	for _, e := range listExpenses(t, r, "") {
+		got[e.ID] = e.HasReceipt
+	}
+	if got[withR.ID] == nil || !*got[withR.ID] {
+		t.Errorf("expense %d has a receipt; has_receipt = %v", withR.ID, got[withR.ID])
+	}
+	if got[without.ID] == nil || *got[without.ID] {
+		t.Errorf("expense %d has no receipt of its owner's; has_receipt = %v", without.ID, got[without.ID])
+	}
+
+	// The removed view says it too.
+	if err := db.Model(&data_models.InvoicingExpense{}).Where("id = ?", withR.ID).Update("removed_at", time.Now().UTC()).Error; err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	removed := listExpenses(t, r, "?removed=true")
+	if len(removed) != 1 || removed[0].ID != withR.ID || removed[0].HasReceipt == nil || !*removed[0].HasReceipt {
+		t.Errorf("removed list: %+v", removed)
+	}
+}
