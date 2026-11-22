@@ -382,7 +382,7 @@ func AddPayersHandler(c *gin.Context) {
 				fail(tx, "create client", err)
 				return
 			}
-			if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreate, invoicingEntityClient, nc.ID, auditDetails(gin.H{"after": nc, "via": "payers"})); err != nil {
+			if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreate, invoicingEntityClient, nc.ID, auditDetails(gin.H{"after": clientAudit(nc), "iban_changed": nc.IBAN != "", "via": "payers"})); err != nil {
 				fail(tx, "audit client", err)
 				return
 			}
@@ -410,7 +410,7 @@ func AddPayersHandler(c *gin.Context) {
 					fail(tx, "update client", err)
 					return
 				}
-				if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionUpdate, invoicingEntityClient, existing.ID, auditDetails(gin.H{"before": before, "after": existing, "via": "payers"})); err != nil {
+				if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionUpdate, invoicingEntityClient, existing.ID, auditDetails(withVia(clientAuditChange(before, *existing), "payers"))); err != nil {
 					fail(tx, "audit client update", err)
 					return
 				}

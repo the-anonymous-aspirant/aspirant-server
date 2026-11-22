@@ -105,25 +105,39 @@ type InvoicingClient struct {
 	// Phone and the profile links are how Flower reaches the client (system_3
 	// #9971). Like the notes they are zirs, not the invoice's: ForInvoice
 	// leaves them out. Links are stored canonical or empty.
-	Phone        string    `json:"phone" gorm:"type:text;not null;default:''"`
-	InstagramURL string    `json:"instagram_url" gorm:"column:instagram_url;type:text;not null;default:''"`
-	TelegramURL  string    `json:"telegram_url" gorm:"column:telegram_url;type:text;not null;default:''"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Phone        string `json:"phone" gorm:"type:text;not null;default:''"`
+	InstagramURL string `json:"instagram_url" gorm:"column:instagram_url;type:text;not null;default:''"`
+	TelegramURL  string `json:"telegram_url" gorm:"column:telegram_url;type:text;not null;default:''"`
+	// IBAN is the client's bank account, kept so later N26 payments from it
+	// link to the client (system_3 #11551; security c75108). Stored in
+	// NormaliseIBAN's form or empty. It is Flower's own record, not the
+	// invoice's: ForInvoice leaves it out, client audit rows record only
+	// whether it changed, and no export carries it.
+	IBAN      string    `json:"iban" gorm:"column:iban;type:text;not null;default:''"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (InvoicingClient) TableName() string { return "invoicing_clients" }
 
-// ForInvoice is the client as an invoice may carry it: everything but zir
-// private notes and zir ways of reaching the client (phone, Instagram,
-// Telegram). The issue-time ClientSnapshot and the PDF are built from this,
-// so none of them reach a stored invoice or anything rendered from one.
+// ForInvoice is the client as an invoice may carry it. The issue-time
+// ClientSnapshot and the PDF are built from this, so nothing outside the list
+// below reaches a stored invoice or anything rendered from one. It is a list
+// of the fields an invoice keeps, not a list of the ones it drops, so a new
+// client field stays off invoices until someone adds it here (security C1,
+// system_3 #11551). Left out on purpose: zir private notes (#9962), zir ways
+// of reaching the client (phone, Instagram, Telegram; #9971) and the IBAN.
 func (cl InvoicingClient) ForInvoice() InvoicingClient {
-	cl.Notes = ""
-	cl.Phone = ""
-	cl.InstagramURL = ""
-	cl.TelegramURL = ""
-	return cl
+	return InvoicingClient{
+		ID:          cl.ID,
+		OwnerUserID: cl.OwnerUserID,
+		Name:        cl.Name,
+		Address:     cl.Address,
+		Email:       cl.Email,
+		PayPalEmail: cl.PayPalEmail,
+		CreatedAt:   cl.CreatedAt,
+		UpdatedAt:   cl.UpdatedAt,
+	}
 }
 
 // KleinbetragLimitCents is the §33 UStDV ceiling: an invoice up to 250.00 EUR

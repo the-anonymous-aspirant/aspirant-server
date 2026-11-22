@@ -285,6 +285,10 @@ type invoicingClientRequest struct {
 	Phone        string `json:"phone"`
 	InstagramURL string `json:"instagram_url"`
 	TelegramURL  string `json:"telegram_url"`
+	// IBAN is optional in the body: absent keeps the stored value, so a form
+	// that does not know the field yet cannot wipe one an import set; "" clears
+	// it. Bound into NormaliseIBAN's form (system_3 #11551).
+	IBAN *string `json:"iban"`
 }
 
 // maxClientNotesRunes bounds the free-text notes on a client (system_3 #9962).
@@ -326,6 +330,15 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	if !bindSocialLinks(c, &req.InstagramURL, &req.TelegramURL) {
 		return req, false
 	}
+	if req.IBAN != nil {
+		iban := data_models.NormaliseIBAN(*req.IBAN)
+		// The message never repeats the value (security C5, #11551).
+		if iban != "" && !data_models.ValidIBAN(iban) {
+			respondError(c, http.StatusBadRequest, "invalid_iban", "iban must be a valid IBAN when given")
+			return req, false
+		}
+		req.IBAN = &iban
+	}
 	return req, true
 }
 
@@ -358,6 +371,9 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 		InstagramURL: req.InstagramURL,
 		TelegramURL:  req.TelegramURL,
 	}
+	if req.IBAN != nil {
+		cl.IBAN = *req.IBAN
+	}
 
 	tx := db.Begin()
 	if err := tx.Create(&cl).Error; err != nil {
@@ -366,7 +382,7 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error creating client")
 		return
 	}
-	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": cl})); err != nil {
+	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": clientAudit(cl), "iban_changed": cl.IBAN != ""})); err != nil {
 		tx.Rollback()
 		log.Printf("Error auditing invoicing client create: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error creating client")
@@ -415,13 +431,16 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 	existing.Phone = req.Phone
 	existing.InstagramURL = req.InstagramURL
 	existing.TelegramURL = req.TelegramURL
+	if req.IBAN != nil {
+		existing.IBAN = *req.IBAN
+	}
 	if err := tx.Save(existing).Error; err != nil {
 		tx.Rollback()
 		log.Printf("Error updating invoicing client %d: %v", id, err)
 		RespondWithError(c, http.StatusInternalServerError, "Error updating client")
 		return
 	}
-	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionUpdate, invoicingEntityClient, existing.ID, auditDetails(gin.H{"before": before, "after": existing})); err != nil {
+	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionUpdate, invoicingEntityClient, existing.ID, auditDetails(clientAuditChange(before, *existing))); err != nil {
 		tx.Rollback()
 		log.Printf("Error auditing invoicing client update: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error updating client")

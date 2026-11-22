@@ -453,7 +453,7 @@ func addPayerClient(tx *gorm.DB, owner uint, name string, details newClientDetai
 	if err := tx.Create(&cl).Error; err != nil {
 		return nil, nil, fmt.Errorf("creating the client: %w", err)
 	}
-	if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": cl, "via": via})); err != nil {
+	if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreate, invoicingEntityClient, cl.ID, auditDetails(gin.H{"after": clientAudit(cl), "iban_changed": cl.IBAN != "", "via": via})); err != nil {
 		return nil, nil, fmt.Errorf("auditing client create %d: %w", cl.ID, err)
 	}
 	return &cl, nil, nil
