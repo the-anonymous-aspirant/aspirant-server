@@ -37,6 +37,10 @@ type payerClientRef struct {
 	ID          uint   `json:"id"`
 	Name        string `json:"name"`
 	PayPalEmail string `json:"paypal_email"`
+	// HasIBAN says whether the client already has an IBAN, never which one
+	// (security C5, c75108): the dialog needs only to know whether saving
+	// would give it the row's (system_3 #12232).
+	HasIBAN bool `json:"has_iban"`
 }
 
 // payerCandidate is one row of the dialog: one sender, grouped by PayPal
@@ -55,6 +59,13 @@ type payerCandidate struct {
 	// PayPal email, or by Decision 4's "the same" name): the dialog offers it
 	// rather than a new client.
 	SameClient *payerClientRef `json:"same_client,omitempty"`
+	// CarriesIBAN is true when every payment of the row carries the same N26
+	// payer IBAN and no client in the book has it yet: the value saving
+	// would put on a client that has none. The IBAN itself is never served
+	// (security C5, c75108; system_3 #12232).
+	CarriesIBAN bool `json:"carries_iban"`
+	iban        string
+	mixedIBAN   bool
 }
 
 // tidyPayerName is Decision 6: trim and collapse spaces; a name written all
@@ -146,6 +157,11 @@ func buildPayerCandidates(ps []data_models.InvoicingPayment, clients []data_mode
 		if row.TidiedName == "" && strings.TrimSpace(p.SenderName) != "" {
 			row.TidiedName = tidyPayerName(p.SenderName)
 		}
+		if row.PaymentCount == 0 {
+			row.iban = p.SenderIBAN
+		} else if p.SenderIBAN != row.iban {
+			row.mixedIBAN = true
+		}
 		row.PaymentIDs = append(row.PaymentIDs, p.ID)
 		row.PaymentCount++
 		totals[k][p.Currency] += p.GrossCents
@@ -165,6 +181,7 @@ func buildPayerCandidates(ps []data_models.InvoicingPayment, clients []data_mode
 		}
 		sort.Slice(row.Totals, func(i, j int) bool { return row.Totals[i].Currency < row.Totals[j].Currency })
 		row.SameClient = sameClientFor(row.PayPalEmail, row.Payer, clients)
+		row.CarriesIBAN = row.iban != "" && !row.mixedIBAN && !clientHasIBAN(clients, row.iban)
 		out = append(out, *row)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -176,19 +193,34 @@ func buildPayerCandidates(ps []data_models.InvoicingPayment, clients []data_mode
 	return out, leftOut
 }
 
+// clientHasIBAN reports whether any client in the book has iban (both in
+// NormaliseIBAN's form).
+func clientHasIBAN(clients []data_models.InvoicingClient, iban string) bool {
+	for _, cl := range clients {
+		if cl.IBAN == iban {
+			return true
+		}
+	}
+	return false
+}
+
+func clientRef(cl data_models.InvoicingClient) *payerClientRef {
+	return &payerClientRef{ID: cl.ID, Name: cl.Name, PayPalEmail: cl.PayPalEmail, HasIBAN: cl.IBAN != ""}
+}
+
 // sameClientFor finds the book client a payer already is: one whose PayPal
 // email is the payer's, else one whose name is "the same" (Decision 4).
 func sameClientFor(email, name string, clients []data_models.InvoicingClient) *payerClientRef {
 	if email != "" {
 		for _, cl := range clients {
 			if strings.EqualFold(cl.PayPalEmail, email) {
-				return &payerClientRef{ID: cl.ID, Name: cl.Name, PayPalEmail: cl.PayPalEmail}
+				return clientRef(cl)
 			}
 		}
 	}
 	for _, cl := range clients {
 		if sameClientName(cl.Name, name) {
-			return &payerClientRef{ID: cl.ID, Name: cl.Name, PayPalEmail: cl.PayPalEmail}
+			return clientRef(cl)
 		}
 	}
 	return nil
@@ -336,14 +368,7 @@ func AddPayersHandler(c *gin.Context) {
 		}
 		return false
 	}
-	ibanTaken := func(iban string) bool {
-		for _, cl := range clients {
-			if cl.IBAN == iban {
-				return true
-			}
-		}
-		return false
-	}
+	ibanTaken := func(iban string) bool { return clientHasIBAN(clients, iban) }
 
 	added, linked := 0, 0
 	var addedClients []data_models.InvoicingClient
@@ -428,10 +453,18 @@ func AddPayersHandler(c *gin.Context) {
 				return
 			}
 			// An existing client gets the PayPal email only when its own is
-			// empty and no other client answers to it (Decision 5).
+			// empty and no other client answers to it (Decision 5), and the
+			// N26 payer's IBAN under the same rule (system_3 #12232), so later
+			// N26 payments from it link by themselves. Both land in one update
+			// and one audit row, which records the IBAN only as iban_changed.
+			before := *existing
 			if email != "" && existing.PayPalEmail == "" && !emailTaken(email) {
-				before := *existing
 				existing.PayPalEmail = email
+			}
+			if iban != "" && existing.IBAN == "" && !ibanTaken(iban) {
+				existing.IBAN = iban
+			}
+			if existing.PayPalEmail != before.PayPalEmail || existing.IBAN != before.IBAN {
 				if err := tx.Save(existing).Error; err != nil {
 					fail(tx, "update client", err)
 					return
@@ -442,7 +475,8 @@ func AddPayersHandler(c *gin.Context) {
 				}
 				for k := range clients {
 					if clients[k].ID == existing.ID {
-						clients[k].PayPalEmail = email
+						clients[k].PayPalEmail = existing.PayPalEmail
+						clients[k].IBAN = existing.IBAN
 					}
 				}
 			}
