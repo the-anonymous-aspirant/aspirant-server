@@ -506,3 +506,141 @@ func TestN26IBAN_ExpenseCandidatesCarryNone(t *testing.T) {
 		t.Errorf("the payee's IBAN reached the parse response")
 	}
 }
+
+// system_3 #12232 (§3.142 Decision 5 as amended by #12122): a ticked N26 row
+// linked to an EXISTING client gives it the row's IBAN when the client has
+// none and no other client has it, so the payer's later N26 payments link by
+// themselves. The candidates read says so with two booleans, never the value.
+func TestN26IBAN_AddPayersCarriesItToAnExistingClientWithNone(t *testing.T) {
+	db := setupPaymentsDB(t)
+	r := setupN26IBANRouter(db, 7)
+	mara := data_models.InvoicingClient{OwnerUserID: 7, Name: "Mara Esempio"}
+	luca := data_models.InvoicingClient{OwnerUserID: 7, Name: "Luca Prova", IBAN: thirdExampleIBAN}
+	nora := data_models.InvoicingClient{OwnerUserID: 7, Name: "Nora Beispiel"}
+	for _, cl := range []*data_models.InvoicingClient{&mara, &luca, &nora} {
+		if err := db.Create(cl).Error; err != nil {
+			t.Fatalf("seed client: %v", err)
+		}
+	}
+	m1 := seedN26Payment(t, db, 7, "Mara Esempio", exampleIBAN, 2)
+	m2 := seedN26Payment(t, db, 7, "Mara Esempio", exampleIBAN, 3)
+	l1 := seedN26Payment(t, db, 7, "Luca Prova", otherExampleIBAN, 4)
+	n1 := seedN26Payment(t, db, 7, "Nora Beispiel", otherExampleIBAN, 5)
+	n2 := seedN26Payment(t, db, 7, "Nora Beispiel", exampleIBAN, 6)
+
+	w := invoicingDo(r, "GET", "/invoicing/payers/candidates", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("candidates: %d %s", w.Code, w.Body.String())
+	}
+	noIBANIn(t, "the payer candidates", w.Body.String())
+	var cands struct {
+		Payers []payerCandidate `json:"payers"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &cands)
+	type flags struct{ carries, same, has bool }
+	want := map[string]flags{
+		"Mara Esempio":  {carries: true, same: true, has: false},  // one IBAN, the client has none
+		"Luca Prova":    {carries: true, same: true, has: true},   // the client has its own already
+		"Nora Beispiel": {carries: false, same: true, has: false}, // two different IBANs: none
+	}
+	for _, row := range cands.Payers {
+		w, ok := want[row.Payer]
+		got := flags{carries: row.CarriesIBAN, same: row.SameClient != nil}
+		if row.SameClient != nil {
+			got.has = row.SameClient.HasIBAN
+		}
+		if !ok || got != w {
+			t.Errorf("row %q: carries_iban/same_client/has_iban = %+v, want %+v", row.Payer, got, w)
+		}
+	}
+	if len(cands.Payers) != len(want) {
+		t.Fatalf("rows: %+v", cands.Payers)
+	}
+	for _, k := range []string{`"carries_iban"`, `"has_iban"`} {
+		if !strings.Contains(w.Body.String(), k) {
+			t.Errorf("the candidates read lacks %s", k)
+		}
+	}
+	audits0 := countAudit(t, db)
+
+	body := fmt.Sprintf(`{"payers":[
+		{"payment_ids":[%d,%d],"client_id":%d},
+		{"payment_ids":[%d],"client_id":%d},
+		{"payment_ids":[%d,%d],"client_id":%d}]}`, m1, m2, mara.ID, l1, luca.ID, n1, n2, nora.ID)
+	w = invoicingDo(r, "POST", "/invoicing/payers", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("add payers: %d %s", w.Code, w.Body.String())
+	}
+	noIBANIn(t, "the add-payers response", w.Body.String())
+	wantIBAN := map[uint]string{mara.ID: exampleIBAN, luca.ID: thirdExampleIBAN, nora.ID: ""}
+	for id, iban := range wantIBAN {
+		cl, _ := data_models.GetInvoicingClient(db, 7, id)
+		if cl.IBAN != iban {
+			t.Errorf("client %s has IBAN %q, want %q", cl.Name, cl.IBAN, iban)
+		}
+	}
+	// Five payment links and one client update, Mara's only.
+	if got := countAudit(t, db); got != audits0+6 {
+		t.Errorf("audit rows: %d new, want 6", got-audits0)
+	}
+	var upd data_models.InvoicingAuditEvent
+	db.Where("entity_type = ? AND entity_id = ? AND action = ?", invoicingEntityClient, mara.ID, invoicingActionUpdate).First(&upd)
+	if !strings.Contains(upd.Details, `"iban_changed":true`) || !strings.Contains(upd.Details, `"via":"payers"`) {
+		t.Errorf("Mara's update row: %s", upd.Details)
+	}
+	noIBANInAudit(t, db)
+
+	// Mara's next N26 payment links by itself.
+	file := n26CSV(n26CSVLine("2026-10-20", "M. ESEMPIO", exampleIBAN, "80.00"))
+	w = confirmN26(t, r, decodeN26Parse(t, uploadN26(t, r, map[string][]byte{"export.csv": file})).Files[0].Candidates)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
+	}
+	p := paymentByName(t, db, 7, "M. ESEMPIO")
+	if p.ClientID == nil || *p.ClientID != mara.ID || p.SenderIBAN != "" {
+		t.Errorf("the later payment: client %v, IBAN kept %v; want Mara's %d and none", p.ClientID, p.SenderIBAN != "", mara.ID)
+	}
+}
+
+// Another client already holding the row's IBAN wins: the existing client
+// picked for the row does not get it, and the read says so.
+func TestN26IBAN_AddPayersLeavesAnExistingClientWhenAnotherHasIt(t *testing.T) {
+	db := setupPaymentsDB(t)
+	r := setupN26IBANRouter(db, 7)
+	holder := data_models.InvoicingClient{OwnerUserID: 7, Name: "Alter Kunde", IBAN: exampleIBAN}
+	mara := data_models.InvoicingClient{OwnerUserID: 7, Name: "Mara Esempio"}
+	for _, cl := range []*data_models.InvoicingClient{&holder, &mara} {
+		if err := db.Create(cl).Error; err != nil {
+			t.Fatalf("seed client: %v", err)
+		}
+	}
+	m1 := seedN26Payment(t, db, 7, "Mara Esempio", exampleIBAN, 2)
+	w := invoicingDo(r, "GET", "/invoicing/payers/candidates", "")
+	var cands struct {
+		Payers []payerCandidate `json:"payers"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &cands)
+	if len(cands.Payers) != 1 || cands.Payers[0].CarriesIBAN {
+		t.Errorf("a row whose IBAN another client has should not carry it: %+v", cands.Payers)
+	}
+	audits0 := countAudit(t, db)
+	w = invoicingDo(r, "POST", "/invoicing/payers", fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"client_id":%d}]}`, m1, mara.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("add payers: %d %s", w.Code, w.Body.String())
+	}
+	if cl, _ := data_models.GetInvoicingClient(db, 7, mara.ID); cl.IBAN != "" {
+		t.Errorf("Mara took an IBAN Alter Kunde already has")
+	}
+	if got := countAudit(t, db); got != audits0+1 {
+		t.Errorf("audit rows: %d new, want only the payment link", got-audits0)
+	}
+}
+
+func countAudit(t *testing.T, db *gorm.DB) int {
+	t.Helper()
+	var n int
+	if err := db.Model(&data_models.InvoicingAuditEvent{}).Count(&n).Error; err != nil {
+		t.Fatalf("count audit: %v", err)
+	}
+	return n
+}
