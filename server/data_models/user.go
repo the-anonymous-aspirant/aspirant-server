@@ -105,17 +105,29 @@ func AvatarETagHeldByAnother(db *gorm.DB, userID uint, etag string) (bool, error
 // row and stamps it erased. The row stays, soft-deleted, so ids other tables
 // hold keep meaning "an account that existed". The WHERE repeats the sweep's
 // own condition, so a row that is live, or already erased, is never written.
+//
+// In the same transaction it empties the account's invoicing audit details
+// (system_3 #12081), so no moment has the account erased and its audit rows
+// still naming its clients. A row not written (live, or erased already)
+// empties nothing.
 func EraseUserIdentifiers(db *gorm.DB, userID uint, now time.Time) error {
-	return db.Unscoped().Model(&User{}).
-		Where("id = ? AND deleted_at IS NOT NULL AND identifiers_erased_at IS NULL", userID).
-		UpdateColumns(map[string]interface{}{
-			"Username":            ErasedUsername(userID),
-			"Email":               "",
-			"Password":            "",
-			"Comment":             "",
-			"AvatarETag":          "",
-			"IdentifiersErasedAt": now,
-		}).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Unscoped().Model(&User{}).
+			Where("id = ? AND deleted_at IS NOT NULL AND identifiers_erased_at IS NULL", userID).
+			UpdateColumns(map[string]interface{}{
+				"Username":            ErasedUsername(userID),
+				"Email":               "",
+				"Password":            "",
+				"Comment":             "",
+				"AvatarETag":          "",
+				"IdentifiersErasedAt": now,
+			})
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
+		}
+		_, err := EmptyInvoicingAuditDetails(tx, userID)
+		return err
+	})
 }
 
 // AvatarURLFor builds the browser-facing URL the SPA binds to an <img> for a

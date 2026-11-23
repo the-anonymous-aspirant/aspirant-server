@@ -70,6 +70,14 @@ func eraseDueIdentifiers(db *gorm.DB, assets storage.StorageBackend, now time.Ti
 	if erased > 0 {
 		log.Printf("identifier erasure sweep: erased the identifiers of %d deleted account(s)", erased)
 	}
+	// Accounts erased before their audit rows were part of the erase keep
+	// details until this empties them; after that it changes nothing
+	// (system_3 #12081). A failure is logged and retried next pass.
+	if n, err := data_models.EmptyErasedAccountsAuditDetails(db); err != nil {
+		log.Printf("identifier erasure sweep: emptying erased accounts' invoicing audit details: %v (retrying next pass)", err)
+	} else if n > 0 {
+		log.Printf("identifier erasure sweep: emptied the details of %d invoicing audit row(s) of erased accounts", n)
+	}
 	return erased
 }
 

@@ -1,6 +1,8 @@
 package data_models
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 	_ "time/tzdata" // BerlinLocation must resolve even without a system zoneinfo
@@ -186,7 +188,9 @@ func GetInvoicingClient(db *gorm.DB, owner, id uint) (*InvoicingClient, error) {
 
 // InvoicingAuditEvent is one append-only record of a create, edit, issue,
 // import or export in the invoicing app (spec §3: every action is logged with
-// user and timestamp). Nothing updates or deletes these rows.
+// user and timestamp). Nothing deletes these rows. One write ever changes
+// them: thirty days after an account is deleted, the identifier erasure sweep
+// empties its rows' Details (EmptyInvoicingAuditDetails).
 type InvoicingAuditEvent struct {
 	ID         uint      `json:"id" gorm:"primary_key"`
 	CreatedAt  time.Time `json:"created_at" gorm:"index"`
@@ -198,6 +202,103 @@ type InvoicingAuditEvent struct {
 }
 
 func (InvoicingAuditEvent) TableName() string { return "invoicing_audit_events" }
+
+// ErasedAuditDetails is what an erased account's audit rows keep as Details:
+// an empty object. The action, entity, entity id, user and time stay, so the
+// trail of who did what, and when, outlives the names and addresses the
+// details had copied (the operator's answer c74952 on system_3 #11380).
+const ErasedAuditDetails = "{}"
+
+// The one audit row about a user that someone else writes: an admin's
+// download of the user's failed import, under the admin's id, with details
+// {"owner_user_id": <the user>, "filename": ...} (handlers'
+// DownloadImportFailureHandler). A new writer whose actor is not the book's
+// owner has to be taught to the erase here too.
+const (
+	ImportFailureAuditEntity   = "import_failure"
+	ImportFailureAuditDownload = "download"
+)
+
+// EmptyInvoicingAuditDetails sets Details to ErasedAuditDetails on every
+// audit row of userID that still holds something, and on every admin's
+// download row about userID's failed imports, and returns how many it
+// changed. A row already "{}" or "" (some writers record none) is left as it
+// is, so a second call changes nothing (system_3 #12081).
+func EmptyInvoicingAuditDetails(tx *gorm.DB, userID uint) (int64, error) {
+	res := tx.Model(&InvoicingAuditEvent{}).
+		Where("user_id = ? AND details NOT IN (?)", userID, []string{"", ErasedAuditDetails}).
+		UpdateColumn("details", ErasedAuditDetails)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	n, err := emptyImportFailureDownloadDetails(tx, map[uint]bool{userID: true})
+	return res.RowsAffected + n, err
+}
+
+// EmptyErasedAccountsAuditDetails is EmptyInvoicingAuditDetails for every
+// account the sweep has already erased: those erased before the audit rows
+// were part of the erase (system_3 #12081: the boot pass of 2026-11-18 erased
+// at least one), or any whose rows were somehow left. Returns how many rows
+// it changed, 0 once all are done.
+func EmptyErasedAccountsAuditDetails(db *gorm.DB) (int64, error) {
+	erased := db.Unscoped().Model(&User{}).Select("id").Where("identifiers_erased_at IS NOT NULL").QueryExpr()
+	res := db.Model(&InvoicingAuditEvent{}).
+		Where("details NOT IN (?) AND user_id IN (?)", []string{"", ErasedAuditDetails}, erased).
+		UpdateColumn("details", ErasedAuditDetails)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	var ids []uint
+	if err := db.Unscoped().Model(&User{}).Where("identifiers_erased_at IS NOT NULL").Pluck("id", &ids).Error; err != nil {
+		return res.RowsAffected, err
+	}
+	owners := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		owners[id] = true
+	}
+	n, err := emptyImportFailureDownloadDetails(db, owners)
+	return res.RowsAffected + n, err
+}
+
+// emptyImportFailureDownloadDetails empties the download rows whose
+// owner_user_id is one of owners. Rows are chosen by entity and action, then
+// matched in Go: details is text, and a row that is "" or does not parse is
+// skipped, never cast, so it cannot fail the erase it is part of (security's
+// E1, c75300 on system_3 #12081). The match is the account id, never the file
+// name (E2).
+func emptyImportFailureDownloadDetails(tx *gorm.DB, owners map[uint]bool) (int64, error) {
+	if len(owners) == 0 {
+		return 0, nil
+	}
+	var rows []InvoicingAuditEvent
+	if err := tx.Select("id, details").
+		Where("entity_type = ? AND action = ? AND details NOT IN (?)",
+			ImportFailureAuditEntity, ImportFailureAuditDownload, []string{"", ErasedAuditDetails}).
+		Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	var ids []uint
+	for _, r := range rows {
+		var d struct {
+			OwnerUserID json.Number `json:"owner_user_id"`
+		}
+		dec := json.NewDecoder(strings.NewReader(r.Details))
+		dec.UseNumber()
+		if dec.Decode(&d) != nil {
+			continue
+		}
+		owner, err := strconv.ParseUint(d.OwnerUserID.String(), 10, 64)
+		if err != nil || !owners[uint(owner)] {
+			continue
+		}
+		ids = append(ids, r.ID)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := tx.Model(&InvoicingAuditEvent{}).Where("id IN (?)", ids).UpdateColumn("details", ErasedAuditDetails)
+	return res.RowsAffected, res.Error
+}
 
 // RecordInvoicingAuditEvent appends one audit row. Callers pass the same tx
 // as the mutation it records, so the two commit or roll back together.

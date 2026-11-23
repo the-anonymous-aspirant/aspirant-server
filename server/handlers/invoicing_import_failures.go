@@ -22,8 +22,8 @@ import (
 // ruling c65222). Shared by the N26 and PayPal import handlers.
 
 const (
-	invoicingEntityImportFailure = "import_failure"
-	invoicingActionDownload      = "download"
+	invoicingEntityImportFailure = data_models.ImportFailureAuditEntity
+	invoicingActionDownload      = data_models.ImportFailureAuditDownload
 
 	// importFailureMaxWindowHours is security's hard ceiling (c65222 §3): an
 	// env value may shorten the window, never lengthen it.
@@ -283,6 +283,10 @@ func DownloadImportFailureHandler(c *gin.Context) {
 	}
 
 	adminID := invoicingUserID(c)
+	// Written under the admin's id, about another user's file: the erase
+	// sweep finds this row by owner_user_id and empties it with that user's
+	// own (data_models.EmptyInvoicingAuditDetails, system_3 #12081). Keep
+	// both keys, and the entity and action, as they are.
 	if err := data_models.RecordInvoicingAuditEvent(db, adminID, invoicingActionDownload, invoicingEntityImportFailure, row.ID,
 		auditDetails(gin.H{"owner_user_id": row.OwnerUserID, "filename": row.Filename})); err != nil {
 		log.Printf("import failure: auditing download of %d: %v", id, err)
