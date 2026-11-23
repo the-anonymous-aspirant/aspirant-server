@@ -88,6 +88,14 @@ type InvoicingPayment struct {
 	Entry          string    `json:"entry" gorm:"type:text;not null;default:'import'"`
 	Method         string    `json:"method" gorm:"type:text;not null;default:''"`
 	Reference      string    `json:"reference" gorm:"type:text;not null;default:''"`
+	// SenderIBAN is the payer's account from an N26 CSV row, in
+	// NormaliseIBAN's form, kept only while the payment has no client: it
+	// is how "Add payers…" can put the IBAN on a new client's card
+	// (system_3 #11551). Linking the payment to a client, or removing it,
+	// clears it (security C4, c75108). It is never serialised: not in the
+	// payments API response, and so not in a payment audit row either,
+	// since auditDetails marshals through JSON.
+	SenderIBAN string `json:"-" gorm:"column:sender_iban;type:text;not null;default:''"`
 	// OnInvoice is computed for the list (#8409): whether any invoice, draft
 	// or issued, covers this payment. Not stored.
 	OnInvoice bool `json:"on_invoice" gorm:"-"`
@@ -337,6 +345,24 @@ func InvoiceIDsForPayment(db *gorm.DB, paymentID uint) ([]uint, error) {
 		out = append(out, l.InvoiceID)
 	}
 	return out, nil
+}
+
+// FindInvoicingClientByIBAN returns the owner's client whose IBAN matches
+// (both in NormaliseIBAN's form), or nil. Another book's client never
+// matches, as for the PayPal email.
+func FindInvoicingClientByIBAN(db *gorm.DB, owner uint, iban string) (*InvoicingClient, error) {
+	if iban == "" {
+		return nil, nil
+	}
+	var cl InvoicingClient
+	err := db.Where("owner_user_id = ? AND iban = ?", owner, iban).Order("id asc").First(&cl).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cl, nil
 }
 
 // FindInvoicingClientByPayPalEmail returns the owner's client whose PayPal

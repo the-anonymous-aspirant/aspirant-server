@@ -336,6 +336,14 @@ func AddPayersHandler(c *gin.Context) {
 		}
 		return false
 	}
+	ibanTaken := func(iban string) bool {
+		for _, cl := range clients {
+			if cl.IBAN == iban {
+				return true
+			}
+		}
+		return false
+	}
 
 	added, linked := 0, 0
 	var addedClients []data_models.InvoicingClient
@@ -348,6 +356,18 @@ func AddPayersHandler(c *gin.Context) {
 				email = e
 			} else if e != email {
 				email = ""
+				break
+			}
+		}
+		// The same for the N26 payer's IBAN (system_3 #11551): one IBAN on
+		// every payment of the row, or none.
+		iban := ""
+		for j, id := range row.PaymentIDs {
+			v := candidates[id].SenderIBAN
+			if j == 0 {
+				iban = v
+			} else if v != iban {
+				iban = ""
 				break
 			}
 		}
@@ -377,6 +397,12 @@ func AddPayersHandler(c *gin.Context) {
 			// refuse is left out, so the card can still be saved later.
 			if email != "" && validOptionalEmail(email) {
 				nc.Email = email
+			}
+			// A new client from an N26 row gets its payer's IBAN, so later
+			// N26 imports link by themselves, under the PayPal email's rule:
+			// never when another client already has it (system_3 #11551).
+			if iban != "" && !ibanTaken(iban) {
+				nc.IBAN = iban
 			}
 			if err := tx.Create(&nc).Error; err != nil {
 				fail(tx, "create client", err)
@@ -426,8 +452,10 @@ func AddPayersHandler(c *gin.Context) {
 			p := candidates[id]
 			before := p.ClientID
 			p.ClientID = &cl.ID
+			// The client card holds the IBAN from here on, so the payment's
+			// copy goes with the link (security C4, c75108).
 			if err := tx.Model(&data_models.InvoicingPayment{}).Where("id = ? AND owner_user_id = ?", p.ID, owner).
-				UpdateColumn("client_id", cl.ID).Error; err != nil {
+				UpdateColumns(map[string]interface{}{"client_id": cl.ID, "sender_iban": ""}).Error; err != nil {
 				fail(tx, "link payment", err)
 				return
 			}

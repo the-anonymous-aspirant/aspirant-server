@@ -239,8 +239,10 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 					return nil, fmt.Errorf("unlink %d: %w", p.ID, err)
 				}
 			}
+			// The payer's IBAN goes with the payment and does not come back
+			// on a restore (security C4, c75108 on system_3 #11551).
 			if err := tx.Model(&data_models.InvoicingPayment{}).Where("id = ?", p.ID).
-				Update("removed_at", now).Error; err != nil {
+				Updates(map[string]interface{}{"removed_at": now, "sender_iban": ""}).Error; err != nil {
 				return nil, fmt.Errorf("remove %d: %w", p.ID, err)
 			}
 			details := auditDetails(gin.H{"before": gin.H{"removed_at": nil}, "after": gin.H{"removed_at": now}, "unlinked_draft_ids": drafts})
