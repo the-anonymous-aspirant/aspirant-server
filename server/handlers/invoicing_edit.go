@@ -491,6 +491,11 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		}
 	}
 
+	// A payment with a client keeps no IBAN: the client card holds it
+	// (security C4, c75108 on system_3 #11551).
+	if next.ClientID != nil {
+		next.SenderIBAN = ""
+	}
 	if err := tx.Save(&next).Error; err != nil {
 		fail(tx, "save", err)
 		return

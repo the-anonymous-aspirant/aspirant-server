@@ -107,6 +107,11 @@ type n26Candidate struct {
 	Removed             bool   `json:"removed,omitempty"`
 	DeletedEarlier      bool   `json:"deleted_earlier,omitempty"`
 	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
+	// SenderIBAN is the payer's IBAN, on N26 CSV rows only (system_3
+	// #11551). It rides in the candidate because the parse stores nothing
+	// and its row id is a hash: confirm has no other way to learn it. It
+	// goes back only to the owner who uploaded the file it came from.
+	SenderIBAN string `json:"sender_iban,omitempty"`
 }
 
 type n26FileError struct {
@@ -237,7 +242,7 @@ func parseN26AmountCents(s string) (int64, error) {
 	s = strings.ReplaceAll(s, ",", ".")
 	var euros, cents int64
 	if _, err := fmt.Sscanf(s, "%d.%d", &euros, &cents); err != nil {
-		return 0, fmt.Errorf("amount %q: %v", s, err)
+		return 0, fmt.Errorf("amount %s: %v", quoteN26Value(s, 20), err)
 	}
 	sign := int64(1)
 	if euros < 0 || strings.HasPrefix(strings.TrimSpace(s), "-") {
@@ -907,6 +912,9 @@ type n26ConfirmRequest struct {
 type n26ConfirmSummary struct {
 	Confirmed  int `json:"confirmed"`
 	Duplicates int `json:"duplicates"`
+	// Linked counts the confirmed payments that went to a client by their
+	// payer's IBAN. A count only: the summary never names an IBAN (C5).
+	Linked int `json:"linked"`
 	priorCounts
 }
 
@@ -971,6 +979,17 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		}
 		if row.Currency != "EUR" {
 			bad("currency must be EUR")
+			return
+		}
+		// The parse sets sender_iban on CSV rows only, already valid. The
+		// message never repeats the value (security C5).
+		row.SenderIBAN = data_models.NormaliseIBAN(row.SenderIBAN)
+		if row.SenderIBAN != "" && row.DocumentKind != n26KindCSVExport {
+			bad("sender_iban is given only on CSV export rows")
+			return
+		}
+		if row.SenderIBAN != "" && !data_models.ValidIBAN(row.SenderIBAN) {
+			bad("sender_iban is not a valid IBAN")
 			return
 		}
 		paidOn, err := time.Parse("2006-01-02", row.PaidOn)
@@ -1039,6 +1058,23 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			Note:          v.row.Note,
 			Category:      data_models.PaymentCategoryUncategorised,
 			Entry:         data_models.PaymentEntryImport,
+		}
+		// A payer whose IBAN is on one of the owner's clients is that
+		// client, as a PayPal email is (system_3 #11551). The client card
+		// then holds the IBAN, so a linked payment keeps no copy (C4).
+		cl, err := data_models.FindInvoicingClientByIBAN(tx, userID, v.row.SenderIBAN)
+		if err != nil {
+			tx.Rollback()
+			log.Printf("Error matching a client for N26 payment %s: %v", v.row.TransactionID, err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing payments")
+			return
+		}
+		if cl != nil {
+			id := cl.ID
+			p.ClientID = &id
+			summary.Linked++
+		} else {
+			p.SenderIBAN = v.row.SenderIBAN
 		}
 		if err := tx.Create(&p).Error; err != nil {
 			tx.Rollback()

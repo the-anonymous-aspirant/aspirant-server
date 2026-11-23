@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"aspirant-online/server/data_models"
 )
 
 // N26 CSV export for the N26 import (system_3 #10543). The operator ruled the
@@ -109,7 +111,7 @@ func (e *n26CSVHeaderError) Error() string {
 			shown = append(shown, "…")
 			break
 		}
-		shown = append(shown, fmt.Sprintf("%q", truncateRunes(cleanN26CSVText(h), 40)))
+		shown = append(shown, quoteN26Value(cleanN26CSVText(h), 40))
 	}
 	return "column names not recognised: " + strings.Join(shown, ", ")
 }
@@ -181,7 +183,7 @@ func readN26CSV(text string) ([]n26CSVRow, *n26CSVLanguage, error) {
 		}
 		row.paidOn, err = time.Parse(lang.dateLayout, dateStr)
 		if err != nil {
-			return nil, nil, fmt.Errorf("row %d: date %q is not %s", line, truncateRunes(dateStr, 20), lang.dateLayout)
+			return nil, nil, fmt.Errorf("row %d: date %s is not %s", line, quoteN26Value(dateStr, 20), lang.dateLayout)
 		}
 		rows = append(rows, row)
 	}
@@ -225,11 +227,11 @@ func matchN26CSVHeader(header []string) (*n26CSVLanguage, map[n26CSVField]int) {
 func parseN26CSVAmountCents(lang *n26CSVLanguage, s string) (int64, error) {
 	m := lang.amount.FindStringSubmatch(s)
 	if m == nil {
-		return 0, fmt.Errorf("amount %q is not a %s amount", truncateRunes(s, 20), lang.name)
+		return 0, fmt.Errorf("amount %s is not a %s amount", quoteN26Value(s, 20), lang.name)
 	}
 	whole, err := strconv.ParseInt(m[2], 10, 64)
 	if err != nil || whole > maxUnitPriceCents/100 {
-		return 0, fmt.Errorf("amount %q is out of range", truncateRunes(s, 20))
+		return 0, fmt.Errorf("amount %s is out of range", quoteN26Value(s, 20))
 	}
 	frac := m[3]
 	for len(frac) < 2 {
@@ -307,6 +309,7 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 				GrossCents:    row.cents,
 				NetCents:      row.cents,
 				SenderName:    name,
+				SenderIBAN:    n26CSVSenderIBAN(row),
 				Note:          note,
 			})
 		} else {
@@ -321,6 +324,29 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 		}
 	}
 	return in, out, skippedInternal, nil
+}
+
+// n26CSVSenderIBAN is the row's partner IBAN in NormaliseIBAN's form, or ""
+// when the row has none or it fails the checksum (system_3 #11551). A bad
+// one does not fail the file: the payment imports without it.
+func n26CSVSenderIBAN(row n26CSVRow) string {
+	iban := data_models.NormaliseIBAN(row.iban)
+	if !data_models.ValidIBAN(iban) {
+		return ""
+	}
+	return iban
+}
+
+// quoteN26Value is a value from an uploaded file as an error message may
+// quote it: cut to n runes, and never an IBAN. A file whose columns are not
+// what the parser expects (no header row, say) can put a partner IBAN where
+// a date, an amount or a column name was read, and the message goes back
+// to the uploader (security C5, c75108 on system_3 #11551).
+func quoteN26Value(s string, n int) string {
+	if data_models.LooksLikeIBAN(s) {
+		return "(a value shaped like an IBAN)"
+	}
+	return fmt.Sprintf("%q", truncateRunes(s, n))
 }
 
 // n26CSVName is the row's counterparty, cleaned to the confirm endpoints'

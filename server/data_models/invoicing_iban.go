@@ -23,6 +23,18 @@ func NormaliseIBAN(s string) string {
 	}, s))
 }
 
+// ibanLike finds anything shaped like an IBAN, spaced or not, in any case.
+// It is loose on purpose: it guards what an error message may quote, where
+// hiding a value that only looks like an IBAN costs nothing.
+var ibanLike = regexp.MustCompile(`(?i)[a-z]{2}[0-9]{2}(?:\s?[a-z0-9]){11,30}`)
+
+// LooksLikeIBAN reports whether s holds something shaped like an IBAN
+// anywhere, so that text quoted back from an uploaded file never carries
+// one (security C5, system_3 #11551).
+func LooksLikeIBAN(s string) bool {
+	return ibanLike.MatchString(s)
+}
+
 // ValidIBAN reports whether a normalised IBAN has the right shape and passes
 // the ISO 13616 mod-97 check, which catches a mistyped or swapped digit.
 func ValidIBAN(iban string) bool {
