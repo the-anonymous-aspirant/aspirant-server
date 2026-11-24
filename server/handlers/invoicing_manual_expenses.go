@@ -80,9 +80,10 @@ func lockExpenseRow(tx *gorm.DB, owner, id uint) error {
 
 // CreateManualExpenseHandler stores a work expense the owner enters by hand:
 // POST /invoicing/expenses/manual with paid_on (YYYY-MM-DD, not after today
-// in Berlin), amount_cents (> 0), optional currency (default EUR), category
-// (one of data_models.ExpenseCategories, default "other"), reference, note
-// and client_id.
+// in Berlin), amount_cents (> 0), optional currency (EUR, the default, and
+// nothing else; system_3 #12258), category (one of
+// data_models.ExpenseCategories, default "other"), reference, note and
+// client_id.
 func CreateManualExpenseHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	var body map[string]json.RawMessage
@@ -146,8 +147,11 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	if currency == "" {
 		currency = "EUR"
 	}
-	if !isoCurrency.MatchString(currency) {
-		bad("currency", "must be a three-letter ISO code such as EUR")
+	// A hand entry is in euros (system_3 #12258): the dialogs offer no
+	// currency, and the Book counts euros only. Only the PayPal import can
+	// store another currency, as the file names it.
+	if currency != "EUR" {
+		bad("currency", "must be EUR: an entry by hand is in euros")
 		return
 	}
 	category, ok := str("category")

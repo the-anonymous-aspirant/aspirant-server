@@ -150,8 +150,9 @@ var earliestPaymentDate = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 // CreateManualPaymentHandler stores a payment the owner received and enters
 // by hand: POST /invoicing/payments/manual with paid_on (YYYY-MM-DD, not after
 // today in Berlin), gross_cents (> 0), method (bank_transfer, paypal, stripe,
-// cash, other), and optional currency (default EUR), reference, sender_name,
-// note, and either client_id or new_client_name. new_client_name adds that
+// cash, other), and optional currency (EUR, the default, and nothing else;
+// system_3 #12258), reference, sender_name, note, and either client_id or
+// new_client_name. new_client_name adds that
 // payer to the client book and links the payment to it, in one transaction;
 // a name already in the book (design §3.142 Decision 4) is refused with 409
 // client_exists and that client. It is always incoming paid work, and it
@@ -219,8 +220,11 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if currency == "" {
 		currency = "EUR"
 	}
-	if !isoCurrency.MatchString(currency) {
-		bad("currency", "must be a three-letter ISO code such as EUR")
+	// A hand entry is in euros (system_3 #12258): the dialogs offer no
+	// currency, and the Book counts euros only. Only the PayPal import can
+	// store another currency, as the file names it.
+	if currency != "EUR" {
+		bad("currency", "must be EUR: an entry by hand is in euros")
 		return
 	}
 	method, ok := str("method")
