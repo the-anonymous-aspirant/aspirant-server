@@ -150,6 +150,10 @@ func main() {
 	// Initialize the Gin engine
 	r := gin.New() // Use gin.New() instead of gin.Default() to avoid default middleware
 
+	// First, so it wraps everything after it: a panicking handler answers
+	// 500 instead of dropping the connection (system_3 #12255).
+	r.Use(handlers.RecoverPanics())
+
 	// Trust X-Forwarded-For only from the compose network (system_3 #8822):
 	// gin's default is to trust every proxy, which let a direct caller pick
 	// its own rate-limit bucket by setting its own X-Forwarded-For (gin.go's

@@ -205,6 +205,7 @@ func DeleteTreeHandler(c *gin.Context) {
 	now := time.Now()
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 
 	if err := tx.Model(&data_models.GoalNode{}).
 		Where("tree_id = ? AND deleted_at IS NULL", tree.ID).

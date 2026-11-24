@@ -147,10 +147,10 @@ func lockIssuing(tx *gorm.DB, owner uint) (bool, error) {
 
 // lockInvoiceRow takes the invoice row's lock with a no-op UPDATE, so an
 // edit, delete, issue or cancel of the same invoice waits for any other in
-// flight and then reads its committed status. It reports whether the row
-// exists.
-func lockInvoiceRow(tx *gorm.DB, id uint) (bool, error) {
-	res := tx.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).
+// flight and then reads its committed status. It reports whether the owner
+// has an invoice with this id.
+func lockInvoiceRow(tx *gorm.DB, owner, id uint) (bool, error) {
+	res := tx.Model(&data_models.InvoicingInvoice{}).Where("id = ? AND owner_user_id = ?", id, owner).
 		UpdateColumn("status", gorm.Expr("status"))
 	return res.RowsAffected == 1, res.Error
 }
@@ -202,6 +202,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 
 	issueDate := berlinToday()
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// Locks first, reads after: profile row (serialises all issues), then
 	// this invoice's row. Every check below reads committed state.
 	hasProfile, err := lockIssuing(tx, invoicingUserID(c))
@@ -209,7 +210,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
 	}
-	exists, err := lockInvoiceRow(tx, id)
+	exists, err := lockInvoiceRow(tx, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
 		return
@@ -227,6 +228,11 @@ func IssueInvoiceHandler(c *gin.Context) {
 	inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), id)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
+		return
+	}
+	if inv == nil {
+		tx.Rollback()
+		RespondWithError(c, http.StatusNotFound, "Invoice not found")
 		return
 	}
 	items, err := data_models.ListInvoiceLineItems(tx, inv.ID)
@@ -338,7 +344,8 @@ func CancelInvoiceHandler(c *gin.Context) {
 		return
 	}
 	tx := db.Begin()
-	if _, err := lockInvoiceRow(tx, id); err != nil {
+	defer tx.RollbackUnlessCommitted()
+	if _, err := lockInvoiceRow(tx, invoicingUserID(c), id); err != nil {
 		respondInvoicingInternal(c, tx, "cancelling invoice", err)
 		return
 	}

@@ -153,6 +153,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// The import's duplicate checks against hand-entered PayPal payments run
 	// under the issuing lock, like a hand entry's (#8409 security F2).
 	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {
@@ -499,6 +500,7 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 	owner := invoicingUserID(c)
 	summary := paypalExpenseConfirmSummary{}
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// The book lock every expense write takes: two concurrent confirms of the
 	// same rows cannot both pass the exists check.
 	if err := data_models.LockInvoicingBook(tx, owner); err != nil {

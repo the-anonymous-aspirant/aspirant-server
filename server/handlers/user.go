@@ -414,6 +414,7 @@ func BootstrapUserHandler(c *gin.Context) {
 	// loginable. Its guard should not depend on another handler's rules or on
 	// two requests not arriving together.
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if tx.Error != nil {
 		log.Printf("Error starting bootstrap transaction: %v", tx.Error)
 		RespondWithError(c, http.StatusInternalServerError, "Error creating user")

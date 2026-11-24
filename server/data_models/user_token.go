@@ -160,6 +160,7 @@ func IssueUserToken(db *gorm.DB, userID uint, purpose string) (string, error) {
 	now := tokenNow()
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if tx.Error != nil {
 		return "", fmt.Errorf("user_token: begin: %w", tx.Error)
 	}
@@ -214,6 +215,7 @@ func ConsumeUserToken(db *gorm.DB, purpose, plaintext string) (*UserToken, error
 	now := tokenNow()
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if tx.Error != nil {
 		return nil, ErrTokenInvalid
 	}

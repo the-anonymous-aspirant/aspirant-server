@@ -234,6 +234,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// The issuing lock orders this edit against a draft create, a draft's
 	// payment edit or an issue, all of which take it before reading the
 	// payment, so the invoice checks below cannot go stale mid-edit.
@@ -556,6 +557,7 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
 		fail(tx, "book lock", err)
 		return

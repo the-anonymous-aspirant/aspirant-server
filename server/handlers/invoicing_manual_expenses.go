@@ -189,6 +189,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := data_models.LockInvoicingBook(tx, invoicingUserID(c)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for a manual expense: %v", err)
@@ -351,6 +352,7 @@ func ListInvoicingExpenseCategoriesHandler(c *gin.Context) {
 // same way, so this only needs to join that existing serialisation.
 func listInvoicingExpenseCategoriesLocked(db *gorm.DB, owner uint) ([]data_models.InvoicingExpenseCategory, error) {
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
 		tx.Rollback()
 		return nil, err
@@ -367,6 +369,7 @@ func listInvoicingExpenseCategoriesLocked(db *gorm.DB, owner uint) ([]data_model
 // counterpart for a single-category existence check (same seeding race).
 func isExpenseCategoryForOwnerLocked(db *gorm.DB, owner uint, name string) (bool, error) {
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
 		tx.Rollback()
 		return false, err
@@ -435,6 +438,7 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := data_models.LockInvoicingBook(tx, invoicingUserID(c)); err != nil {
 		tx.Rollback()
 		log.Printf("Error locking for an expense category: %v", err)

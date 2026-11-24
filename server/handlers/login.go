@@ -121,6 +121,7 @@ func ReconcileAdminGateMode(db *gorm.DB) (middleware.AccessMode, error) {
 		return mode, nil
 	}
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	bumped := tx.Exec(
 		"UPDATE users SET session_epoch = session_epoch + 1 WHERE role_id IN (SELECT id FROM roles WHERE role_name = ?)",
 		adminRoleName,

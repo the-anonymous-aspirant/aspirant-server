@@ -145,6 +145,7 @@ func PutInvoicingExpenseReceiptHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	e := ownedExpenseOrNotFound(c, tx, userID, id, "saving the receipt")
 	if e == nil {
 		return
@@ -240,6 +241,7 @@ func DeleteInvoicingExpenseReceiptHandler(c *gin.Context) {
 	userID := invoicingUserID(c)
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	e := ownedExpenseOrNotFound(c, tx, userID, id, "removing the receipt")
 	if e == nil {
 		return

@@ -71,6 +71,7 @@ func PutInvoicingLogoHandler(c *gin.Context) {
 
 	userID := invoicingUserID(c)
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	before, err := data_models.GetInvoicingProfileLogo(tx, userID)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "saving the logo", err)
@@ -122,6 +123,7 @@ func DeleteInvoicingLogoHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	userID := invoicingUserID(c)
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	before, err := data_models.GetInvoicingProfileLogo(tx, userID)
 	if err != nil {
 		respondInvoicingInternal(c, tx, "removing the logo", err)

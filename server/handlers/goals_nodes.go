@@ -275,6 +275,7 @@ func CreateNodeHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 
 	if err := tx.Create(&node).Error; err != nil {
 		tx.Rollback()
@@ -492,6 +493,7 @@ func DeleteNodeHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	now := time.Now()
 
 	// Find children of this node (nodes where parent_id = this node's ID)
