@@ -189,3 +189,37 @@ func TestAuditEvents_ACursorNotFromThisBookIsRefusedAsUnknown(t *testing.T) {
 		answer(bad)
 	}
 }
+
+// The cursor's condition stays inside the owner filter: another book's
+// event at the cursor's exact instant, with a smaller id, would match the
+// cursor's "as old with a smaller id" were the OR outside it (security's
+// ask on PR 245, c76613 on system_3 #12270).
+func TestAuditEvents_TheCursorNeverReachesAnotherBook(t *testing.T) {
+	db := setupInvoicingDB(t)
+	r := setupInvoicingRouter(db, 42)
+	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	add := func(owner uint, when time.Time) uint {
+		e := data_models.InvoicingAuditEvent{CreatedAt: when, UserID: owner, Action: "update", EntityType: "client", EntityID: 1}
+		if err := db.Create(&e).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return e.ID
+	}
+	other := add(7, at) // first, so its id is below the cursor's
+	older := add(42, at.Add(-10*time.Second))
+	cursor := add(42, at)
+	newer := add(42, at.Add(10*time.Second))
+	if other >= cursor {
+		t.Fatalf("the other book's event %d is not below the cursor %d", other, cursor)
+	}
+
+	page := getAuditPage(t, r, "?limit=2")
+	if !sameIDs(eventIDs(page.Events), []uint{newer, cursor}) || page.NextCursor == nil || *page.NextCursor != fmt.Sprint(cursor) {
+		t.Fatalf("first page: %v next %v", eventIDs(page.Events), page.NextCursor)
+	}
+	page = getAuditPage(t, r, "?limit=2&cursor="+*page.NextCursor)
+	if !sameIDs(eventIDs(page.Events), []uint{older}) || page.NextCursor != nil {
+		t.Errorf("the page after the cursor: %v next %v, want only %d (never the other book's %d)",
+			eventIDs(page.Events), page.NextCursor, older, other)
+	}
+}
