@@ -399,7 +399,7 @@ func parseN26TransferConfirmation(text string) ([]n26Candidate, error) {
 		return nil, fmt.Errorf("the DETTAGLI MITTENTE block carries an IBAN where the name belongs")
 	}
 
-	return []n26Candidate{{
+	cand := n26Candidate{
 		DocumentKind:  n26KindTransferConfirmation,
 		TransactionID: transactionID,
 		PaidOn:        paidOn.Format("2006-01-02"),
@@ -409,7 +409,39 @@ func parseN26TransferConfirmation(text string) ([]n26Candidate, error) {
 		NetCents:      grossCents - feeCents,
 		SenderName:    senderName,
 		Note:          note,
-	}}, nil
+	}
+	fitN26Candidate(&cand)
+	return []n26Candidate{cand}, nil
+}
+
+// The confirm routes' limits, counted in characters (system_3 #12262):
+// payer 200, payment note 500, expense note 1,000, payee 100.
+const (
+	n26MaxSenderRunes      = maxManualSenderRunes
+	n26MaxPaymentNoteRunes = 500
+	n26MaxExpenseNoteRunes = maxManualNoteRunes
+	n26MaxPayeeRunes       = maxManualReferenceRunes
+)
+
+// cutRunes cuts s to at most n characters, on a character boundary, and
+// drops the space a cut can leave at its end.
+func cutRunes(s string, n int) string {
+	return strings.TrimSpace(truncateRunes(s, n))
+}
+
+// fitN26Candidate and fitN26Expense cut an offered row's text to the
+// confirm's limits, so that no offered row can be refused at confirm for its
+// length (system_3 #12262). Every parser runs them last, after the row's id
+// is made from the uncut text (and after #12265's cleaning, when it lands):
+// two rows that differ only past the cut keep two ids. The cut is silent.
+func fitN26Candidate(c *n26Candidate) {
+	c.SenderName = cutRunes(c.SenderName, n26MaxSenderRunes)
+	c.Note = cutRunes(c.Note, n26MaxPaymentNoteRunes)
+}
+
+func fitN26Expense(e *n26ExpenseCandidate) {
+	e.PayeeName = cutRunes(e.PayeeName, n26MaxPayeeRunes)
+	e.Note = cutRunes(e.Note, n26MaxExpenseNoteRunes)
 }
 
 func isN26AccountStatement(text string) bool {
@@ -672,10 +704,12 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 	for i := range in {
 		c := &in[i]
 		c.TransactionID = stmtID(c.PaidOn + "|" + fmt.Sprint(c.GrossCents) + "|" + c.SenderName + "|" + c.Note)
+		fitN26Candidate(c)
 	}
 	for i := range out {
 		e := &out[i]
 		e.TransactionID = stmtID("out|" + e.PaidOn + "|" + fmt.Sprint(e.AmountCents) + "|" + e.PayeeName + "|" + e.Note)
+		fitN26Expense(e)
 	}
 	return in, out, skippedInternal, nil
 }
@@ -963,8 +997,8 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			bad("transaction_id is missing or too long")
 			return
 		}
-		if row.SenderName == "" || len(row.SenderName) > 200 {
-			bad("sender_name is missing or too long")
+		if row.SenderName == "" || utf8.RuneCountInString(row.SenderName) > n26MaxSenderRunes {
+			bad(fmt.Sprintf("sender_name is missing or longer than %d characters", n26MaxSenderRunes))
 			return
 		}
 		// The parse never offers such a row; the client posts rows back,
@@ -973,8 +1007,8 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			bad("the payer is PayPal: a transfer from PayPal is already counted in the PayPal import")
 			return
 		}
-		if len(row.Note) > 500 {
-			bad("note is longer than 500 characters")
+		if utf8.RuneCountInString(row.Note) > n26MaxPaymentNoteRunes {
+			bad(fmt.Sprintf("note is longer than %d characters", n26MaxPaymentNoteRunes))
 			return
 		}
 		if row.Currency != "EUR" {
