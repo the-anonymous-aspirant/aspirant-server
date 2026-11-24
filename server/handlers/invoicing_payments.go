@@ -236,6 +236,17 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			summary.Refunds++
 		}
 	}
+	// The rows that undo money already in the book, each with the payment it
+	// names (system_3 #12259). Read after the inserts, so a refund in the
+	// same file as its payment finds it too. Nothing is changed: the owner
+	// corrects the Book with the step the client offers.
+	undone, refundCandidates, err := matchPayPalUndos(tx, invoicingUserID(c), parsed.Undos)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error matching PayPal reversals and refunds: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
+	}
 	details := auditDetails(gin.H{"filename": fh.Filename, "summary": summary})
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionImport, invoicingEntityImport, 0, details); err != nil {
 		tx.Rollback()
@@ -254,12 +265,17 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	// The payments are committed by now, so a failure here must not read as
 	// a failed import. The flags are advice for the review; the confirm
 	// dedupes on its own. So the candidates go back unflagged instead.
-	expenses := paypalExpenseCandidates(parsed.Expenses)
+	// A partial refund or reversal joins them, last (ruling item 5).
+	candidates := func() []paypalExpenseCandidate {
+		out := paypalExpenseCandidates(parsed.Expenses)
+		return append(out, refundCandidates...)
+	}
+	expenses := candidates()
 	if err := flagPayPalExpenseCandidates(db, userID, expenses); err != nil {
 		log.Printf("Error flagging PayPal expense candidates, returning them unflagged: %v", err)
-		expenses = paypalExpenseCandidates(parsed.Expenses)
+		expenses = candidates()
 	}
-	c.JSON(http.StatusOK, gin.H{"summary": summary, "expense_candidates": expenses})
+	c.JSON(http.StatusOK, gin.H{"summary": summary, "expense_candidates": expenses, "undone": undone})
 }
 
 // ListInvoicingPaymentsHandler lists payments, filtered by ?kind= and ?category=.
@@ -343,6 +359,11 @@ type paypalExpenseCandidate struct {
 	Removed             bool   `json:"removed,omitempty"`
 	DeletedEarlier      bool   `json:"deleted_earlier,omitempty"`
 	PossibleDuplicateOf uint   `json:"possible_duplicate_of,omitempty"`
+	// RefundOf is the stored payment a partial refund or reversal takes
+	// money back from, and UndoKind which of the two it is (system_3
+	// #12259). Empty on an ordinary outgoing payment.
+	RefundOf uint   `json:"refund_of,omitempty"`
+	UndoKind string `json:"undo_kind,omitempty"`
 }
 
 func paypalExpenseCandidates(rows []paypalExpenseRow) []paypalExpenseCandidate {

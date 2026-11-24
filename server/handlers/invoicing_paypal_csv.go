@@ -96,6 +96,23 @@ type paypalExpenseRow struct {
 	Note           string
 }
 
+// The kinds of row that may undo a payment an import stored (system_3
+// #12259).
+const (
+	paypalUndoReversal = "reversal"
+	paypalUndoRefund   = "refund"
+)
+
+// paypalUndoRow is a row that may undo money already in the book: a reversal
+// that takes money back, or a refund ze paid out. Its
+// ReferenceTxnID names the payment it undoes; AmountCents is positive, the
+// money taken back. The import only reports it, and never changes the
+// payment (system_3 #12259, ruling item 7).
+type paypalUndoRow struct {
+	Kind string
+	paypalExpenseRow
+}
+
 type paypalParseResult struct {
 	Rows     []paypalRow
 	RowsRead int
@@ -103,6 +120,10 @@ type paypalParseResult struct {
 	// Expenses are the outgoing rows offered as expense candidates. Each is
 	// also counted in Skipped[outgoing], since none is imported as a payment.
 	Expenses []paypalExpenseRow
+	// Undos are the rows that may undo a stored payment. Each still counts
+	// under its skip reason (reversal, outgoing), so the counts add up as
+	// before; the handler names the payment each one matches.
+	Undos []paypalUndoRow
 }
 
 // paypalColumns maps each field to the header spellings it may carry, already
@@ -552,6 +573,9 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	_, hasStatus := col["status"]
 	var candidates []paypalRow
 	var expenses []paypalExpenseRow
+	// reversalRows are the reversals that take money back from zir (system_3
+	// #12259).
+	var reversalRows []paypalUndoRow
 	textBytes := 0
 	for i, rec := range records {
 		line := i + 2 // 1-based, after the header
@@ -593,6 +617,14 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 					reversals[id] = append(reversals[id], gross)
 				}
 			}
+			// Money taken back from zir under an earlier payment's id. One
+			// the file cannot describe cleanly is left out, as an expense
+			// candidate is: the file still imports.
+			if gross < 0 && get(rec, "reference_id") != "" {
+				if u, ok := paypalExpenseFromRecord(get, rec, order, gross); ok {
+					reversalRows = append(reversalRows, paypalUndoRow{Kind: paypalUndoReversal, paypalExpenseRow: u})
+				}
+			}
 		case containsAny(typ, paypalConversionTypes):
 			res.Skipped[paypalSkipConversion]++
 		case containsAny(typ, paypalHoldTypes):
@@ -612,11 +644,22 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 		default:
 			res.Skipped[paypalSkipOutgoing]++
 			// Money ze paid out is a would-be work expense. A refund ze
-			// paid a buyer is reduced income, not an expense, so it stays
-			// skip-only. A row the file cannot describe cleanly is left out
-			// of the candidates rather than failing the file: outgoing rows
-			// were never validated before #10414-B2, and a file that
-			// imported then must still import.
+			// paid a buyer undoes part or all of a payment: it is not
+			// offered here, but kept to be matched against the payment it
+			// names, and the handler offers a partial one as a candidate
+			// (system_3 #12259, ruling item 5). A row the file cannot
+			// describe cleanly is left out of the candidates rather than
+			// failing the file: outgoing rows were never validated before
+			// #10414-B2, and a file that imported then must still import.
+			if debit && gross < 0 && containsAny(typ, paypalRefundTypes) && get(rec, "reference_id") != "" {
+				if u, ok := paypalExpenseFromRecord(get, rec, order, gross); ok {
+					textBytes += len(u.TransactionID) + len(u.ReferenceTxnID) + len(u.Currency) + len(u.PayeeName) + len(u.Note)
+					if textBytes > paypalMaxRowTextBytes {
+						return nil, fmt.Errorf("the file's rows carry more than %d MB of text", paypalMaxRowTextBytes>>20)
+					}
+					res.Undos = append(res.Undos, paypalUndoRow{Kind: paypalUndoRefund, paypalExpenseRow: u})
+				}
+			}
 			if debit && gross < 0 && !containsAny(typ, paypalRefundTypes) {
 				if e, ok := paypalExpenseFromRecord(get, rec, order, gross); ok {
 					textBytes += len(e.TransactionID) + len(e.ReferenceTxnID) + len(e.Currency) + len(e.PayeeName) + len(e.Note)
@@ -704,6 +747,18 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 			continue
 		}
 		res.Rows = append(res.Rows, row)
+	}
+	// Every such reversal is matched against the book, including one that
+	// cancelled its payment's row in this file: when that payment was
+	// stored by an earlier, overlapping file, the book still counts it
+	// (design_agent c76318). A pair whose payment was never stored matches
+	// nothing, so it reads as before.
+	for _, u := range reversalRows {
+		textBytes += len(u.TransactionID) + len(u.ReferenceTxnID) + len(u.Currency) + len(u.PayeeName) + len(u.Note)
+		if textBytes > paypalMaxRowTextBytes {
+			return nil, fmt.Errorf("the file's rows carry more than %d MB of text", paypalMaxRowTextBytes>>20)
+		}
+		res.Undos = append(res.Undos, u)
 	}
 	// An outgoing payment that was reversed (the same amount coming back
 	// under its id) is no expense either.
