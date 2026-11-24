@@ -63,17 +63,16 @@ func MarkCancelled(stored []byte, day string) (out []byte, err error) {
 		if err := pdf.SetPage(p); err != nil {
 			return nil, fmt.Errorf("mark cancelled invoice: page %d: %w", p, err)
 		}
-		if err := pdf.SetTransparency(gopdf.Transparency{Alpha: cancelledMarkAlpha, BlendModeType: gopdf.NormalBlendMode}); err != nil {
-			return nil, fmt.Errorf("mark cancelled invoice: page %d: %w", p, err)
-		}
 		pdf.SetTextColor(178, 24, 24)
 		pdf.Rotate(angle, cx, cy)
-		pdf.SetXY(cx-width/2, cy+cancelledMarkSize*0.35)
-		if err := pdf.Text(text); err != nil {
+		// A cell, not Text: gopdf applies a transparency to a cell's text
+		// only, and the invoice must stay legible under the mark.
+		pdf.SetXY(cx-width/2, cy-cancelledMarkSize/2)
+		see := gopdf.Transparency{Alpha: cancelledMarkAlpha, BlendModeType: gopdf.NormalBlendMode}
+		if err := pdf.CellWithOption(&gopdf.Rect{W: width, H: cancelledMarkSize}, text, gopdf.CellOption{Align: gopdf.Left | gopdf.Middle, Transparency: &see}); err != nil {
 			return nil, fmt.Errorf("mark cancelled invoice: page %d: %w", p, err)
 		}
 		pdf.RotateReset()
-		pdf.ClearTransparency()
 	}
 	return pdf.GetBytesPdfReturnErr()
 }

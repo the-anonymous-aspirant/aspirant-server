@@ -112,6 +112,74 @@ func TestMarkCancelled_EveryPageCarriesTheMarkAndTheInvoice(t *testing.T) {
 	}
 }
 
+// renderPages rasterises every page with pdftoppm into P6 images.
+func renderPages(t *testing.T, pdf []byte) [][]byte {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.pdf")
+	if err := os.WriteFile(path, pdf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("pdftoppm", "-r", "40", path, filepath.Join(dir, "p")).CombinedOutput(); err != nil {
+		t.Fatalf("pdftoppm: %v %s", err, out)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "p-*.ppm"))
+	var pages [][]byte
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// P6 <w> <h> <max> then RGB bytes.
+		fields := 0
+		i := 0
+		for fields < 4 && i < len(b) {
+			for i < len(b) && (b[i] == ' ' || b[i] == '\n') {
+				i++
+			}
+			for i < len(b) && b[i] != ' ' && b[i] != '\n' {
+				i++
+			}
+			fields++
+		}
+		pages = append(pages, b[i+1:])
+	}
+	return pages
+}
+
+func near(a, b byte) bool { return a >= b-24 && a <= b+24 }
+
+// The mark is see-through: on white it is a pale red, and nowhere is it the
+// full red, which would hide the amounts it crosses.
+func TestMarkCancelled_TheInvoiceStaysLegibleUnderTheMark(t *testing.T) {
+	marked, err := MarkCancelled(longInvoice(t), "24.11.2026")
+	if err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	pages := renderPages(t, marked)
+	if len(pages) < 2 {
+		t.Fatalf("rendered %d pages", len(pages))
+	}
+	for n, rgb := range pages {
+		tint, full := 0, 0
+		for i := 0; i+2 < len(rgb); i += 3 {
+			r, g, b := rgb[i], rgb[i+1], rgb[i+2]
+			if near(r, 178) && near(g, 24) && near(b, 24) {
+				full++
+			}
+			if r > 200 && g > 120 && g < 190 && b > 120 && b < 190 && r > g+30 {
+				tint++
+			}
+		}
+		if tint < 200 {
+			t.Errorf("page %d: no pale red mark (%d pixels)", n+1, tint)
+		}
+		if full > 0 {
+			t.Errorf("page %d: %d pixels of the mark are opaque", n+1, full)
+		}
+	}
+}
+
 func TestMarkCancelled_RefusesWhenTheCopyCannotBeMade(t *testing.T) {
 	if _, err := MarkCancelled([]byte("not a pdf"), "24.11.2026"); err == nil {
 		t.Errorf("a file that is not a PDF was marked")
