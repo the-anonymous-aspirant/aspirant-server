@@ -76,7 +76,9 @@ func ExportInvoicesMergedPDFHandler(c *gin.Context) {
 	}
 
 	if err := data_models.RecordInvoicingAuditEvent(db, invoicingUserID(c), invoicingActionExport, invoicingEntityExport, 0,
-		auditDetails(gin.H{"kind": "invoices_merged_pdf", "invoices": len(ids)})); err != nil {
+		// The invoices merged, not the ids sent: ?ids=41,41 merges one
+		// (system_3 #12273 item 3).
+		auditDetails(gin.H{"kind": "invoices_merged_pdf", "invoices": len(invoices)})); err != nil {
 		respondInvoicingInternal(c, nil, "recording the export", err)
 		return
 	}

@@ -37,8 +37,15 @@ func LooksLikeIBAN(s string) bool {
 
 // ValidIBAN reports whether a normalised IBAN has the right shape and passes
 // the ISO 13616 mod-97 check, which catches a mistyped or swapped digit.
+// The check digits are 98 minus a remainder, so they run from 02 to 98: 00,
+// 01 and 99 pass the sum (as 97, 98 and 02 would) but no real IBAN has them
+// (system_3 #12273 item 1).
 func ValidIBAN(iban string) bool {
 	if !ibanShape.MatchString(iban) {
+		return false
+	}
+	switch iban[2:4] {
+	case "00", "01", "99":
 		return false
 	}
 	rearranged := iban[4:] + iban[:4]

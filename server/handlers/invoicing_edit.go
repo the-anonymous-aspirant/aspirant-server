@@ -45,12 +45,31 @@ var (
 
 	// create_category is not a field of the expense: it says the category is
 	// a name ze typed, to be saved with the expense (system_3 #11579).
+	// client_id is changed and cleared here as the create sets it (system_3
+	// #12273 item 4).
 	expenseEditableByHand = map[string]bool{
 		"paid_on": true, "amount_cents": true, "category": true, "payee": true,
-		"reference": true, "note": true, "create_category": true,
+		"reference": true, "note": true, "create_category": true, "client_id": true,
 	}
 	expenseEditableImported = map[string]bool{"category": true, "note": true, "create_category": true}
 )
+
+// transactionRemovedMessage is the refusal of a change to a removed payment
+// or expense (system_3 #12273 item 5; "transaction", not "row", per #12288).
+const transactionRemovedMessage = "This transaction was removed. Restore it to change it."
+
+// refuseRemovedTransaction answers 409 transaction_removed, rolling tx back,
+// when the payment or expense was removed: a removed row is changed only by
+// restoring it, or deleted for good. It covers the payment and expense edits
+// and the receipt's replace and delete; reading a receipt stays open.
+func refuseRemovedTransaction(c *gin.Context, tx *gorm.DB, removedAt *time.Time) bool {
+	if removedAt == nil {
+		return false
+	}
+	tx.Rollback()
+	respondError(c, http.StatusConflict, "transaction_removed", transactionRemovedMessage)
+	return true
+}
 
 // editBody decodes a PATCH body and checks every key against the fields any
 // row of that type may ever change. It writes the 400 itself.
@@ -191,7 +210,7 @@ func paymentEditView(p data_models.InvoicingPayment) map[string]interface{} {
 func expenseEditView(e data_models.InvoicingExpense) map[string]interface{} {
 	return map[string]interface{}{
 		"paid_on": e.PaidOn.Format(invoicingDateLayout), "amount_cents": e.AmountCents, "category": e.Category,
-		"payee": e.Payee, "reference": e.Reference, "note": e.Note,
+		"payee": e.Payee, "reference": e.Reference, "note": e.Note, "client_id": e.ClientID,
 	}
 }
 
@@ -254,6 +273,9 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 	if p == nil {
 		tx.Rollback()
 		RespondWithError(c, http.StatusNotFound, "Payment not found")
+		return
+	}
+	if refuseRemovedTransaction(c, tx, p.RemovedAt) {
 		return
 	}
 	if !p.IsManual() {
@@ -576,6 +598,9 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusNotFound, "Expense not found")
 		return
 	}
+	if refuseRemovedTransaction(c, tx, e.RemovedAt) {
+		return
+	}
 	if !e.IsManual() {
 		if msg := bankFactRefusal(keys, expenseEditableImported, "expense"); msg != "" {
 			tx.Rollback()
@@ -659,6 +684,24 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 				return
 			}
 			next.Note = s
+		case "client_id":
+			cid, err := optionalID(raw)
+			if err != nil {
+				bad(k, err.Error())
+				return
+			}
+			if cid != nil {
+				cl, err := data_models.GetInvoicingClient(tx, owner, *cid)
+				if err != nil {
+					fail(tx, "client read", err)
+					return
+				}
+				if cl == nil {
+					bad(k, "does not name a client")
+					return
+				}
+			}
+			next.ClientID = cid
 		}
 	}
 

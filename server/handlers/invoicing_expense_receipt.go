@@ -147,7 +147,7 @@ func PutInvoicingExpenseReceiptHandler(c *gin.Context) {
 	tx := db.Begin()
 	defer tx.RollbackUnlessCommitted()
 	e := ownedExpenseOrNotFound(c, tx, userID, id, "saving the receipt")
-	if e == nil {
+	if e == nil || refuseRemovedTransaction(c, tx, e.RemovedAt) {
 		return
 	}
 	before, err := data_models.GetInvoicingExpenseReceipt(tx, userID, id)
@@ -243,7 +243,7 @@ func DeleteInvoicingExpenseReceiptHandler(c *gin.Context) {
 	tx := db.Begin()
 	defer tx.RollbackUnlessCommitted()
 	e := ownedExpenseOrNotFound(c, tx, userID, id, "removing the receipt")
-	if e == nil {
+	if e == nil || refuseRemovedTransaction(c, tx, e.RemovedAt) {
 		return
 	}
 	before, err := data_models.GetInvoicingExpenseReceipt(tx, userID, id)
