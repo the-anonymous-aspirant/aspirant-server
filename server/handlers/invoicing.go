@@ -290,10 +290,95 @@ type invoicingClientRequest struct {
 	// that does not know the field yet cannot wipe one an import set; "" clears
 	// it. Bound into NormaliseIBAN's form (system_3 #11551).
 	IBAN *string `json:"iban"`
+	// A second client with the name of one already in the book is asked
+	// about, not refused (system_3 #12264): the create answers 409
+	// client_exists naming that client unless this is true.
+	ConfirmSecondClient bool `json:"confirm_second_client"`
 }
 
 // maxClientNotesRunes bounds the free-text notes on a client (system_3 #9962).
 const maxClientNotesRunes = 5000
+
+// The name prints as the invoice's recipient and the address under it: a
+// name is one line, an address at most ten, each at most 200 characters
+// (system_3 #12264).
+const (
+	maxClientNameRunes        = 200
+	maxClientAddressLines     = 10
+	maxClientAddressLineRunes = 200
+)
+
+// hasDirectionChars reports the Unicode bidirectional controls (the marks,
+// embeddings, overrides and isolates), which make printed text read in an
+// order other than the one stored. Joiners and other format characters that
+// a name may need are left alone.
+func hasDirectionChars(s string) bool {
+	for _, r := range s {
+		switch {
+		case r == 0x061C, r == 0x200E, r == 0x200F,
+			r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+			return true
+		}
+	}
+	return false
+}
+
+// checkClientNameAndAddress applies the name's and the address's bounds,
+// writing the 400 itself. before is the stored client on an edit, nil on a
+// create: a field the edit did not change is not checked, so a client
+// stored before the bounds stays editable in its other fields (system_3
+// #12264, review point 4).
+func checkClientNameAndAddress(c *gin.Context, req invoicingClientRequest, before *data_models.InvoicingClient) bool {
+	if before == nil || req.Name != before.Name {
+		switch {
+		case !validClientName(req.Name):
+			respondError(c, http.StatusBadRequest, "invalid_name", "A client needs a name.")
+			return false
+		case strings.ContainsAny(req.Name, "\r\n"):
+			respondError(c, http.StatusBadRequest, "invalid_name", "The name is one line.")
+			return false
+		case hasControlChars(req.Name) || hasDirectionChars(req.Name):
+			respondError(c, http.StatusBadRequest, "invalid_name", "The name has a tab, a control or a direction character. Remove it.")
+			return false
+		case utf8.RuneCountInString(req.Name) > maxClientNameRunes:
+			respondError(c, http.StatusBadRequest, "invalid_name", fmt.Sprintf("The name is at most %d characters.", maxClientNameRunes))
+			return false
+		}
+	}
+	if before == nil || req.Address != before.Address {
+		lines := strings.Split(req.Address, "\n")
+		if hasControlChars(req.Address) || hasDirectionChars(req.Address) {
+			respondError(c, http.StatusBadRequest, "invalid_address", "The address has a tab, a control or a direction character. Remove it.")
+			return false
+		}
+		if len(lines) > maxClientAddressLines {
+			respondError(c, http.StatusBadRequest, "invalid_address", fmt.Sprintf("The address is at most %d lines.", maxClientAddressLines))
+			return false
+		}
+		for _, l := range lines {
+			if utf8.RuneCountInString(l) > maxClientAddressLineRunes {
+				respondError(c, http.StatusBadRequest, "invalid_address", fmt.Sprintf("Each line of the address is at most %d characters.", maxClientAddressLineRunes))
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// otherClientNamed is Decision 4's "the same" client of that name in the
+// owner's book, other than the client except, or nil.
+func otherClientNamed(tx *gorm.DB, owner uint, name string, except uint) (*data_models.InvoicingClient, error) {
+	clients, err := data_models.ListInvoicingClients(tx, owner)
+	if err != nil {
+		return nil, err
+	}
+	for i := range clients {
+		if clients[i].ID != except && sameClientName(clients[i].Name, name) {
+			return &clients[i], nil
+		}
+	}
+	return nil, nil
+}
 
 // bindInvoicingClient parses and validates a client body; it writes the 400
 // itself and returns ok=false on any problem. The name is required. The
@@ -310,6 +395,11 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	req.Email = strings.TrimSpace(req.Email)
 	req.PayPalEmail = strings.ToLower(strings.TrimSpace(req.PayPalEmail))
 	req.Notes = strings.TrimSpace(req.Notes)
+	// A NUL cannot be stored: say so, never a 500 (system_3 #12264).
+	if strings.ContainsRune(req.Notes, 0) {
+		respondError(c, http.StatusBadRequest, "invalid_notes", "The notes have a character that cannot be stored. Remove it.")
+		return req, false
+	}
 	if utf8.RuneCountInString(req.Notes) > maxClientNotesRunes {
 		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("notes must be at most %d characters", maxClientNotesRunes))
 		return req, false
@@ -360,6 +450,9 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !checkClientNameAndAddress(c, req, nil) {
+		return
+	}
 	userID := invoicingUserID(c)
 	cl := data_models.InvoicingClient{
 		OwnerUserID:  userID,
@@ -378,6 +471,18 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 
 	tx := db.Begin()
 	defer tx.RollbackUnlessCommitted()
+	if !req.ConfirmSecondClient {
+		other, err := otherClientNamed(tx, userID, req.Name, 0)
+		if err != nil {
+			log.Printf("Error reading the client book: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error creating client")
+			return
+		}
+		if other != nil {
+			respondClientExists(c, other)
+			return
+		}
+	}
 	if err := tx.Create(&cl).Error; err != nil {
 		tx.Rollback()
 		log.Printf("Error creating invoicing client: %v", err)
@@ -424,6 +529,23 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 		tx.Rollback()
 		RespondWithError(c, http.StatusNotFound, "Client not found")
 		return
+	}
+	if !checkClientNameAndAddress(c, req, existing) {
+		return
+	}
+	// A renamed client is asked about as a new one is; a kept name is not
+	// checked, so a stored pair of namesakes stays editable.
+	if req.Name != existing.Name && !req.ConfirmSecondClient {
+		other, err := otherClientNamed(tx, userID, req.Name, existing.ID)
+		if err != nil {
+			log.Printf("Error reading the client book: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error updating client")
+			return
+		}
+		if other != nil {
+			respondClientExists(c, other)
+			return
+		}
 	}
 	before := *existing
 	existing.Name = req.Name
