@@ -104,7 +104,7 @@ const (
 )
 
 // paypalUndoRow is a row that may undo money already in the book: a reversal
-// that cancelled nothing in its own file, or a refund ze paid out. Its
+// that takes money back, or a refund ze paid out. Its
 // ReferenceTxnID names the payment it undoes; AmountCents is positive, the
 // money taken back. The import only reports it, and never changes the
 // payment (system_3 #12259, ruling item 7).
@@ -573,10 +573,9 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	_, hasStatus := col["status"]
 	var candidates []paypalRow
 	var expenses []paypalExpenseRow
-	// reversalRows are the reversals that take money back from zir; cancelled
-	// marks the rows of this file a reversal cancelled (system_3 #12259).
+	// reversalRows are the reversals that take money back from zir (system_3
+	// #12259).
 	var reversalRows []paypalUndoRow
-	cancelled := map[string]bool{}
 	textBytes := 0
 	for i, rec := range records {
 		line := i + 2 // 1-based, after the header
@@ -745,17 +744,16 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 		}
 		if undone {
 			res.Skipped[paypalSkipReversed]++
-			cancelled[row.TransactionID] = true
 			continue
 		}
 		res.Rows = append(res.Rows, row)
 	}
-	// A reversal that cancelled a row of this file is done with, as before.
-	// One that cancelled nothing may undo a payment an earlier file stored.
+	// Every such reversal is matched against the book, including one that
+	// cancelled its payment's row in this file: when that payment was
+	// stored by an earlier, overlapping file, the book still counts it
+	// (design_agent c76318). A pair whose payment was never stored matches
+	// nothing, so it reads as before.
 	for _, u := range reversalRows {
-		if cancelled[u.ReferenceTxnID] || cancelled[u.TransactionID] {
-			continue
-		}
 		textBytes += len(u.TransactionID) + len(u.ReferenceTxnID) + len(u.Currency) + len(u.PayeeName) + len(u.Note)
 		if textBytes > paypalMaxRowTextBytes {
 			return nil, fmt.Errorf("the file's rows carry more than %d MB of text", paypalMaxRowTextBytes>>20)

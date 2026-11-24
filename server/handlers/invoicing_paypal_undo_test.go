@@ -165,6 +165,28 @@ func TestImportPayPal_ASameFileReversalBehavesAsBefore(t *testing.T) {
 	}
 }
 
+// A later file that overlaps an earlier one carries the stored payment's row
+// again beside its reversal. The pair cancels in the file, as before, and the
+// stored payment is still named (design_agent c76318).
+func TestImportPayPal_AnOverlappingFileNamesTheStoredPaymentItsPairCancels(t *testing.T) {
+	_, r := setupPayPalExpensesRouter(t, 7)
+	decodeUndone(t, uploadCSV(t, r, reversalHeader+undoPayment, ""))
+	paid := storedPayment(t, r, "PPUNDO00001")
+	w := uploadCSV(t, r, reversalHeader+undoPayment+
+		"20.11.2026,Mara Esempio,Payment Reversal,Completed,EUR,-120.00,PPUNDO00003,PPUNDO00001\n", "")
+	undone := decodeUndone(t, w)
+	s := decodeSummary(t, w)
+	if s.Imported != 0 || s.SkippedReasons[paypalSkipReversed] != 1 || s.SkippedReasons[paypalSkipReversal] != 1 || s.RowsRead != s.Imported+s.Duplicates+s.Skipped {
+		t.Fatalf("summary: %+v", s)
+	}
+	if len(undone) != 1 || undone[0].Kind != paypalUndoReversal || !undone[0].Full || undone[0].Payment.ID != paid.ID || undone[0].TransactionID != "PPUNDO00003" {
+		t.Fatalf("undone: %+v", undone)
+	}
+	if after := storedPayment(t, r, "PPUNDO00001"); after.GrossCents != 12000 || after.RemovedAt != nil {
+		t.Errorf("the payment changed: %+v", after)
+	}
+}
+
 // What matches nothing stays a counted skip: another book's payment, a
 // removed payment, a withdrawal, another currency, more than the payment,
 // and an id that exists nowhere.
