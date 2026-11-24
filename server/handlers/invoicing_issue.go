@@ -34,6 +34,14 @@ func berlinToday() time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// berlinDay is the moment t in Europe/Berlin, for printing the day of a stored
+// UTC moment such as a Storno (system_3 #12267, #12269): an invoice cancelled
+// between 00:00 and 01:00 Berlin time (02:00 in summer) was cancelled on the
+// Berlin day, not the UTC day before it.
+func berlinDay(t time.Time) time.Time {
+	return t.In(data_models.BerlinLocation())
+}
+
 func dateOnly(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
@@ -363,7 +371,7 @@ func CancelInvoiceHandler(c *gin.Context) {
 		respondGuard(c, tx, guard(http.StatusConflict, "not_issued", "only an issued invoice can be cancelled; invoice %d is %s", inv.ID, inv.Status))
 		return
 	}
-	now := time.Now().UTC()
+	now := invoicingNow().UTC()
 	userID := invoicingUserID(c)
 	inv.Status = data_models.InvoiceStatusCancelled
 	inv.CancelledAt = &now
