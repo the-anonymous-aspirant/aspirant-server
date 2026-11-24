@@ -46,6 +46,10 @@ func TestParseCentsIn_DecimalsAndCeiling(t *testing.T) {
 		{"100000001", 0, 0, "above 100000000 euros"},
 		{"-100.000.000,01", ',', 0, "above 100000000 euros"},
 		{"99999999999999999999", 0, 0, "above 100000000 euros"},
+		// Tested on the whole before it is multiplied, and on its absolute
+		// value (design_agent c76354): neither wraps past int64.
+		{"92233720368547759,00", 0, 0, "above 100000000 euros"},
+		{"-200000000,00", 0, 0, "above 100000000 euros"},
 		// A second or misplaced sign is no number, and cannot pass the
 		// ceiling as a negative (security c76329).
 		{"--92233720368547758", 0, 0, "is not a number"},
@@ -144,5 +148,32 @@ func TestImportPayPal_AnAmountWithTooManyDecimalsRefusesTheFile(t *testing.T) {
 	}
 	if got["PPAMT00007"] != 123456 || got["PPAMT00008"] != 1234500 {
 		t.Errorf("stored: %v", got)
+	}
+}
+
+// An .xlsx's numeric money cells are written by the reader itself, with a dot
+// and two decimals, so they are no evidence of the separator (design_agent
+// c76354): a typed text "12.345" beside them stays a thousands group, as in
+// a file of text cells alone.
+func TestParsePayPalXLSX_NumericCellsAreNoSeparatorEvidence(t *testing.T) {
+	head := `<row><c t="inlineStr"><is><t>Date</t></is></c><c t="inlineStr"><is><t>Name</t></is></c><c t="inlineStr"><is><t>Type</t></is></c><c t="inlineStr"><is><t>Status</t></is></c><c t="inlineStr"><is><t>Currency</t></is></c><c t="inlineStr"><is><t>Gross</t></is></c><c t="inlineStr"><is><t>Transaction ID</t></is></c></row>`
+	row := func(gross, id string) string {
+		return `<row><c><v>46218</v></c><c t="inlineStr"><is><t>Mara Esempio</t></is></c><c t="inlineStr"><is><t>Payment</t></is></c><c t="inlineStr"><is><t>Completed</t></is></c><c t="inlineStr"><is><t>EUR</t></is></c>` +
+			gross + `<c t="inlineStr"><is><t>` + id + `</t></is></c></row>`
+	}
+	sheet := sheetXML(head,
+		row(`<c><v>20.5</v></c>`, "PPXLS00001"),
+		row(`<c t="inlineStr"><is><t>12.345</t></is></c>`, "PPXLS00002"),
+	)
+	res, err := ParsePayPalActivityXLSX(zipParts(t, workbookParts(sheet, "", false)), "")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := map[string]int64{}
+	for _, r := range res.Rows {
+		got[r.TransactionID] = r.GrossCents
+	}
+	if got["PPXLS00001"] != 2050 || got["PPXLS00002"] != 1234500 {
+		t.Fatalf("got %v", got)
 	}
 }

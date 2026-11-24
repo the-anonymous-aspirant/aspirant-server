@@ -501,7 +501,7 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 		}
 		records = append(records, rec)
 	}
-	return parsePayPalRecords(col, records, dateOrder)
+	return parsePayPalRecords(col, records, nil, dateOrder)
 }
 
 // excelSerialDate converts an Excel date serial to a calendar date. In the
@@ -559,11 +559,16 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 		}
 	}
 	var records [][]string
+	// written marks the money cells this reader wrote from a number: always
+	// a dot and two decimals, so never evidence of the file's separator
+	// (system_3 #12260, design_agent c76354).
+	var written [][]bool
 	for _, row := range rows[1:] {
 		if empty(row) {
 			continue
 		}
 		rec := make([]string, len(row))
+		wrote := make([]bool, len(row))
 		for i, c := range row {
 			switch {
 			case !c.IsNum:
@@ -576,13 +581,15 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 				rec[i] = d.Format("2006-01-02")
 			case money[i]:
 				rec[i] = strconv.FormatFloat(math.Round(c.Num*100)/100, 'f', 2, 64)
+				wrote[i] = true
 			default:
 				rec[i] = c.Text
 			}
 		}
 		records = append(records, rec)
+		written = append(written, wrote)
 	}
-	return parsePayPalRecords(col, records, dateOrder)
+	return parsePayPalRecords(col, records, written, dateOrder)
 }
 
 // parsePayPalRecords classifies the records of either export format. Rows
@@ -591,7 +598,10 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 // withdrawal rows so payments can be grouped by bank deposit. A reversal
 // cancels the row it reverses, so a bounced withdrawal or a reversed payment
 // imports as neither row.
-func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string) (*paypalParseResult, error) {
+//
+// written, when set, marks per record the cells an .xlsx reader wrote from a
+// number; they take no part in reading the file's decimal separator.
+func parsePayPalRecords(col map[string]int, records [][]string, written [][]bool, dateOrder string) (*paypalParseResult, error) {
 	get := func(rec []string, field string) string {
 		i, ok := col[field]
 		if !ok || i >= len(rec) {
@@ -621,8 +631,13 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	// Which separator the file's amounts use for decimals, read from all of
 	// them (system_3 #12260).
 	var amounts []string
-	for _, rec := range records {
-		amounts = append(amounts, get(rec, "gross"), get(rec, "fee"), get(rec, "net"))
+	for r, rec := range records {
+		for _, f := range []string{"gross", "fee", "net"} {
+			if i, ok := col[f]; ok && r < len(written) && i < len(written[r]) && written[r][i] {
+				continue
+			}
+			amounts = append(amounts, get(rec, f))
+		}
 	}
 	decimal := paypalDecimalSeparator(amounts)
 	for i, rec := range records {
