@@ -258,6 +258,10 @@ type payersAddRow struct {
 	PaymentIDs    []uint `json:"payment_ids"`
 	ClientID      *uint  `json:"client_id"`
 	NewClientName string `json:"new_client_name"`
+	// SecondClient makes the row's new client one of its own even when its
+	// name is the same as an earlier row's (system_3 #12319: "Add as a
+	// second Mara Esempio"). Without it, rows of one new name are one client.
+	SecondClient bool `json:"second_client"`
 }
 
 type payersAddRequest struct {
@@ -266,7 +270,9 @@ type payersAddRequest struct {
 
 // AddPayersHandler is POST /invoicing/payers: for each ticked row, link its
 // payments to an existing client or to a new one, all in one transaction —
-// every row is saved, or none is (Decision 5).
+// every row is saved, or none is (Decision 5). Rows whose new names are the
+// same (Decision 4) are one client, unless a row asks for a second one
+// (system_3 #12319).
 func AddPayersHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	owner := invoicingUserID(c)
@@ -281,7 +287,6 @@ func AddPayersHandler(c *gin.Context) {
 		return
 	}
 	seenPayment := map[uint]bool{}
-	seenName := map[string]bool{}
 	total := 0
 	for i := range req.Payers {
 		row := &req.Payers[i]
@@ -295,12 +300,9 @@ func AddPayersHandler(c *gin.Context) {
 				bad(fmt.Sprintf("payers[%d].new_client_name must be one line of at most %d characters with at least one letter or digit", i, maxManualSenderRunes))
 				return
 			}
-			n := normalisePayerName(row.NewClientName)
-			if seenName[n] {
-				bad(fmt.Sprintf("payers[%d].new_client_name repeats another row's new client", i))
-				return
-			}
-			seenName[n] = true
+		} else if row.SecondClient {
+			bad(fmt.Sprintf("payers[%d].second_client needs new_client_name", i))
+			return
 		}
 		if len(row.PaymentIDs) == 0 {
 			bad(fmt.Sprintf("payers[%d].payment_ids must not be empty", i))
@@ -371,35 +373,61 @@ func AddPayersHandler(c *gin.Context) {
 	}
 	ibanTaken := func(iban string) bool { return clientHasIBAN(clients, iban) }
 
-	added, linked := 0, 0
-	var addedClients []data_models.InvoicingClient
+	// Each row's PayPal email, when every payment in it carries the same
+	// one, and the same for the N26 payer's IBAN (system_3 #11551).
+	emails := make([]string, len(req.Payers))
+	ibans := make([]string, len(req.Payers))
 	for i, row := range req.Payers {
-		// The row's PayPal email, when every payment in it carries the same one.
-		email := ""
 		for j, id := range row.PaymentIDs {
 			e := payerEmail(candidates[id])
 			if j == 0 {
-				email = e
-			} else if e != email {
-				email = ""
+				emails[i] = e
+			} else if e != emails[i] {
+				emails[i] = ""
 				break
 			}
 		}
-		// The same for the N26 payer's IBAN (system_3 #11551): one IBAN on
-		// every payment of the row, or none.
-		iban := ""
 		for j, id := range row.PaymentIDs {
 			v := candidates[id].SenderIBAN
 			if j == 0 {
-				iban = v
-			} else if v != iban {
-				iban = ""
+				ibans[i] = v
+			} else if v != ibans[i] {
+				ibans[i] = ""
 				break
 			}
 		}
+	}
+	// Rows of one new name are one client (Decision 4, system_3 #12319):
+	// the first row's key is its normalised name; a second_client row is a
+	// group of its own.
+	groupOf := make([]string, len(req.Payers))
+	for i, row := range req.Payers {
+		if row.NewClientName == "" {
+			continue
+		}
+		if row.SecondClient {
+			groupOf[i] = fmt.Sprintf("second:%d", i)
+		} else {
+			groupOf[i] = "name:" + normalisePayerName(row.NewClientName)
+		}
+	}
+	// The book as it was read: a new name is refused against these clients
+	// only, never against one this add has just made.
+	bookLen := len(clients)
+
+	added, linked := 0, 0
+	var addedClients []data_models.InvoicingClient
+	groupClient := map[string]int{} // group key -> index into clients
+	for i, row := range req.Payers {
+		email, iban := emails[i], ibans[i]
 		var cl *data_models.InvoicingClient
-		if row.NewClientName != "" {
-			for k := range clients {
+		if k, ok := groupClient[groupOf[i]]; ok && row.NewClientName != "" {
+			// A later row of a name this add already made: its payments go
+			// to that client, whose fields were filled from every row of the
+			// group when it was created.
+			cl = &clients[k]
+		} else if row.NewClientName != "" {
+			for k := range clients[:bookLen] {
 				if sameClientName(clients[k].Name, row.NewClientName) {
 					tx.Rollback()
 					c.JSON(http.StatusConflict, gin.H{
@@ -409,26 +437,37 @@ func AddPayersHandler(c *gin.Context) {
 					return
 				}
 			}
+			// The client's name is this, the group's first row's, as typed.
 			nc := data_models.InvoicingClient{OwnerUserID: owner, Name: row.NewClientName}
-			// A new client from a PayPal row gets that sender's email, so later
-			// PayPal imports link by themselves — unless another client already
-			// answers to it, which would make the match ambiguous.
-			if email != "" && !emailTaken(email) {
-				nc.PayPalEmail = email
-			}
-			// The same address is also the only contact detail the import
-			// carries for this payer, so the new client's card shows it
-			// (system_3 #11507). It is set on the client being created and
-			// never on an existing one; an address the client form would
-			// refuse is left out, so the card can still be saved later.
-			if email != "" && validOptionalEmail(email) {
-				nc.Email = email
-			}
-			// A new client from an N26 row gets its payer's IBAN, so later
-			// N26 imports link by themselves, under the PayPal email's rule:
-			// never when another client already has it (system_3 #11551).
-			if iban != "" && !ibanTaken(iban) {
-				nc.IBAN = iban
+			// The group's rows in order: the first fills each field, and a
+			// later row fills only one still empty (system_3 #12319), as an
+			// existing client takes a row's email only when it has none.
+			for j := i; j < len(req.Payers); j++ {
+				if groupOf[j] != groupOf[i] {
+					continue
+				}
+				e, v := emails[j], ibans[j]
+				// A new client from a PayPal row gets that sender's email, so
+				// later PayPal imports link by themselves — unless another
+				// client already answers to it, which would make the match
+				// ambiguous.
+				if nc.PayPalEmail == "" && e != "" && !emailTaken(e) {
+					nc.PayPalEmail = e
+				}
+				// The same address is also the only contact detail the import
+				// carries for this payer, so the new client's card shows it
+				// (system_3 #11507). It is set on the client being created and
+				// never on an existing one; an address the client form would
+				// refuse is left out, so the card can still be saved later.
+				if nc.Email == "" && e != "" && validOptionalEmail(e) {
+					nc.Email = e
+				}
+				// A new client from an N26 row gets its payer's IBAN, so later
+				// N26 imports link by themselves, under the PayPal email's
+				// rule: never when another client already has it (#11551).
+				if nc.IBAN == "" && v != "" && !ibanTaken(v) {
+					nc.IBAN = v
+				}
 			}
 			if err := tx.Create(&nc).Error; err != nil {
 				fail(tx, "create client", err)
@@ -440,6 +479,7 @@ func AddPayersHandler(c *gin.Context) {
 			}
 			clients = append(clients, nc)
 			addedClients = append(addedClients, nc)
+			groupClient[groupOf[i]] = len(clients) - 1
 			cl = &clients[len(clients)-1]
 			added++
 		} else {
