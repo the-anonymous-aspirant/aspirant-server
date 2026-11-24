@@ -23,6 +23,9 @@ import (
 // invoice keeps its record and the row still exists. Restore clears the time
 // and re-links nothing. Delete for good ("purge") erases a row only once it
 // has been removed, and leaves a tombstone of its source and transaction id.
+// It erases the row's links too, a cancelled invoice's included; a numbered
+// invoice keeps its own copy of the payment, which it reads instead of the
+// row (system_3 #12266).
 //
 // Every form takes a list of ids and is all or nothing: one id that is
 // unknown, another owner's, on an issued invoice or in the wrong state

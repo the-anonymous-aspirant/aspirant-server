@@ -167,7 +167,8 @@ func invoiceCSVRow(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice) ([
 	if err != nil {
 		return nil, err
 	}
-	payments, err := data_models.ListInvoicePayments(db, inv.ID)
+	// A numbered invoice's row reads its own copy of the payments (#12266).
+	payments, err := data_models.ListInvoiceRecordPayments(db, inv)
 	if err != nil {
 		return nil, err
 	}

@@ -209,7 +209,9 @@ func loadInvoiceDetail(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice
 	if err != nil {
 		return nil, err
 	}
-	payments, err := data_models.ListInvoicePayments(db, inv.ID)
+	// A numbered invoice lists its own copy of the payments, which stays
+	// after a payment is edited or deleted for good (system_3 #12266).
+	payments, err := data_models.ListInvoiceRecordPayments(db, inv)
 	if err != nil {
 		return nil, err
 	}
