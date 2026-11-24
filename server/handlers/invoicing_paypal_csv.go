@@ -260,8 +260,53 @@ func sniffDelimiter(headerLine string) rune {
 // parseCents reads a localised money string ("1.234,56", "1,234.56", "-0,35",
 // "20.00", "€ 5") into integer cents without going through a float.
 func parseCents(raw string) (int64, error) {
+	return parseCentsIn(raw, 0)
+}
+
+// paypalAmountNoise is what an amount may carry besides its digits, sign and
+// separators: spaces, currency signs and the Swiss thousands apostrophe.
+var paypalAmountNoise = strings.NewReplacer(" ", "", " ", "", "€", "", "$", "", "£", "", "'", "")
+
+// paypalDecimalSeparator reads which separator the file's amounts use for
+// decimals: the later of the two in an amount that has both ("1,234.56"), or
+// the one before a 1-2 digit tail ("20.00"). It answers 0 when no amount
+// shows it, or when amounts disagree (system_3 #12260).
+func paypalDecimalSeparator(amounts []string) byte {
+	var seen byte
+	for _, raw := range amounts {
+		s := strings.TrimLeft(paypalAmountNoise.Replace(strings.TrimSpace(raw)), "+-")
+		lastComma, lastDot := strings.LastIndex(s, ","), strings.LastIndex(s, ".")
+		var sep byte
+		switch {
+		case lastComma >= 0 && lastDot >= 0:
+			sep = ','
+			if lastDot > lastComma {
+				sep = '.'
+			}
+		case lastComma >= 0 || lastDot >= 0:
+			at := max(lastComma, lastDot)
+			if tail := len(s) - at - 1; tail == 1 || tail == 2 {
+				sep = s[at]
+			}
+		}
+		if sep == 0 {
+			continue
+		}
+		if seen != 0 && seen != sep {
+			return 0
+		}
+		seen = sep
+	}
+	return seen
+}
+
+// parseCentsIn reads an amount as parseCents does. decimal is the file's
+// decimal separator when its other amounts show one (paypalDecimalSeparator),
+// else 0. A lone separator before three digits is then decimals, not a
+// thousands group, and refused as too many (system_3 #12260).
+func parseCentsIn(raw string, decimal byte) (int64, error) {
 	s := strings.TrimSpace(raw)
-	s = strings.NewReplacer(" ", "", " ", "", "€", "", "$", "", "£", "", "'", "").Replace(s)
+	s = paypalAmountNoise.Replace(s)
 	if s == "" {
 		return 0, nil
 	}
@@ -286,9 +331,15 @@ func parseCents(raw string) (int64, error) {
 			at = lastDot
 		}
 		// One separator: a 1-2 digit tail is decimals, a 3-digit tail is a
-		// thousands group ("1.234" is one thousand two hundred thirty-four).
-		if tail := len(s) - at - 1; tail == 1 || tail == 2 {
+		// thousands group ("1.234" is one thousand two hundred thirty-four),
+		// unless the file uses that separator for decimals. A longer tail is
+		// never a group: "20.0000" is twenty with too many decimals, not two
+		// hundred thousand (system_3 #12260).
+		switch tail := len(s) - at - 1; {
+		case tail == 1 || tail == 2:
 			decimalAt = at
+		case tail > 3 || (tail == 3 && s[at] == decimal):
+			return 0, fmt.Errorf("amount %q has more than two decimals", raw)
 		}
 	}
 	if decimalAt >= 0 {
@@ -298,6 +349,12 @@ func parseCents(raw string) (int64, error) {
 	if intPart == "" {
 		intPart = "0"
 	}
+	// Digits only from here: ParseInt would take a sign of its own, and a
+	// second sign ("--100000001", "5.-1") would slip past the ceiling below
+	// as a negative and flip back to a huge positive (security c76329).
+	if strings.TrimLeft(intPart, "0123456789") != "" || strings.TrimLeft(frac, "0123456789") != "" {
+		return 0, fmt.Errorf("amount %q is not a number", raw)
+	}
 	if len(frac) > 2 {
 		return 0, fmt.Errorf("amount %q has more than two decimals", raw)
 	}
@@ -305,12 +362,20 @@ func parseCents(raw string) (int64, error) {
 		frac += "0"
 	}
 	whole, err := strconv.ParseInt(intPart, 10, 64)
+	if errors.Is(err, strconv.ErrRange) {
+		return 0, fmt.Errorf("amount %q is above 100000000 euros", raw)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("amount %q is not a number", raw)
 	}
 	cents, err := strconv.ParseInt(frac, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("amount %q is not a number", raw)
+	}
+	// The hand entry's ceiling (maxUnitPriceCents): no file amount above it
+	// is real, and it keeps every sum far inside int64.
+	if whole > maxUnitPriceCents/100 || whole*100+cents > maxUnitPriceCents {
+		return 0, fmt.Errorf("amount %q is above 100000000 euros", raw)
 	}
 	v := whole*100 + cents
 	if neg {
@@ -457,7 +522,7 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 		}
 		records = append(records, rec)
 	}
-	return parsePayPalRecords(col, records, dateOrder)
+	return parsePayPalRecords(col, records, nil, dateOrder)
 }
 
 // excelSerialDate converts an Excel date serial to a calendar date. In the
@@ -515,11 +580,16 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 		}
 	}
 	var records [][]string
+	// written marks the money cells this reader wrote from a number: always
+	// a dot and two decimals, so never evidence of the file's separator
+	// (system_3 #12260, design_agent c76354).
+	var written [][]bool
 	for _, row := range rows[1:] {
 		if empty(row) {
 			continue
 		}
 		rec := make([]string, len(row))
+		wrote := make([]bool, len(row))
 		for i, c := range row {
 			switch {
 			case !c.IsNum:
@@ -532,13 +602,15 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 				rec[i] = d.Format("2006-01-02")
 			case money[i]:
 				rec[i] = strconv.FormatFloat(math.Round(c.Num*100)/100, 'f', 2, 64)
+				wrote[i] = true
 			default:
 				rec[i] = c.Text
 			}
 		}
 		records = append(records, rec)
+		written = append(written, wrote)
 	}
-	return parsePayPalRecords(col, records, dateOrder)
+	return parsePayPalRecords(col, records, written, dateOrder)
 }
 
 // parsePayPalRecords classifies the records of either export format. Rows
@@ -547,7 +619,10 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 // withdrawal rows so payments can be grouped by bank deposit. A reversal
 // cancels the row it reverses, so a bounced withdrawal or a reversed payment
 // imports as neither row.
-func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string) (*paypalParseResult, error) {
+//
+// written, when set, marks per record the cells an .xlsx reader wrote from a
+// number; they take no part in reading the file's decimal separator.
+func parsePayPalRecords(col map[string]int, records [][]string, written [][]bool, dateOrder string) (*paypalParseResult, error) {
 	get := func(rec []string, field string) string {
 		i, ok := col[field]
 		if !ok || i >= len(rec) {
@@ -577,21 +652,33 @@ func parsePayPalRecords(col map[string]int, records [][]string, dateOrder string
 	// #12259).
 	var reversalRows []paypalUndoRow
 	textBytes := 0
+	// Which separator the file's amounts use for decimals, read from all of
+	// them (system_3 #12260).
+	var amounts []string
+	for r, rec := range records {
+		for _, f := range []string{"gross", "fee", "net"} {
+			if i, ok := col[f]; ok && r < len(written) && i < len(written[r]) && written[r][i] {
+				continue
+			}
+			amounts = append(amounts, get(rec, f))
+		}
+	}
+	decimal := paypalDecimalSeparator(amounts)
 	for i, rec := range records {
 		line := i + 2 // 1-based, after the header
 		typ := strings.ToLower(get(rec, "type"))
 		status := strings.ToLower(get(rec, "status"))
 		impact := strings.ToLower(get(rec, "balance_impact"))
 
-		gross, err := parseCents(get(rec, "gross"))
+		gross, err := parseCentsIn(get(rec, "gross"), decimal)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
-		fee, err := parseCents(get(rec, "fee"))
+		fee, err := parseCentsIn(get(rec, "fee"), decimal)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
-		net, err := parseCents(get(rec, "net"))
+		net, err := parseCentsIn(get(rec, "net"), decimal)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
