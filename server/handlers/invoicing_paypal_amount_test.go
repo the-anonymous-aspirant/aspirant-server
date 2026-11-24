@@ -46,6 +46,14 @@ func TestParseCentsIn_DecimalsAndCeiling(t *testing.T) {
 		{"100000001", 0, 0, "above 100000000 euros"},
 		{"-100.000.000,01", ',', 0, "above 100000000 euros"},
 		{"99999999999999999999", 0, 0, "above 100000000 euros"},
+		// A second or misplaced sign is no number, and cannot pass the
+		// ceiling as a negative (security c76329).
+		{"--92233720368547758", 0, 0, "is not a number"},
+		{"--100000001", 0, 0, "is not a number"},
+		{"--5.10", 0, 0, "is not a number"},
+		{"5.-1", 0, 0, "is not a number"},
+		{"-+5", 0, 0, "is not a number"},
+		{"+-3", 0, 0, "is not a number"},
 		// Unchanged.
 		{"20.00", '.', 2000, ""},
 		{"1.234,56", ',', 123456, ""},

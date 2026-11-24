@@ -328,6 +328,12 @@ func parseCentsIn(raw string, decimal byte) (int64, error) {
 	if intPart == "" {
 		intPart = "0"
 	}
+	// Digits only from here: ParseInt would take a sign of its own, and a
+	// second sign ("--100000001", "5.-1") would slip past the ceiling below
+	// as a negative and flip back to a huge positive (security c76329).
+	if strings.TrimLeft(intPart, "0123456789") != "" || strings.TrimLeft(frac, "0123456789") != "" {
+		return 0, fmt.Errorf("amount %q is not a number", raw)
+	}
 	if len(frac) > 2 {
 		return 0, fmt.Errorf("amount %q has more than two decimals", raw)
 	}
