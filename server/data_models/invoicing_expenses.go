@@ -1,6 +1,7 @@
 package data_models
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -279,6 +280,31 @@ func TombstoneInvoicingExpense(db *gorm.DB, e InvoicingExpense, deletedBy uint, 
 
 // IsManual reports whether the owner entered this expense by hand.
 func (e InvoicingExpense) IsManual() bool { return e.Entry == ExpenseEntryManual }
+
+// ShownReference is the reference a view may show for the expense: the
+// owner's own for a hand-entered expense (possibly empty), the provider's
+// transaction id for an imported one, and nothing when the server made the
+// id up (see IsDerivedTransactionID). An import's Reference is its payee, so
+// it is not used here.
+func (e InvoicingExpense) ShownReference() string {
+	if e.IsManual() {
+		return e.Reference
+	}
+	if IsDerivedTransactionID(e.Source, e.TransactionID) {
+		return ""
+	}
+	return e.TransactionID
+}
+
+// MarshalJSON serves the stored fields plus `shown_reference` (system_3
+// #12257).
+func (e InvoicingExpense) MarshalJSON() ([]byte, error) {
+	type stored InvoicingExpense
+	return json.Marshal(struct {
+		stored
+		ShownReference string `json:"shown_reference"`
+	}{stored(e), e.ShownReference()})
+}
 
 // newManualExpenseTransactionID is the database key of a hand-entered
 // expense, mirroring newManualTransactionID for payments. Generated in the

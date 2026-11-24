@@ -241,3 +241,44 @@ func TestBuild_ContactLinksAndClientPhoneNeverPrint(t *testing.T) {
 		}
 	}
 }
+
+// system_3 #12257: an N26 payment prints how it was paid ("per
+// Banküberweisung") and never an id the server derived for the row. An N26
+// transfer confirmation's operation id is the bank's own and prints; PayPal
+// and a hand entry print as before; a source with no known method ends the
+// line at the date.
+func TestBuild_N26PaymentPrintsBankTransferAndNoDerivedID(t *testing.T) {
+	on := func(d int) time.Time { return time.Date(2026, 10, d, 0, 0, 0, 0, time.UTC) }
+	in := issuedInput(true)
+	in.Payments = []data_models.InvoicingPayment{
+		{Source: "n26", Entry: data_models.PaymentEntryImport, TransactionID: "csv-f00dfeedcafe0123456789ab", PaidOn: on(1)},
+		{Source: "n26", Entry: data_models.PaymentEntryImport, TransactionID: "stmt-0123456789abcdef01234567", PaidOn: on(2)},
+		{Source: "n26", Entry: data_models.PaymentEntryImport, TransactionID: "a1b2c3d4-0000-4000-8000-000000000001", PaidOn: on(3)},
+		{Source: "paypal", Entry: data_models.PaymentEntryImport, TransactionID: "1AA11111AA1111111", PaidOn: on(4)},
+		{Source: "manual", Entry: data_models.PaymentEntryManual, TransactionID: "M-0000000000000001", Method: "bank_transfer", Reference: "RE-2026-17", PaidOn: on(5)},
+		{Source: "manual", Entry: data_models.PaymentEntryManual, TransactionID: "M-0000000000000002", Method: "cash", PaidOn: on(6)},
+		{Source: "invented-bank", Entry: data_models.PaymentEntryImport, TransactionID: "X-1", PaidOn: on(7)},
+	}
+	d, err := Build(in)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	want := []string{
+		"Es gilt die Steuerbefreiung für Kleinunternehmer gemäß § 19 UStG.",
+		"Zahlung erhalten am 01.10.2026 per Banküberweisung",
+		"Zahlung erhalten am 02.10.2026 per Banküberweisung",
+		"Zahlung erhalten am 03.10.2026 per Banküberweisung (Transaktions-ID: a1b2c3d4-0000-4000-8000-000000000001)",
+		"Zahlung erhalten am 04.10.2026 per PayPal (Transaktions-ID: 1AA11111AA1111111)",
+		"Zahlung erhalten am 05.10.2026 per Banküberweisung (Transaktions-ID: RE-2026-17)",
+		"Zahlung erhalten am 06.10.2026 per Bar",
+		"Zahlung erhalten am 07.10.2026",
+	}
+	if notes(d) != strings.Join(want, "\n") {
+		t.Errorf("payment lines:\n got: %q\nwant: %q", d.Notes, want)
+	}
+	for _, bad := range []string{"csv-", "stmt-", "M-000", "per n26", "invented-bank"} {
+		if strings.Contains(notes(d), bad) {
+			t.Errorf("the notes print %q: %q", bad, d.Notes)
+		}
+	}
+}
