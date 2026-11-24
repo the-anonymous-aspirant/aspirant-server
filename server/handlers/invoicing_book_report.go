@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -87,6 +88,10 @@ func ExportBookReportHandler(c *gin.Context) {
 		return
 	}
 
+	// The Book counts euros (system_3 #12258): a counted row in another
+	// currency is left out of every sum, and the file says so in its last row.
+	payments, expenses, leftOut := euroRowsOnly(payments, expenses, month)
+
 	months := bookReportMonths(payments, expenses)
 	if month != "" {
 		payments = paymentsPaidIn(payments, month)
@@ -130,6 +135,11 @@ func ExportBookReportHandler(c *gin.Context) {
 		resultByMonth[m] = incomeByMonth[m] - totalExpenseByMonth[m]
 	}
 	rows = append(rows, bookReportRow("Ergebnis", months, resultByMonth))
+	if line := notCountedLine(leftOut); line != "" {
+		row := make([]string, len(header))
+		row[0] = line
+		rows = append(rows, row)
+	}
 
 	content, err := writeCSV(header, rows)
 	if err != nil {
@@ -276,4 +286,50 @@ func bookReportRow(label string, months []string, byMonth map[string]int64) []st
 	}
 	row = append(row, csvMoney(total))
 	return row
+}
+
+// euroRowsOnly splits off the counted rows in a currency other than euros
+// (system_3 #12258) and counts them per currency: those paid in month when
+// one is asked for, else all. The rest are returned to be summed.
+func euroRowsOnly(payments []data_models.InvoicingPayment, expenses []data_models.InvoicingExpense, month string) ([]data_models.InvoicingPayment, []data_models.InvoicingExpense, map[string]int) {
+	leftOut := map[string]int{}
+	inMonth := func(t time.Time) bool { return month == "" || t.Format("2006-01") == month }
+	euroPayments := make([]data_models.InvoicingPayment, 0, len(payments))
+	for _, p := range payments {
+		if p.Currency == "EUR" {
+			euroPayments = append(euroPayments, p)
+		} else if inMonth(p.PaidOn) {
+			leftOut[p.Currency]++
+		}
+	}
+	euroExpenses := make([]data_models.InvoicingExpense, 0, len(expenses))
+	for _, e := range expenses {
+		if e.Currency == "EUR" {
+			euroExpenses = append(euroExpenses, e)
+		} else if inMonth(e.PaidOn) {
+			leftOut[e.Currency]++
+		}
+	}
+	return euroPayments, euroExpenses, leftOut
+}
+
+// notCountedLine is the report's last row when rows were left out, e.g.
+// "Nicht enthalten: 2 Einträge in anderer Währung (USD)" (design ruling on
+// #12258), or "" when none were.
+func notCountedLine(leftOut map[string]int) string {
+	n := 0
+	codes := make([]string, 0, len(leftOut))
+	for code, k := range leftOut {
+		n += k
+		codes = append(codes, code)
+	}
+	if n == 0 {
+		return ""
+	}
+	sort.Strings(codes)
+	entries := "Einträge"
+	if n == 1 {
+		entries = "Eintrag"
+	}
+	return fmt.Sprintf("Nicht enthalten: %d %s in anderer Währung (%s)", n, entries, strings.Join(codes, ", "))
 }

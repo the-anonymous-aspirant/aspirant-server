@@ -113,8 +113,14 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 	for _, p := range payments {
 		ids = append(ids, p.ID)
 	}
-	if _, g, err := checkInvoiceablePayments(tx, owner, ids, inv.ID); err != nil || g != nil {
+	linked, g, err := checkInvoiceablePayments(tx, owner, ids, inv.ID)
+	if err != nil || g != nil {
 		return nil, nil, g, err
+	}
+	// A draft made before system_3 #12258 may hold two currencies: it is not
+	// issued as one total.
+	if g := mixedCurrencies(linked, inv.Currency); g != nil {
+		return nil, nil, g, nil
 	}
 
 	latest, err := data_models.LatestIssueDate(tx, owner)

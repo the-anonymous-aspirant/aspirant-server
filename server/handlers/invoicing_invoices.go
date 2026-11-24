@@ -136,6 +136,32 @@ func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uin
 	return out, nil, nil
 }
 
+// mixedCurrencies refuses payments that are not all in one currency, the
+// draft's own (draftCurrency, empty for a new draft) included (system_3
+// #12258). An invoice holds one currency, because a total never adds two. A
+// draft in one currency other than euros stays allowed: its PDF prints its
+// own currency. Create, the draft edit and issue call it; Generate does not,
+// since it makes one draft per payment.
+func mixedCurrencies(payments []data_models.InvoicingPayment, draftCurrency string) *invoicingGuardError {
+	seen := map[string]bool{}
+	if draftCurrency != "" {
+		seen[draftCurrency] = true
+	}
+	for _, p := range payments {
+		seen[p.Currency] = true
+	}
+	if len(seen) < 2 {
+		return nil
+	}
+	codes := make([]string, 0, len(seen))
+	for c := range seen {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	return guard(http.StatusUnprocessableEntity, "mixed_currencies",
+		"the payments are in different currencies (%s); an invoice holds one currency, so invoice them separately", strings.Join(codes, ", "))
+}
+
 // recomputeTotals sets net, VAT and total from the line items. VAT applies
 // only when the issuer is not a Kleinunternehmerin.
 func recomputeTotals(inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem, kleinunternehmer bool) {
@@ -353,6 +379,9 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "creating invoice", err)
 		return
 	}
+	if g == nil {
+		g = mixedCurrencies(payments, "")
+	}
 	if g != nil {
 		respondGuard(c, tx, g)
 		return
@@ -549,10 +578,15 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 			bad("payment_ids", fmt.Errorf("must be a list of ids"))
 			return
 		}
-		if _, g, err := checkInvoiceablePayments(tx, invoicingUserID(c), ids, inv.ID); err != nil {
+		linked, g, err := checkInvoiceablePayments(tx, invoicingUserID(c), ids, inv.ID)
+		if err != nil {
 			respondInvoicingInternal(c, tx, "updating invoice", err)
 			return
-		} else if g != nil {
+		}
+		if g == nil {
+			g = mixedCurrencies(linked, inv.Currency)
+		}
+		if g != nil {
 			respondGuard(c, tx, g)
 			return
 		}
