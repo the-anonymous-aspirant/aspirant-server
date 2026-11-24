@@ -231,10 +231,10 @@ func TestN26CSVCleansNamesAndNotes(t *testing.T) {
 	if in[0].SenderName != "Line one line two" {
 		t.Errorf("multi-line name: %q", in[0].SenderName)
 	}
-	if len(in[0].Note) > n26CSVMaxNoteBytes {
-		t.Errorf("note is %d bytes", len(in[0].Note))
+	if n := len([]rune(in[0].Note)); n > n26MaxPaymentNoteRunes {
+		t.Errorf("note is %d characters", n)
 	}
-	if n := len([]rune(out[0].PayeeName)); n != n26CSVMaxNameRunes {
+	if n := len([]rune(out[0].PayeeName)); n != n26MaxPayeeRunes {
 		t.Errorf("long payee: %d runes", n)
 	}
 	if out[1].PayeeName != "Direct Debit" {

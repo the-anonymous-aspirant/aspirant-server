@@ -41,12 +41,6 @@ const (
 	// n26CSVIDPrefix marks a CSV row's derived transaction id, beside the
 	// statement's "stmt-".
 	n26CSVIDPrefix = "csv-"
-
-	// The confirm endpoints' limits, which a CSV row is cleaned to fit, so
-	// that no offered row can be refused at confirm.
-	n26CSVMaxNameRunes = maxManualReferenceRunes // payee_name: 100 runes (sender_name allows 200 bytes)
-	n26CSVMaxNameBytes = 200
-	n26CSVMaxNoteBytes = 500
 )
 
 // n26CSVField is one column the parser reads.
@@ -298,8 +292,10 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 		}
 		id := rowID(row)
 		name := n26CSVName(row)
-		note := truncateBytes(cleanN26CSVText(row.reference), n26CSVMaxNoteBytes)
+		note := cleanN26CSVText(row.reference)
 		paidOn := row.paidOn.Format("2006-01-02")
+		// Each row is cut to the confirm's limits by fitN26Candidate and
+		// fitN26Expense, in characters, as a statement row is (#12262).
 		if row.cents > 0 {
 			in = append(in, n26Candidate{
 				DocumentKind:  n26KindCSVExport,
@@ -312,6 +308,7 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 				SenderIBAN:    n26CSVSenderIBAN(row),
 				Note:          note,
 			})
+			fitN26Candidate(&in[len(in)-1])
 		} else {
 			out = append(out, n26ExpenseCandidate{
 				TransactionID: id,
@@ -321,6 +318,7 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 				PayeeName:     name,
 				Note:          note,
 			})
+			fitN26Expense(&out[len(out)-1])
 		}
 	}
 	return in, out, skippedInternal, nil
@@ -350,12 +348,12 @@ func quoteN26Value(s string, n int) string {
 }
 
 // n26CSVName is the row's counterparty, cleaned to the confirm endpoints'
-// one-line name rule. A row with no partner name falls back to its type
-// ("Direct Debit"), then to "N26", so an offered row is never refused at
-// confirm for an empty name.
+// one-line name rule (its length is cut by fitN26Candidate / fitN26Expense).
+// A row with no partner name falls back to its type ("Direct Debit"), then
+// to "N26", so an offered row is never refused at confirm for an empty name.
 func n26CSVName(row n26CSVRow) string {
 	for _, s := range []string{row.partner, row.typ, "N26"} {
-		if name := truncateBytes(truncateRunes(cleanN26CSVText(s), n26CSVMaxNameRunes), n26CSVMaxNameBytes); name != "" {
+		if name := cleanN26CSVText(s); name != "" {
 			return name
 		}
 	}
@@ -380,17 +378,6 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n])
-}
-
-// truncateBytes cuts s to at most n bytes at a rune boundary.
-func truncateBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return strings.TrimSpace(s[:n])
 }
 
 func parseN26CSVPayments(text string) ([]n26Candidate, error) {
