@@ -489,7 +489,9 @@ func mapPayPalColumns(header []string) (map[string]int, error) {
 
 // ParsePayPalActivityCSV turns a PayPal activity CSV into payment rows.
 func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, error) {
-	text := toUTF8(data)
+	// A NUL cannot be stored in text; it is dropped from every cell, as the
+	// N26 CSV parser drops control characters (system_3 #12268).
+	text := strings.ReplaceAll(toUTF8(data), "\x00", "")
 	firstLine := text
 	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
 		firstLine = text[:i]

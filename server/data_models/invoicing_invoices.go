@@ -85,6 +85,9 @@ func (InvoicingInvoicePayment) TableName() string { return "invoicing_invoice_pa
 // GetInvoicingInvoice returns the owner's invoice, or nil when the id is
 // unknown or belongs to another book.
 func GetInvoicingInvoice(db *gorm.DB, owner, id uint) (*InvoicingInvoice, error) {
+	if !InvoicingIDInRange(id) {
+		return nil, nil
+	}
 	var inv InvoicingInvoice
 	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&inv).Error
 	if err == gorm.ErrRecordNotFound {
@@ -177,6 +180,9 @@ func (InvoicingInvoicePDF) TableName() string { return "invoicing_invoice_pdfs" 
 
 // GetInvoicePDF returns the stored PDF, or nil when there is none.
 func GetInvoicePDF(db *gorm.DB, invoiceID uint) (*InvoicingInvoicePDF, error) {
+	if !InvoicingIDInRange(invoiceID) {
+		return nil, nil
+	}
 	var p InvoicingInvoicePDF
 	err := db.Where("invoice_id = ?", invoiceID).First(&p).Error
 	if err == gorm.ErrRecordNotFound {

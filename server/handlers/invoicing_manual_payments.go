@@ -130,6 +130,9 @@ func hasFormatChars(s string) bool {
 // time (#8409 security F1). Scoped to the owner, like lockExpenseRow, so an
 // id from another book locks nothing (system_3 #10645, security c66025).
 func lockPaymentRow(tx *gorm.DB, owner, id uint) error {
+	if !data_models.InvoicingIDInRange(id) {
+		return nil // names no row; the read after it answers not found
+	}
 	return tx.Model(&data_models.InvoicingPayment{}).Where("id = ? AND owner_user_id = ?", id, owner).
 		UpdateColumn("category", gorm.Expr("category")).Error
 }

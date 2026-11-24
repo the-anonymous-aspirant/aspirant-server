@@ -156,6 +156,9 @@ func lockIssuing(tx *gorm.DB, owner uint) (bool, error) {
 // flight and then reads its committed status. It reports whether the owner
 // has an invoice with this id.
 func lockInvoiceRow(tx *gorm.DB, owner, id uint) (bool, error) {
+	if !data_models.InvoicingIDInRange(id) {
+		return false, nil
+	}
 	res := tx.Model(&data_models.InvoicingInvoice{}).Where("id = ? AND owner_user_id = ?", id, owner).
 		UpdateColumn("status", gorm.Expr("status"))
 	return res.RowsAffected == 1, res.Error
@@ -253,6 +256,14 @@ func IssueInvoiceHandler(c *gin.Context) {
 	}
 	if g != nil {
 		respondGuard(c, tx, g)
+		return
+	}
+	// The counter cannot move past the column's largest value, so that value
+	// draws no number: refused before the draw, the draft stays a draft and
+	// no number is used (system_3 #12268).
+	if profile.NextInvoiceNumber >= data_models.MaxInvoiceNumber {
+		respondGuard(c, tx, guard(http.StatusUnprocessableEntity, "invoice_numbers_exhausted",
+			"the next invoice number is %d, the largest the book can hold; no further invoice can be numbered", profile.NextInvoiceNumber))
 		return
 	}
 

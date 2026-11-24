@@ -256,6 +256,9 @@ func ListRemovedInvoicingPayments(db *gorm.DB, owner uint) ([]InvoicingPayment, 
 // GetInvoicingPayment returns the owner's payment, or nil when the id is
 // unknown or belongs to another book.
 func GetInvoicingPayment(db *gorm.DB, owner, id uint) (*InvoicingPayment, error) {
+	if !InvoicingIDInRange(id) {
+		return nil, nil
+	}
 	var p InvoicingPayment
 	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&p).Error
 	if err == gorm.ErrRecordNotFound {

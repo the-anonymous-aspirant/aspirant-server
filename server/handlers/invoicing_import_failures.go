@@ -257,6 +257,10 @@ func DownloadImportFailureHandler(c *gin.Context) {
 		return
 	}
 	var row data_models.InvoicingImportFailure
+	if !data_models.InvoicingIDInRange(uint(id)) {
+		RespondWithError(c, http.StatusNotFound, "No import failure with that id")
+		return
+	}
 	if err := db.First(&row, uint(id)).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			RespondWithError(c, http.StatusNotFound, "No import failure with that id")

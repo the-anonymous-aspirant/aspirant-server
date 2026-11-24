@@ -157,6 +157,9 @@ func ListInvoicingBookPresets(db *gorm.DB, owner uint) ([]InvoicingBookPreset, e
 // GetInvoicingBookPreset returns the owner's preset, or nil when the id is
 // unknown or belongs to another book.
 func GetInvoicingBookPreset(db *gorm.DB, owner, id uint) (*InvoicingBookPreset, error) {
+	if !InvoicingIDInRange(id) {
+		return nil, nil
+	}
 	var p InvoicingBookPreset
 	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&p).Error
 	if err == gorm.ErrRecordNotFound {

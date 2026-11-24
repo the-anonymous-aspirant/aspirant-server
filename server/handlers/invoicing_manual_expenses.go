@@ -74,6 +74,9 @@ func newManualExpenseTransactionID() (string, error) {
 // the owner (security review of PR 175 F2) so it never locks a row in
 // another book.
 func lockExpenseRow(tx *gorm.DB, owner, id uint) error {
+	if !data_models.InvoicingIDInRange(id) {
+		return nil // names no row; the read after it answers not found
+	}
 	return tx.Model(&data_models.InvoicingExpense{}).Where("id = ? AND owner_user_id = ?", id, owner).
 		UpdateColumn("category", gorm.Expr("category")).Error
 }
