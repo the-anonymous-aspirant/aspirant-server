@@ -293,6 +293,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// The duplicate check and the insert run under the issuing lock, so two
 	// hand entries of the same PayPal id cannot both pass the check.
 	if _, err := lockIssuing(tx, invoicingUserID(c)); err != nil {

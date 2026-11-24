@@ -194,6 +194,7 @@ func bookWrite(c *gin.Context, what string, status int, fn func(tx *gorm.DB, own
 	db := c.MustGet("db").(*gorm.DB)
 	owner := invoicingUserID(c)
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := data_models.LockInvoicingBook(tx, owner); err != nil {
 		tx.Rollback()
 		log.Printf("book %s: lock: %v", what, err)

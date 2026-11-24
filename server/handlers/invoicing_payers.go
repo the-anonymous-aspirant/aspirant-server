@@ -326,6 +326,7 @@ func AddPayersHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error adding payers")
 	}
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// One add at a time per book: the candidate re-read, the duplicate-name
 	// check and the inserts run under the issuing lock.
 	if _, err := lockIssuing(tx, owner); err != nil {

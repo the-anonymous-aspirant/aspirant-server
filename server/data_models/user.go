@@ -496,6 +496,7 @@ func (u *User) UpdateUser(db *gorm.DB) error {
 // whole delete back, so a user is never half-deleted.
 func (u *User) DeleteUser(db *gorm.DB) error {
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if tx.Error != nil {
 		return tx.Error
 	}

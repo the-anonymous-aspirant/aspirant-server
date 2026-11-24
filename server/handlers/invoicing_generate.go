@@ -124,6 +124,7 @@ func GenerateInvoiceDraftsHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if _, err := lockIssuing(tx, owner); err != nil {
 		respondInvoicingInternal(c, tx, "generating invoices", err)
 		return

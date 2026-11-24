@@ -52,6 +52,7 @@ var ErrCardHasNoFront = fmt.Errorf("card has no front template")
 // the card's current pointer, in one transaction.
 func AddCardVersion(db *gorm.DB, card *Card, data json.RawMessage, note string, userID uint) (*CardVersion, error) {
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}

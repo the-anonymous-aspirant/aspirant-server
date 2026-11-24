@@ -134,6 +134,7 @@ func PaymentsRowActionHandler(action string) gin.HandlerFunc {
 		db := c.MustGet("db").(*gorm.DB)
 		owner := invoicingUserID(c)
 		tx := db.Begin()
+		defer tx.RollbackUnlessCommitted()
 		refusal, err := applyPaymentRowAction(tx, owner, ids, action)
 		if err != nil {
 			tx.Rollback()
@@ -293,6 +294,7 @@ func ExpensesRowActionHandler(action string) gin.HandlerFunc {
 		db := c.MustGet("db").(*gorm.DB)
 		owner := invoicingUserID(c)
 		tx := db.Begin()
+		defer tx.RollbackUnlessCommitted()
 		refusal, err := applyExpenseRowAction(tx, owner, ids, action)
 		if err != nil {
 			tx.Rollback()

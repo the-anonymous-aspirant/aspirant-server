@@ -61,6 +61,7 @@ var ErrTemplateVersionNotFound = fmt.Errorf("template version not found")
 // transaction.
 func AddTemplateVersion(db *gorm.DB, tmpl *CardTemplate, spec json.RawMessage, note string, userID uint) (*CardTemplateVersion, error) {
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}

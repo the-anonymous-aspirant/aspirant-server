@@ -340,6 +340,7 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// Linking payments takes the issuing lock, the same one a payment delete
 	// takes (#8409 security F1): a delete and a draft that links the same
 	// payment run one at a time, so no link can outlive its payment.
@@ -420,6 +421,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// A payment_ids edit links payments, so it takes the issuing lock like a
 	// draft create (#8409 security F1), and before the row lock, in the same
 	// order the issue handler takes them.
@@ -431,7 +433,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	}
 	// Wait for any issue of this invoice in flight, then read its
 	// committed status: a draft check must not race the issue.
-	if _, err := lockInvoiceRow(tx, id); err != nil {
+	if _, err := lockInvoiceRow(tx, invoicingUserID(c), id); err != nil {
 		respondInvoicingInternal(c, tx, "updating invoice", err)
 		return
 	}
@@ -607,9 +609,10 @@ func DeleteInvoiceDraftHandler(c *gin.Context) {
 		return
 	}
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// Wait for any issue of this invoice in flight, then read its
 	// committed status: a draft check must not race the issue.
-	if _, err := lockInvoiceRow(tx, id); err != nil {
+	if _, err := lockInvoiceRow(tx, invoicingUserID(c), id); err != nil {
 		respondInvoicingInternal(c, tx, "deleting invoice", err)
 		return
 	}

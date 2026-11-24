@@ -157,6 +157,7 @@ func ExpenseCategoryActionHandler(action string) gin.HandlerFunc {
 			RespondWithError(c, http.StatusInternalServerError, "Error updating category")
 		}
 		tx := db.Begin()
+		defer tx.RollbackUnlessCommitted()
 		if err := data_models.LockInvoicingBook(tx, owner); err != nil {
 			fail(tx, "book lock", err)
 			return

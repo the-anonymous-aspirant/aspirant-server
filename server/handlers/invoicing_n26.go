@@ -1016,6 +1016,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	userID := invoicingUserID(c)
 	summary := n26ConfirmSummary{}
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// Dedupe runs under the issuing lock like the PayPal import's, so two
 	// concurrent confirms of the same rows cannot both pass the exists check
 	// (#8409 security F2).
@@ -1196,6 +1197,7 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 	owner := invoicingUserID(c)
 	summary := n26ConfirmSummary{}
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// The book lock, as every expense write takes: two concurrent confirms of
 	// the same rows cannot both pass the exists check.
 	if err := data_models.LockInvoicingBook(tx, owner); err != nil {

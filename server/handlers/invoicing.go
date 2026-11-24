@@ -209,6 +209,7 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	// Wait for any issue in flight before reading the profile and the issued numbers, so a
 	// save cannot write back a next number an issue has just moved past
 	// (@security N4, c51472 on #8371).
@@ -376,6 +377,7 @@ func CreateInvoicingClientHandler(c *gin.Context) {
 	}
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	if err := tx.Create(&cl).Error; err != nil {
 		tx.Rollback()
 		log.Printf("Error creating invoicing client: %v", err)
@@ -410,6 +412,7 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 	userID := invoicingUserID(c)
 
 	tx := db.Begin()
+	defer tx.RollbackUnlessCommitted()
 	existing, err := data_models.GetInvoicingClient(tx, userID, uint(id))
 	if err != nil {
 		tx.Rollback()
