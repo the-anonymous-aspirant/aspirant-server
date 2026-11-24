@@ -193,3 +193,31 @@ func TestAddPayers_ABookNameIsStillRefused(t *testing.T) {
 		t.Errorf("a refused add created clients: %d, want %d", got, clients0)
 	}
 }
+
+// Two new clients of one request never both take one IBAN (security c76401
+// on #12319): the second finds the IBAN on the client the first just made,
+// as it would find it on a client already in the book.
+func TestAddPayers_TwoNewClientsNeverShareAnIBAN(t *testing.T) {
+	f := newPayerFixture(t)
+	a := f.payIBAN(t, "Mara Esempio", sameNameIBAN, 1)
+	b := f.payIBAN(t, "Mara Esempio", sameNameIBAN, 2)
+	r := mustAddPayers(t, f, fmt.Sprintf(`{"payers":[
+		{"payment_ids":[%d],"new_client_name":"Mara Esempio"},
+		{"payment_ids":[%d],"new_client_name":"Mara Esempio","second_client":true}]}`, a, b))
+	if r.ClientsAdded != 2 || len(r.Clients) != 2 {
+		t.Fatalf("response: %+v", r)
+	}
+	with := 0
+	for _, cl := range r.Clients {
+		stored, _ := data_models.GetInvoicingClient(f.db, uint(invoiceFixtureUser), cl.ID)
+		if stored != nil && stored.IBAN == sameNameIBAN {
+			with++
+		}
+	}
+	if with != 1 {
+		t.Errorf("%d of the 2 new clients hold the IBAN, want exactly 1", with)
+	}
+	if r.Clients[0].IBAN != sameNameIBAN {
+		t.Errorf("the first row's client should hold it: %+v", r.Clients)
+	}
+}
