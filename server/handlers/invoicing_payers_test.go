@@ -264,7 +264,6 @@ func TestAddPayers_Refusals(t *testing.T) {
 	f := newPayerFixture(t)
 	u := uint(invoiceFixtureUser)
 	m1 := f.pay(t, u, "n26", "Mara Esempio", "", "uncategorised", 10000, 1)
-	m2 := f.pay(t, u, "n26", "Lia", "", "uncategorised", 10000, 2)
 	for name, tc := range map[string]struct {
 		body string
 		code int
@@ -277,7 +276,7 @@ func TestAddPayers_Refusals(t *testing.T) {
 		"repeated payment":      {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"new_client_name":"A"},{"payment_ids":[%d],"new_client_name":"B"}]}`, m1, m1), 400, "invalid_field"},
 		"punctuation-only name": {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"new_client_name":"..."}]}`, m1), 400, "invalid_field"},
 		"newline in name":       {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"new_client_name":"A\nB"}]}`, m1), 400, "invalid_field"},
-		"one new client twice":  {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"new_client_name":"Mara"},{"payment_ids":[%d],"new_client_name":"MARA."}]}`, m1, m2), 400, "invalid_field"},
+		"second without a name": {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"client_id":%d,"second_client":true}]}`, m1, f.clientID), 400, "invalid_field"},
 		"unknown client":        {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"client_id":999}]}`, m1), 400, "invalid_field"},
 		"name already in book":  {fmt.Sprintf(`{"payers":[{"payment_ids":[%d],"new_client_name":"galerie nord"}]}`, m1), 409, "client_exists"},
 	} {
