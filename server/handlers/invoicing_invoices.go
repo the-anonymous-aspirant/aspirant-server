@@ -49,12 +49,25 @@ type invoicingGuardError struct {
 	Status  int
 	Code    string
 	Message string
+	Details map[string]interface{}
 }
 
 func (e *invoicingGuardError) Error() string { return e.Message }
 
 func guard(status int, code, format string, args ...interface{}) *invoicingGuardError {
 	return &invoicingGuardError{Status: status, Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// with adds a detail the client words its sentence from (system_3 #12274),
+// in key, value pairs.
+func (e *invoicingGuardError) with(kv ...interface{}) *invoicingGuardError {
+	if e.Details == nil {
+		e.Details = map[string]interface{}{}
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		e.Details[kv[i].(string)] = kv[i+1]
+	}
+	return e
 }
 
 // checkFieldAllowlist refuses server-owned and unknown fields by name.
@@ -79,7 +92,8 @@ func checkFieldAllowlist(body map[string]json.RawMessage, allowed map[string]boo
 // incoming paid-work payment or already sits on another issued invoice.
 func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uint) ([]data_models.InvoicingPayment, *invoicingGuardError, error) {
 	if len(ids) == 0 {
-		return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work", "an invoice needs at least one paid-work payment"), nil
+		return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work", "an invoice needs at least one paid-work payment").
+			with("reason", "no_payments"), nil
 	}
 	// Lock every listed payment row before reading it, in ascending id order
 	// so two drafts cannot deadlock: a concurrent delete of a hand-entered
@@ -105,31 +119,42 @@ func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uin
 			return nil, nil, err
 		}
 		if p == nil {
-			return nil, guard(http.StatusUnprocessableEntity, "payment_not_found", "payment %d does not exist", id), nil
+			return nil, guard(http.StatusUnprocessableEntity, "payment_not_found", "payment %d does not exist", id).
+				with("payment_id", id), nil
 		}
 		// A removed payment counts nowhere until restored, Create invoice
 		// included (§3.143 Decision 6).
 		if p.RemovedAt != nil {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_removed",
-				"payment %s is removed; restore it before invoicing it", paymentLabel(*p)), nil
+				"payment %s is removed; restore it before invoicing it", paymentLabel(*p)).with("payment_id", p.ID), nil
 		}
 		if p.Kind != data_models.PaymentKindIncoming || p.Category != data_models.PaymentCategoryPaidWork {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_not_paid_work",
-				"payment %s is %q, not paid work; only paid-work payments can be invoiced", paymentLabel(*p), p.Category), nil
+				"payment %s is %q, not paid work; only paid-work payments can be invoiced", paymentLabel(*p), p.Category).
+				with("reason", "not_paid_work", "payment_id", p.ID, "category", p.Category), nil
 		}
 		// A row stored as paid work before the import rule (system_3 #9881)
 		// still cannot be invoiced: the PayPal payments it sums are.
 		if isPayPalTransferIntoN26(*p) {
 			return nil, guard(http.StatusUnprocessableEntity, "payment_paypal_transfer",
-				"payment %s is a transfer from PayPal into N26; invoice the PayPal payments it sums instead", paymentLabel(*p)), nil
+				"payment %s is a transfer from PayPal into N26; invoice the PayPal payments it sums instead", paymentLabel(*p)).
+				with("payment_id", p.ID), nil
 		}
 		other, err := data_models.IssuedInvoiceForPayment(tx, p.ID, invoiceID)
 		if err != nil {
 			return nil, nil, err
 		}
 		if other != 0 {
-			return nil, guard(http.StatusUnprocessableEntity, "payment_already_invoiced",
-				"payment %s is already on issued invoice %d", paymentLabel(*p), other), nil
+			g := guard(http.StatusUnprocessableEntity, "payment_already_invoiced",
+				"payment %s is already on issued invoice %d", paymentLabel(*p), other).with("payment_id", p.ID, "invoice_id", other)
+			onIt, err := data_models.GetInvoicingInvoice(tx, owner, other)
+			if err != nil {
+				return nil, nil, err
+			}
+			if onIt != nil && onIt.InvoiceNumber != nil {
+				g.with("invoice_number", *onIt.InvoiceNumber)
+			}
+			return nil, g, nil
 		}
 		out = append(out, *p)
 	}
@@ -159,7 +184,8 @@ func mixedCurrencies(payments []data_models.InvoicingPayment, draftCurrency stri
 	}
 	sort.Strings(codes)
 	return guard(http.StatusUnprocessableEntity, "mixed_currencies",
-		"the payments are in different currencies (%s); an invoice holds one currency, so invoice them separately", strings.Join(codes, ", "))
+		"the payments are in different currencies (%s); an invoice holds one currency, so invoice them separately", strings.Join(codes, ", ")).
+		with("currencies", codes)
 }
 
 // recomputeTotals sets net, VAT and total from the line items. VAT applies
@@ -263,7 +289,8 @@ func respondGuard(c *gin.Context, tx *gorm.DB, g *invoicingGuardError) {
 	if tx != nil {
 		tx.Rollback()
 	}
-	respondError(c, g.Status, g.Code, g.Message)
+	log.Printf("Error response: %d - %s - %s", g.Status, g.Code, g.Message)
+	c.JSON(g.Status, ErrorResponse{Error: ErrorDetail{Code: g.Code, Message: g.Message, Details: g.Details}})
 }
 
 func respondInvoicingInternal(c *gin.Context, tx *gorm.DB, what string, err error) {
@@ -547,6 +574,13 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 			}
 			// Bounded so quantity × price stays far inside int64
 			// (@security N1, c51467): 10,000 units, 100 million euros.
+			// The quantity has its own code, so the dialog can name the line
+			// (system_3 #12274: "Line 1: the quantity is too large.").
+			if li.QuantityMilli > maxQuantityMilli {
+				respondGuard(c, tx, guard(http.StatusBadRequest, "quantity_too_large", "item %d exceeds 10000 units", i+1).
+					with("position", i+1))
+				return
+			}
 			if li.QuantityMilli > maxQuantityMilli || li.UnitPriceCents > maxUnitPriceCents {
 				bad("line_items", fmt.Errorf("item %d exceeds 10000 units or 100000000 euros", i+1))
 				return

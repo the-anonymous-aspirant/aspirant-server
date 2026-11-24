@@ -419,7 +419,7 @@ func TestIssue_NoAddressAllowedUpToKleinbetragLimit(t *testing.T) {
 				}
 				return
 			}
-			for _, want := range []string{"client_incomplete", "no postal address", "250,01 €", "above 250,00 €"} {
+			for _, want := range []string{"client_address_required", "no postal address", "250,01 €", "above 250,00 €", `"limit_cents":25000`} {
 				if !strings.Contains(resp, want) {
 					t.Errorf("refusal %s lacks %q", resp, want)
 				}
@@ -434,8 +434,8 @@ func TestIssue_NoAddressNonEuroIsRefused(t *testing.T) {
 	f.db.Model(&data_models.InvoicingClient{}).Where("id = ?", f.clientID).Update("address", "")
 	id := f.draft(t, 0)
 	f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).Update("currency", "USD")
-	if code, _, body := f.issue(id); code != http.StatusUnprocessableEntity || !strings.Contains(body, "client_incomplete") {
-		t.Fatalf("got %d %s, want 422 client_incomplete", code, body)
+	if code, _, body := f.issue(id); code != http.StatusUnprocessableEntity || !strings.Contains(body, "client_address_required") {
+		t.Fatalf("got %d %s, want 422 client_address_required", code, body)
 	}
 }
 
