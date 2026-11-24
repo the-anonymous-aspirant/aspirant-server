@@ -407,8 +407,8 @@ func parseN26TransferConfirmation(text string) ([]n26Candidate, error) {
 		GrossCents:    grossCents,
 		FeeCents:      feeCents,
 		NetCents:      grossCents - feeCents,
-		SenderName:    senderName,
-		Note:          note,
+		SenderName:    offeredN26Name(senderName),
+		Note:          offeredN26Note(note),
 	}
 	fitN26Candidate(&cand)
 	return []n26Candidate{cand}, nil
@@ -701,17 +701,40 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 		counts[key]++
 		return "stmt-" + hex.EncodeToString(sum[:])[:24]
 	}
+	// The id first, from the text as the statement prints it, so a row
+	// already in the book keeps its id and is not imported a second time
+	// (system_3 #12265 review point 1). Then the text is cleaned, and then
+	// cut to the confirm's limits (#12262).
 	for i := range in {
 		c := &in[i]
 		c.TransactionID = stmtID(c.PaidOn + "|" + fmt.Sprint(c.GrossCents) + "|" + c.SenderName + "|" + c.Note)
+		c.SenderName, c.Note = offeredN26Name(c.SenderName), offeredN26Note(c.Note)
 		fitN26Candidate(c)
 	}
 	for i := range out {
 		e := &out[i]
 		e.TransactionID = stmtID("out|" + e.PaidOn + "|" + fmt.Sprint(e.AmountCents) + "|" + e.PayeeName + "|" + e.Note)
+		e.PayeeName, e.Note = offeredN26Name(e.PayeeName), offeredN26Note(e.Note)
 		fitN26Expense(e)
 	}
 	return in, out, skippedInternal, nil
+}
+
+// offeredN26Name and offeredN26Note clean a statement's or a transfer
+// confirmation's text the way the CSV parse does (cleanRowText), so that no
+// offered row can be refused at confirm: a confirm is all or nothing, and one
+// soft hyphen in one payer would refuse the whole file (system_3 #12265
+// review point 1). A name cleaned to nothing reads "N26", as on a CSV row.
+// The length is cut after, by fitN26Candidate / fitN26Expense (#12262).
+func offeredN26Name(s string) string {
+	if name := cleanRowText(s); name != "" {
+		return name
+	}
+	return "N26"
+}
+
+func offeredN26Note(s string) string {
+	return cleanRowText(s)
 }
 
 // detectN26Document runs the strategy chain; empty name means no kind matched.
@@ -982,9 +1005,9 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for i, row := range req.Rows {
+	for _, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, msg))
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.SenderName, "from"), msg))
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.SenderName = strings.TrimSpace(row.SenderName)
@@ -1001,6 +1024,12 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			bad(fmt.Sprintf("sender_name is missing or longer than %d characters", n26MaxSenderRunes))
 			return
 		}
+		// The one row check (system_3 #12265): the payer's rule is the hand
+		// entry's.
+		if !oneLineRowText(row.SenderName) {
+			bad("sender_name must be one line, with no control or invisible format character")
+			return
+		}
 		// The parse never offers such a row; the client posts rows back,
 		// so the rule is enforced here too.
 		if isPayPalSender(row.SenderName) {
@@ -1009,6 +1038,10 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		}
 		if utf8.RuneCountInString(row.Note) > n26MaxPaymentNoteRunes {
 			bad(fmt.Sprintf("note is longer than %d characters", n26MaxPaymentNoteRunes))
+			return
+		}
+		if !rowNoteText(row.Note) {
+			bad("note holds a control or direction-override character")
 			return
 		}
 		if row.Currency != "EUR" {
@@ -1026,17 +1059,16 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 			bad("sender_iban is not a valid IBAN")
 			return
 		}
-		paidOn, err := time.Parse("2006-01-02", row.PaidOn)
-		if err != nil {
-			bad("paid_on is not a yyyy-mm-dd date")
+		// A day ahead is taken, as this route always has (since #153, with
+		// no reason written down; #12265 review point 5 keeps it): up to
+		// tomorrow in Berlin, never less than the earlier UTC clock allowed.
+		paidOn, refusal := checkRowPaidOn(row.PaidOn, berlinToday().AddDate(0, 0, 1))
+		if refusal != "" {
+			bad(refusal)
 			return
 		}
-		if paidOn.After(time.Now().AddDate(0, 0, 1)) {
-			bad("paid_on is in the future")
-			return
-		}
-		if row.GrossCents <= 0 {
-			bad("gross_cents must be positive")
+		if !rowAmountInBounds(row.GrossCents) {
+			bad(rowAmountRefusal("gross_cents"))
 			return
 		}
 		if row.FeeCents < 0 || row.FeeCents >= row.GrossCents {
@@ -1182,9 +1214,9 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for i, row := range req.Rows {
+	for _, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, msg))
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.PayeeName, "to"), msg))
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.PayeeName = strings.TrimSpace(row.PayeeName)
@@ -1199,30 +1231,29 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 			bad("transaction_id is not an N26 statement or CSV export row id")
 			return
 		}
-		if row.PayeeName == "" || utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes ||
-			strings.Contains(row.PayeeName, "\n") || hasControlChars(row.PayeeName) || hasFormatChars(row.PayeeName) {
+		if row.PayeeName == "" || utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes || !oneLineRowText(row.PayeeName) {
 			bad(fmt.Sprintf("payee_name must be one line of 1-%d characters", maxManualReferenceRunes))
 			return
 		}
-		if utf8.RuneCountInString(row.Note) > maxManualNoteRunes || hasControlChars(row.Note) {
+		if utf8.RuneCountInString(row.Note) > maxManualNoteRunes {
 			bad(fmt.Sprintf("note is longer than %d characters", maxManualNoteRunes))
+			return
+		}
+		if !rowNoteText(row.Note) {
+			bad("note holds a control or direction-override character")
 			return
 		}
 		if row.Currency != "EUR" {
 			bad("currency must be EUR")
 			return
 		}
-		paidOn, err := time.Parse(invoicingDateLayout, row.PaidOn)
-		if err != nil {
-			bad("paid_on is not a yyyy-mm-dd date")
+		paidOn, refusal := checkRowPaidOn(row.PaidOn, berlinToday())
+		if refusal != "" {
+			bad(refusal)
 			return
 		}
-		if paidOn.After(berlinToday()) || paidOn.Before(earliestPaymentDate) {
-			bad("paid_on is in the future or before 2000-01-01")
-			return
-		}
-		if row.AmountCents <= 0 || row.AmountCents > maxUnitPriceCents {
-			bad("amount_cents must be a whole number of cents above zero")
+		if !rowAmountInBounds(row.AmountCents) {
+			bad(rowAmountRefusal("amount_cents"))
 			return
 		}
 		rows = append(rows, validated{row: row, paidOn: paidOn})

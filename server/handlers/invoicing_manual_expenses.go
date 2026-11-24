@@ -136,7 +136,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		return
 	}
 	var amount int64
-	if err := json.Unmarshal(body["amount_cents"], &amount); err != nil || amount <= 0 || amount > maxUnitPriceCents {
+	if err := json.Unmarshal(body["amount_cents"], &amount); err != nil || !rowAmountInBounds(amount) {
 		bad("amount_cents", "must be a whole number of cents above zero")
 		return
 	}
@@ -179,6 +179,11 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	}
 	if utf8.RuneCountInString(note) > maxManualNoteRunes || hasControlChars(note) {
 		bad("note", fmt.Sprintf("must be at most %d characters", maxManualNoteRunes))
+		return
+	}
+	// The one row check's note rule (system_3 #12265).
+	if !rowNoteText(note) {
+		bad("note", "has a direction-override character: remove it")
 		return
 	}
 	// "Paid to (optional)" (system_3 #10555-A1, design §3.143 Decision 3):

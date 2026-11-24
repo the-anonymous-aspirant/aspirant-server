@@ -472,9 +472,9 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for i, row := range req.Rows {
+	for _, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, msg))
+			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.PayeeName, "to"), msg))
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.PayeeName = strings.TrimSpace(row.PayeeName)
@@ -489,30 +489,29 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 			return
 		}
 		// An outgoing PayPal row may name no payee; when it does, it is one line.
-		if utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes ||
-			strings.Contains(row.PayeeName, "\n") || hasControlChars(row.PayeeName) || hasFormatChars(row.PayeeName) {
+		if utf8.RuneCountInString(row.PayeeName) > maxManualReferenceRunes || !oneLineRowText(row.PayeeName) {
 			bad(fmt.Sprintf("payee_name must be one line of at most %d characters", maxManualReferenceRunes))
 			return
 		}
-		if utf8.RuneCountInString(row.Note) > maxManualNoteRunes || hasControlChars(row.Note) {
+		if utf8.RuneCountInString(row.Note) > maxManualNoteRunes {
 			bad(fmt.Sprintf("note is longer than %d characters", maxManualNoteRunes))
+			return
+		}
+		if !rowNoteText(row.Note) {
+			bad("note holds a control or direction-override character")
 			return
 		}
 		if !isoCurrency.MatchString(row.Currency) {
 			bad("currency must be a three-letter ISO code")
 			return
 		}
-		paidOn, err := time.Parse(invoicingDateLayout, row.PaidOn)
-		if err != nil {
-			bad("paid_on is not a yyyy-mm-dd date")
+		paidOn, refusal := checkRowPaidOn(row.PaidOn, berlinToday())
+		if refusal != "" {
+			bad(refusal)
 			return
 		}
-		if paidOn.After(berlinToday()) || paidOn.Before(earliestPaymentDate) {
-			bad("paid_on is in the future or before 2000-01-01")
-			return
-		}
-		if row.AmountCents <= 0 || row.AmountCents > maxUnitPriceCents {
-			bad("amount_cents must be a whole number of cents above zero")
+		if !rowAmountInBounds(row.AmountCents) {
+			bad(rowAmountRefusal("amount_cents"))
 			return
 		}
 		rows = append(rows, validated{row: row, paidOn: paidOn})

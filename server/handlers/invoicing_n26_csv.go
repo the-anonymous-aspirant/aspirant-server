@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
@@ -361,15 +360,10 @@ func n26CSVName(row n26CSVRow) string {
 }
 
 // cleanN26CSVText drops control and format characters and collapses every
-// run of whitespace (a quoted CSV field may hold line breaks) to one space.
+// run of whitespace (a quoted CSV field may hold line breaks) to one space:
+// cleanRowText, which every parse now shares (system_3 #12265).
 func cleanN26CSVText(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && !unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
-			return -1
-		}
-		return r
-	}, s)
-	return strings.Join(strings.Fields(s), " ")
+	return cleanRowText(s)
 }
 
 // truncateRunes cuts s to at most n runes.

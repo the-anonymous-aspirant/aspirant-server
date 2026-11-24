@@ -172,8 +172,9 @@ func TestN26ConfirmCountsCharacters(t *testing.T) {
 		row  n26Candidate
 		want string
 	}{
-		{row("stmt-b", strings.Repeat("Ä", 201), ""), "row 0: sender_name is missing or longer than 200 characters"},
-		{row("stmt-c", "Mara", strings.Repeat("Ä", 501)), "row 0: note is longer than 500 characters"},
+		// The refusal names the row by its day and payer (system_3 #12265).
+		{row("stmt-b", strings.Repeat("Ä", 201), ""), ": sender_name is missing or longer than 200 characters"},
+		{row("stmt-c", "Mara", strings.Repeat("Ä", 501)), ": note is longer than 500 characters"},
 	} {
 		w := confirmN26(t, r, []n26Candidate{c.row})
 		var resp struct {
@@ -182,7 +183,7 @@ func TestN26ConfirmCountsCharacters(t *testing.T) {
 			} `json:"error"`
 		}
 		json.Unmarshal(w.Body.Bytes(), &resp)
-		if w.Code != http.StatusBadRequest || resp.Error.Message != c.want {
+		if w.Code != http.StatusBadRequest || !strings.HasPrefix(resp.Error.Message, "the row of 2026-11-04 from ") || !strings.HasSuffix(resp.Error.Message, c.want) {
 			t.Errorf("%d %s, want %q", w.Code, w.Body.String(), c.want)
 		}
 	}
