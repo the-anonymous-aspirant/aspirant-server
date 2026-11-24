@@ -1,6 +1,8 @@
 package data_models
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/jinzhu/gorm"
@@ -119,18 +121,44 @@ func (InvoicingPayment) TableName() string { return "invoicing_payments" }
 // IsManual reports whether the owner entered this payment by hand.
 func (p InvoicingPayment) IsManual() bool { return p.Entry == PaymentEntryManual }
 
-// PrintedReference is the transaction reference shown on invoices and in
-// exports: the owner's reference for a hand-entered payment (possibly empty),
-// the provider's transaction id for an imported one. A manual payment's
-// generated TransactionID is never printed.
-func (p InvoicingPayment) PrintedReference() string {
+// PaymentSourceN26 is the source of a payment or expense imported from an
+// N26 statement, CSV export or transfer confirmation.
+const PaymentSourceN26 = "n26"
+
+// IsDerivedTransactionID reports whether an imported row's TransactionID is
+// one the server made up rather than one the provider issued (system_3
+// #12257). N26 statements and CSV exports carry no transaction id, so the
+// import derives one from the row ("stmt-…", "csv-…") only to recognise a
+// re-upload. Such an id is a database key: it is never shown or printed. An
+// N26 transfer confirmation's operation id and a PayPal id are the
+// provider's own.
+func IsDerivedTransactionID(source, id string) bool {
+	return source == PaymentSourceN26 && (strings.HasPrefix(id, "csv-") || strings.HasPrefix(id, "stmt-"))
+}
+
+// ShownReference is the reference a view may show for the payment: the
+// owner's own for a hand-entered payment (possibly empty), the provider's
+// transaction id for an imported one, and nothing when the server made the
+// id up. Computed on read; served as `shown_reference`.
+func (p InvoicingPayment) ShownReference() string {
 	if p.IsManual() {
 		return p.Reference
+	}
+	if IsDerivedTransactionID(p.Source, p.TransactionID) {
+		return ""
 	}
 	return p.TransactionID
 }
 
-// MethodLabel is how the payment was received, in the invoice's German.
+// PrintedReference is the transaction reference printed on invoices and in
+// exports: ShownReference. A hand-entered payment's generated TransactionID
+// and an import's derived one are never printed.
+func (p InvoicingPayment) PrintedReference() string {
+	return p.ShownReference()
+}
+
+// MethodLabel is how the payment was received, in the invoice's German, or
+// empty when that is not known: a source name is never printed as a method.
 func (p InvoicingPayment) MethodLabel() string {
 	if p.IsManual() {
 		if label, ok := PaymentMethodLabels[p.Method]; ok {
@@ -143,9 +171,21 @@ func (p InvoicingPayment) MethodLabel() string {
 		return "PayPal"
 	case "stripe":
 		return "Stripe"
+	case PaymentSourceN26:
+		return PaymentMethodLabels["bank_transfer"]
 	default:
-		return p.Source
+		return ""
 	}
+}
+
+// MarshalJSON serves the stored fields plus `shown_reference`, so no view has
+// to tell a derived id from a provider's (system_3 #12257).
+func (p InvoicingPayment) MarshalJSON() ([]byte, error) {
+	type stored InvoicingPayment
+	return json.Marshal(struct {
+		stored
+		ShownReference string `json:"shown_reference"`
+	}{stored(p), p.ShownReference()})
 }
 
 // PaymentOnAnyInvoice returns the id of an invoice (draft, issued or

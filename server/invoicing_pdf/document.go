@@ -29,6 +29,9 @@ const (
 	// A hand-entered payment without a reference ends at the method
 	// (system_3 #8409): the parenthesis is printed only for a real id.
 	paymentReceivedLineNoReference = "Zahlung erhalten am %s per %s"
+	// A payment whose method is not known ends at the date (system_3
+	// #12257): a source name is never printed as a method.
+	paymentReceivedLineNoMethod = "Zahlung erhalten am %s"
 )
 
 // Field labels. These name the §14 UStG fields; they carry no legal claim.
@@ -183,11 +186,17 @@ func Build(in Input) (Document, error) {
 		}
 	}
 
+	// The reference is the provider's id or the owner's own, never an id the
+	// server derived for an N26 row (system_3 #12257, PrintedReference).
 	for _, p := range in.Payments {
-		if ref := p.PrintedReference(); ref != "" {
-			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLine, FormatDate(p.PaidOn), p.MethodLabel(), ref))
-		} else {
-			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLineNoReference, FormatDate(p.PaidOn), p.MethodLabel()))
+		method, ref := p.MethodLabel(), p.PrintedReference()
+		switch {
+		case method == "":
+			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLineNoMethod, FormatDate(p.PaidOn)))
+		case ref != "":
+			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLine, FormatDate(p.PaidOn), method, ref))
+		default:
+			doc.Notes = append(doc.Notes, fmt.Sprintf(paymentReceivedLineNoReference, FormatDate(p.PaidOn), method))
 		}
 	}
 	return doc, nil
