@@ -51,6 +51,11 @@ const (
 // ItemHeaders are the line-item table's column headings.
 var ItemHeaders = [5]string{"Pos.", "Beschreibung", "Menge", "Einzelpreis", "Gesamt"}
 
+// ItemHeaderGross is printed under "Einzelpreis" and "Gesamt" when the lines
+// are what was received, VAT included: an invoice that charges VAT is priced
+// from the gross (system_3 #12261).
+const ItemHeaderGross = "(brutto)"
+
 // Field is a label with its value.
 type Field struct {
 	Label string
@@ -69,9 +74,13 @@ type Document struct {
 	Title     string
 	Meta      []Field // number, issue date, service date or period
 	Items     []ItemRow
-	Totals    []Field
-	Notes     []string // § 19 line, payment confirmations, retroactive note
-	Logo      *Logo    // the issuer's logo, top right; nil prints none
+	// GrossItems marks the prices as including VAT: the item table heads its
+	// price and total columns with a second line, ItemHeaderGross
+	// (system_3 #12261).
+	GrossItems bool
+	Totals     []Field
+	Notes      []string // § 19 line, payment confirmations, retroactive note
+	Logo       *Logo    // the issuer's logo, top right; nil prints none
 }
 
 // Input is an issued invoice with the snapshots frozen at issue.
@@ -179,6 +188,7 @@ func Build(in Input) (Document, error) {
 		doc.Totals = []Field{{labelGesamt, FormatEuro(inv.TotalCents, inv.Currency)}}
 		doc.Notes = append(doc.Notes, Paragraph19UStGLine)
 	} else {
+		doc.GrossItems = true
 		doc.Totals = []Field{
 			{labelNetto, FormatEuro(inv.NetCents, inv.Currency)},
 			{labelUmsatzsteuer + " " + FormatVatRate(inv.VatRateBP), FormatEuro(inv.VatCents, inv.Currency)},

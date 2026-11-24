@@ -125,6 +125,20 @@ func TestBuild_RegularVatShowsNetRateVatGrossAndNoParagraph19(t *testing.T) {
 	}
 }
 
+// system_3 #12261: an invoice that charges VAT is priced from what was
+// received, so its lines are gross; a Kleinunternehmerin's carry no VAT.
+func TestBuild_VatMarksTheLinesGross(t *testing.T) {
+	for _, klein := range []bool{false, true} {
+		d, err := Build(issuedInput(klein))
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		if d.GrossItems != !klein {
+			t.Errorf("klein=%v: GrossItems=%v", klein, d.GrossItems)
+		}
+	}
+}
+
 func TestBuild_ServicePeriodAndSeveralPayments(t *testing.T) {
 	in := issuedInput(true)
 	in.Invoice.ServiceDateTo = day(2026, 8, 3)

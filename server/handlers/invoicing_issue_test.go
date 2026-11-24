@@ -391,10 +391,10 @@ func TestIssue_NoAddressAllowedUpToKleinbetragLimit(t *testing.T) {
 		{"exactly 250,00 EUR", true, 25000, http.StatusOK},
 		{"250,01 EUR", true, 25001, http.StatusUnprocessableEntity},
 		{"well below", true, 1999, http.StatusOK},
-		// Regelbesteuerung: 19 % VAT counts toward the gross.
-		// 210,08 + 39,92 = 250,00; 210,09 + 39,92 = 250,01.
-		{"VAT brings the gross to exactly 250,00", false, 21008, http.StatusOK},
-		{"VAT tips the gross over 250,00", false, 21009, http.StatusUnprocessableEntity},
+		// Regelbesteuerung: a draft is priced from what was received, so a
+		// typed price already holds its 19 % (system_3 #12261).
+		{"a VAT-inclusive price of exactly 250,00", false, 25000, http.StatusOK},
+		{"a VAT-inclusive price of 250,01", false, 25001, http.StatusUnprocessableEntity},
 	}
 	for _, tc := range cases {
 		tc := tc

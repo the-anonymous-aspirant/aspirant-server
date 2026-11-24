@@ -107,6 +107,31 @@ func TestLayout_DrawsEveryDocumentLine(t *testing.T) {
 	}
 }
 
+// system_3 #12261: gross lines carry "(brutto)" under the price and total
+// headings; a Kleinunternehmerin's carry none.
+func TestLayout_GrossLinesHeadTheirColumnsBrutto(t *testing.T) {
+	for _, klein := range []bool{false, true} {
+		d, err := Build(issuedInput(klein))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc := &recordingCanvas{}
+		rc.NewPage()
+		if err := layout(rc, d); err != nil {
+			t.Fatalf("layout: %v", err)
+		}
+		n := 0
+		for _, s := range rc.texts {
+			if s == ItemHeaderGross {
+				n++
+			}
+		}
+		if want := map[bool]int{false: 2, true: 0}[klein]; n != want {
+			t.Errorf("klein=%v: %q drawn %d times, want %d", klein, ItemHeaderGross, n, want)
+		}
+	}
+}
+
 func TestLayout_LongInvoiceBreaksPagesAndKeepsEveryItem(t *testing.T) {
 	in := issuedInput(true)
 	in.Items = nil

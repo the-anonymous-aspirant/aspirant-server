@@ -241,12 +241,20 @@ func layout(c canvas, doc Document) error {
 				return err
 			}
 		}
+		if doc.GrossItems {
+			k.y += lineGap
+			for _, r := range []float64{rPrice, rTotal} {
+				if err := k.rightText(r, ItemHeaderGross, true, bodySize); err != nil {
+					return err
+				}
+			}
+		}
 		k.y += lineGap
 		c.Line(marginX, k.y-3, marginX+contentW, k.y-3)
 		k.y += 4
 		return nil
 	}
-	k.need(3 * lineGap)
+	k.need(4 * lineGap)
 	if err := header(); err != nil {
 		return err
 	}
