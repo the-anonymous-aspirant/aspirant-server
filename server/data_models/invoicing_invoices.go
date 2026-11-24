@@ -145,19 +145,22 @@ func LatestIssueDate(db *gorm.DB, owner uint) (*time.Time, error) {
 }
 
 // CountInvoicesWithPrefix counts invoices that ever received a number under
-// the prefix (issued or cancelled) in the owner's book.
+// the prefix (issued or cancelled) in the owner's book. Case is folded: "r"
+// and "R" are one series (system_3 #12272). The profile save is the only
+// caller, and the one place case is folded; the export check stays exact.
 func CountInvoicesWithPrefix(db *gorm.DB, owner uint, prefix string) (int, error) {
 	var n int
-	err := db.Model(&InvoicingInvoice{}).Where("owner_user_id = ? AND prefix = ? AND number IS NOT NULL", owner, prefix).Count(&n).Error
+	err := db.Model(&InvoicingInvoice{}).Where("owner_user_id = ? AND LOWER(prefix) = LOWER(?) AND number IS NOT NULL", owner, prefix).Count(&n).Error
 	return n, err
 }
 
 // MaxInvoiceNumberWithPrefix returns the highest number issued under the
-// prefix in the owner's book, or 0. Each book numbers on its own, so the
-// owner's first invoice is <prefix>-1 whatever another book holds.
+// prefix in the owner's book, or 0, with case folded as above. Each book
+// numbers on its own, so the owner's first invoice is <prefix>-1 whatever
+// another book holds.
 func MaxInvoiceNumberWithPrefix(db *gorm.DB, owner uint, prefix string) (int, error) {
 	var rows []struct{ N *int }
-	err := db.Model(&InvoicingInvoice{}).Select("MAX(number) AS n").Where("owner_user_id = ? AND prefix = ? AND number IS NOT NULL", owner, prefix).Scan(&rows).Error
+	err := db.Model(&InvoicingInvoice{}).Select("MAX(number) AS n").Where("owner_user_id = ? AND LOWER(prefix) = LOWER(?) AND number IS NOT NULL", owner, prefix).Scan(&rows).Error
 	if err != nil || len(rows) == 0 || rows[0].N == nil {
 		return 0, err
 	}
