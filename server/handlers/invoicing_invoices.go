@@ -162,6 +162,61 @@ func mixedCurrencies(payments []data_models.InvoicingPayment, draftCurrency stri
 		"the payments are in different currencies (%s); an invoice holds one currency, so invoice them separately", strings.Join(codes, ", "))
 }
 
+// refuseDraftedPayments refuses a payment that a draft other than invoiceID
+// covers (system_3 #12263): a payment is on at most one live draft,
+// whichever button made it. It runs where a draft is made or gains a
+// payment, after checkInvoiceablePayments, and never at issue: pairs of
+// drafts over one payment made before this rule must each stay issuable,
+// so one of a pair can still be issued and the other then refused there.
+// keep holds the ids already on invoiceID, which an edit may send again.
+func refuseDraftedPayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uint, keep map[uint]bool) (*invoicingGuardError, error) {
+	var check []uint
+	for _, id := range ids {
+		if !keep[id] {
+			check = append(check, id)
+		}
+	}
+	if len(check) == 0 {
+		return nil, nil
+	}
+	var rows []struct {
+		PaymentID uint
+		InvoiceID uint
+	}
+	// The owner is matched on the invoice, so another book's draft is never
+	// named (as LiveInvoicesForPayments, security c62302).
+	err := tx.Table("invoicing_invoice_payments").
+		Select("invoicing_invoice_payments.payment_id, i.id AS invoice_id").
+		Joins("JOIN invoicing_invoices i ON i.id = invoicing_invoice_payments.invoice_id").
+		Where("i.owner_user_id = ? AND i.status = ? AND i.id <> ? AND invoicing_invoice_payments.payment_id IN (?)",
+			owner, data_models.InvoiceStatusDraft, invoiceID, check).
+		Order("i.id asc").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	draftOf := map[uint]uint{}
+	for _, r := range rows {
+		if _, ok := draftOf[r.PaymentID]; !ok {
+			draftOf[r.PaymentID] = r.InvoiceID
+		}
+	}
+	for _, id := range check {
+		if d, ok := draftOf[id]; ok {
+			p, err := data_models.GetInvoicingPayment(tx, owner, id)
+			if err != nil {
+				return nil, err
+			}
+			label := fmt.Sprintf("#%d", id)
+			if p != nil {
+				label = paymentLabel(*p)
+			}
+			return guard(http.StatusUnprocessableEntity, "payment_on_draft",
+				"payment %s is already on draft %d", label, d), nil
+		}
+	}
+	return nil, nil
+}
+
 // recomputeTotals sets net, VAT and total from the line items.
 func recomputeTotals(inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem, kleinunternehmer bool) {
 	var sum int64
@@ -421,6 +476,13 @@ func CreateInvoiceDraftHandler(c *gin.Context) {
 	if g == nil {
 		g = mixedCurrencies(payments, "")
 	}
+	if g == nil {
+		g, err = refuseDraftedPayments(tx, invoicingUserID(c), req.PaymentIDs, 0, nil)
+		if err != nil {
+			respondInvoicingInternal(c, tx, "creating invoice", err)
+			return
+		}
+	}
 	if g != nil {
 		respondGuard(c, tx, g)
 		return
@@ -626,6 +688,24 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 			g = mixedCurrencies(linked, inv.Currency)
 		}
 		if g != nil {
+			respondGuard(c, tx, g)
+			return
+		}
+		// A payment this draft already lists may be sent again; one it gains
+		// may not be on another draft (system_3 #12263).
+		onThis, err := data_models.ListInvoicePayments(tx, inv.ID)
+		if err != nil {
+			respondInvoicingInternal(c, tx, "updating invoice", err)
+			return
+		}
+		keep := map[uint]bool{}
+		for _, p := range onThis {
+			keep[p.ID] = true
+		}
+		if g, err := refuseDraftedPayments(tx, invoicingUserID(c), ids, inv.ID, keep); err != nil {
+			respondInvoicingInternal(c, tx, "updating invoice", err)
+			return
+		} else if g != nil {
 			respondGuard(c, tx, g)
 			return
 		}

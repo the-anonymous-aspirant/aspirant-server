@@ -111,6 +111,38 @@ func (f *invoiceFixture) draft(t *testing.T, paymentIdx ...int) uint {
 	return decodeDetail(t, w.Body.Bytes()).Invoice.ID
 }
 
+// copyDraft stores a second draft with the same rows and payments as the
+// draft id, as "Create invoice" made before system_3 #12263 refused it, and
+// returns its id.
+func (f *invoiceFixture) copyDraft(t *testing.T, id uint) uint {
+	t.Helper()
+	var inv data_models.InvoicingInvoice
+	if err := f.db.First(&inv, id).Error; err != nil {
+		t.Fatalf("load draft %d: %v", id, err)
+	}
+	inv.ID = 0
+	if err := f.db.Create(&inv).Error; err != nil {
+		t.Fatalf("copy draft: %v", err)
+	}
+	var items []data_models.InvoicingLineItem
+	f.db.Where("invoice_id = ?", id).Find(&items)
+	for _, li := range items {
+		li.ID, li.InvoiceID = 0, inv.ID
+		if err := f.db.Create(&li).Error; err != nil {
+			t.Fatalf("copy line item: %v", err)
+		}
+	}
+	var links []data_models.InvoicingInvoicePayment
+	f.db.Where("invoice_id = ?", id).Find(&links)
+	for _, l := range links {
+		l.ID, l.InvoiceID = 0, inv.ID
+		if err := f.db.Create(&l).Error; err != nil {
+			t.Fatalf("copy payment link: %v", err)
+		}
+	}
+	return inv.ID
+}
+
 func (f *invoiceFixture) issue(id uint) (int, invoiceDetail, string) {
 	w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/invoices/%d/issue", id), "")
 	var d invoiceDetail
@@ -328,8 +360,10 @@ func TestIssue_Guardrails(t *testing.T) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).
 				Updates(map[string]interface{}{"source": invoicingPaymentSourceN26, "sender_name": "PAYPAL"})
 		}},
+		// A pair of drafts over one payment, as a book made before system_3
+		// #12263 can hold: issue still refuses the second.
 		{"payment already on another issued invoice", 422, "payment_already_invoiced", func(t *testing.T, f *invoiceFixture, id uint) {
-			other := f.draft(t, 0)
+			other := f.copyDraft(t, id)
 			if code, _, body := f.issue(other); code != http.StatusOK {
 				t.Fatalf("issue the other invoice: %d %s", code, body)
 			}
@@ -732,7 +766,10 @@ func TestIssue_SecondIssueOfTheSameInvoiceIs409AndKeepsTheCounter(t *testing.T) 
 func TestIssue_TwoDraftsSharingAPaymentIssueOnlyOnce(t *testing.T) {
 	f := newInvoiceFixture(t)
 	f.db.DB().SetMaxOpenConns(1)
-	a, b := f.draft(t, 0), f.draft(t, 0)
+	// The API no longer makes a second draft over a payment (system_3
+	// #12263); a book made before that rule can still hold such a pair.
+	a := f.draft(t, 0)
+	b := f.copyDraft(t, a)
 	var wg sync.WaitGroup
 	codes := make(chan int, 2)
 	for _, id := range []uint{a, b} {
