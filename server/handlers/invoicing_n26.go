@@ -58,7 +58,37 @@ const (
 	// recognised type), confirmed against a real Kontoaktivität export
 	// (system_3 #10534). Such a row is neither a payment nor a work expense.
 	n26SkipInternalTransfer = "space_transfer"
+
+	// n26SkipZeroAmount is the per-file skipped reason for a row of 0.00,
+	// which is neither money in nor money out (system_3 #12271: such rows
+	// were dropped without a count, so the summary did not add up to the
+	// file).
+	n26SkipZeroAmount = "zero_amount"
 )
+
+// n26RowSkips counts a file's rows that are read and left out by the
+// scanner itself, per reason.
+type n26RowSkips struct {
+	Internal int // n26SkipInternalTransfer
+	Zero     int // n26SkipZeroAmount
+}
+
+// reasons is the skips as the response's per-file "skipped" map, nil when
+// there are none so the wire shape omits the field as before.
+func (s n26RowSkips) reasons() map[string]int {
+	var m map[string]int
+	add := func(reason string, n int) {
+		if n > 0 {
+			if m == nil {
+				m = map[string]int{}
+			}
+			m[reason] = n
+		}
+	}
+	add(n26SkipInternalTransfer, s.Internal)
+	add(n26SkipZeroAmount, s.Zero)
+	return m
+}
 
 // isPayPalSender reports whether an N26 credit's payer is PayPal. Money that
 // reaches zir N26 account from PayPal is zir own withdrawal: the same money
@@ -457,17 +487,15 @@ func parseN26StatementExpenses(text string) ([]n26ExpenseCandidate, error) {
 	return out, err
 }
 
-// parseN26StatementSkipped reports a German-layout statement's internal-
-// transfer skip count (system_3 #10534), the n26Strategy.skipped hook.
+// parseN26StatementSkipped reports a statement's skip counts: a German-
+// layout statement's internal transfers (system_3 #10534) and either
+// layout's rows of 0.00 (#12271). It is the n26Strategy.skipped hook.
 func parseN26StatementSkipped(text string) (map[string]int, error) {
 	_, _, skipped, err := scanN26Statement(text)
 	if err != nil {
 		return nil, err
 	}
-	if skipped == 0 {
-		return nil, nil
-	}
-	return map[string]int{n26SkipInternalTransfer: skipped}, nil
+	return skipped.reasons(), nil
 }
 
 // scanN26Statement reads a statement's transaction table under either of the
@@ -508,10 +536,10 @@ func parseN26StatementSkipped(text string) (map[string]int, error) {
 // outgoing rows were read, so statements imported earlier still dedupe. An
 // expense's key is salted with "out|", so the two directions never share an
 // id.
-func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error) {
+func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, n26RowSkips, error) {
 	var in []n26Candidate
 	var out []n26ExpenseCandidate
-	skippedInternal := 0
+	var skipped n26RowSkips
 
 	lines := strings.Split(text, "\n")
 	// The Italian layout's continuation state: lastDir names the slice ('i'
@@ -529,7 +557,7 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 			bookingDateStr, amountStr := m[2], m[3]
 			cents, err := parseN26AmountCents(amountStr)
 			if err != nil {
-				return nil, nil, 0, err
+				return nil, nil, n26RowSkips{}, err
 			}
 
 			// Read the detail block that follows the row line, up to the
@@ -565,10 +593,11 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 			i = j // resume scanning after the consumed detail block
 
 			if cents == 0 {
+				skipped.Zero++
 				continue
 			}
 			if n26InternalStatementRow(typeLine) {
-				skippedInternal++
+				skipped.Internal++
 				continue
 			}
 
@@ -578,7 +607,7 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 			}
 			paidOn, err := parseN26Date(paidOnStr)
 			if err != nil {
-				return nil, nil, 0, err
+				return nil, nil, n26RowSkips{}, err
 			}
 			note := strings.Join(noteParts, " ")
 
@@ -608,11 +637,11 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 			date, counterparty, amount := m[1], strings.TrimSpace(m[2]), m[3]
 			paidOn, err := parseN26Date(date)
 			if err != nil {
-				return nil, nil, 0, err
+				return nil, nil, n26RowSkips{}, err
 			}
 			cents, err := parseN26AmountCents(amount)
 			if err != nil {
-				return nil, nil, 0, err
+				return nil, nil, n26RowSkips{}, err
 			}
 			switch {
 			case cents > 0:
@@ -634,6 +663,7 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 				})
 				lastDir, lastIdx = 'o', len(out)-1
 			default:
+				skipped.Zero++
 				lastDir, lastIdx = 0, -1
 			}
 			continue
@@ -677,7 +707,7 @@ func scanN26Statement(text string) ([]n26Candidate, []n26ExpenseCandidate, int, 
 		e := &out[i]
 		e.TransactionID = stmtID("out|" + e.PaidOn + "|" + fmt.Sprint(e.AmountCents) + "|" + e.PayeeName + "|" + e.Note)
 	}
-	return in, out, skippedInternal, nil
+	return in, out, skipped, nil
 }
 
 // detectN26Document runs the strategy chain; empty name means no kind matched.
