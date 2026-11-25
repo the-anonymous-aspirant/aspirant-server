@@ -123,6 +123,9 @@ type invoicingProfileRequest struct {
 
 // GetInvoicingProfileHandler returns the issuer profile, or the defaults when
 // none has been saved yet (saved=false tells the UI it is unseeded).
+// next_numbers maps every prefix in use to the number its next invoice gets,
+// so the editor can tell a used prefix, whose number the server sets, from
+// an unused one ze may start anywhere (system_3 #12306).
 func GetInvoicingProfileHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	owner := invoicingUserID(c)
@@ -146,14 +149,20 @@ func GetInvoicingProfileHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
 		return
 	}
+	next, err := data_models.NextInvoiceNumbersByPrefix(db, owner)
+	if err != nil {
+		log.Printf("Error reading invoice numbers by prefix: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
+		return
+	}
 	// has_logo tells the editor whether to fetch the preview; the bytes are
 	// served by GET /invoicing/profile/logo, never in this payload.
 	if p == nil {
 		d := data_models.DefaultInvoicingProfile()
-		c.JSON(http.StatusOK, gin.H{"profile": d, "saved": false, "has_logo": logo != nil, "draft_count": drafts})
+		c.JSON(http.StatusOK, gin.H{"profile": d, "saved": false, "has_logo": logo != nil, "draft_count": drafts, "next_numbers": next})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true, "has_logo": logo != nil, "draft_count": drafts})
+	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true, "has_logo": logo != nil, "draft_count": drafts, "next_numbers": next})
 }
 
 // PutInvoicingProfileHandler replaces the issuer profile. The admin seeds it
@@ -242,6 +251,11 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	// the server: it must read one past the highest number issued, so the
 	// sequence stays gap-free and unique (spec §5). A new prefix may start
 	// wherever an earlier, outside sequence left off (spec §8 Q3).
+	//
+	// The server sets that number itself and ignores the one sent: the
+	// editor shows the field read-only while the prefix is in use, so a Save
+	// must never fail over a number ze could not edit, as it did after an
+	// invoice issued in another tab (system_3 #12306, review point 3).
 	issuedUnderPrefix, err := data_models.CountInvoicesWithPrefix(tx, userID, p.InvoiceNumberPrefix)
 	if err != nil {
 		tx.Rollback()
@@ -257,12 +271,7 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 			RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
 			return
 		}
-		if p.NextInvoiceNumber != maxNumber+1 {
-			tx.Rollback()
-			respondError(c, http.StatusConflict, "next_number_server_owned",
-				fmt.Sprintf("invoices have been issued under %q, so the next number is %d and is set by the server", p.InvoiceNumberPrefix, maxNumber+1))
-			return
-		}
+		p.NextInvoiceNumber = maxNumber + 1
 	}
 	if err := data_models.SaveInvoicingProfile(tx, &p, userID); err != nil {
 		tx.Rollback()
@@ -277,12 +286,19 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
 		return
 	}
+	next, err := data_models.NextInvoiceNumbersByPrefix(tx, userID)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error reading invoice numbers by prefix: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
+		return
+	}
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error committing invoicing profile: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true})
+	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true, "next_numbers": next})
 }
 
 type invoicingClientRequest struct {

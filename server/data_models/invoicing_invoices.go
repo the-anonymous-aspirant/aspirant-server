@@ -161,6 +161,28 @@ func MaxInvoiceNumberWithPrefix(db *gorm.DB, owner uint, prefix string) (int, er
 	return *rows[0].N, nil
 }
 
+// NextInvoiceNumbersByPrefix returns, for every prefix the owner's book has
+// numbered an invoice under, one past the highest number there: the number
+// the next invoice under that prefix gets. A cancelled invoice keeps its
+// number, so it counts: a cancelled number is never given again (system_3
+// #12306). A prefix with no numbered invoice is absent.
+func NextInvoiceNumbersByPrefix(db *gorm.DB, owner uint) (map[string]int, error) {
+	var rows []struct {
+		Prefix string
+		N      int
+	}
+	err := db.Model(&InvoicingInvoice{}).Select("prefix, MAX(number) AS n").
+		Where("owner_user_id = ? AND number IS NOT NULL", owner).Group("prefix").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	next := make(map[string]int, len(rows))
+	for _, r := range rows {
+		next[r.Prefix] = r.N + 1
+	}
+	return next, nil
+}
+
 // InvoicingInvoicePDF is the PDF rendered when the invoice was issued. It is
 // stored once and served as-is, so a later profile or client edit can never
 // change an issued document. Kept apart from invoicing_invoices so listing
