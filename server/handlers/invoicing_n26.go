@@ -1047,7 +1047,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for _, row := range req.Rows {
+	for i, row := range req.Rows {
 		bad := func(msg string) {
 			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.SenderName, "from"), msg)
 		}
@@ -1259,7 +1259,7 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for _, row := range req.Rows {
+	for i, row := range req.Rows {
 		bad := func(msg string) {
 			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.PayeeName, "to"), msg)
 		}

@@ -580,7 +580,10 @@ type lineRefusal struct {
 // c51467): 10,000 units, 100 million euros.
 func lineItemRefusal(li lineItemInput, item int) *lineRefusal {
 	at := func(field, code string, limit int64, format string) *lineRefusal {
-		return &lineRefusal{refusal{code: code, limit: limit, item: item, whole: true, message: "line_items " + fmt.Sprintf(format, item)}, field}
+		// The line's position is also in details, where #12274's client
+		// reads it ("Line 2: the quantity is too large.").
+		return &lineRefusal{refusal{code: code, limit: limit, item: item, whole: true, message: "line_items " + fmt.Sprintf(format, item),
+			details: map[string]interface{}{"position": item}}, field}
 	}
 	switch {
 	case li.QuantityMilli < 0:

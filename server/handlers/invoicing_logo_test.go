@@ -192,7 +192,7 @@ func TestInvoicingLogo_RefusalsWriteNothing(t *testing.T) {
 			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.want) {
 				t.Fatalf("got %d %s, want 400 naming %q", w.Code, w.Body.String(), tc.want)
 			}
-			var e refusalEnvelope
+			var e fieldRefusalEnvelope
 			if json.Unmarshal(w.Body.Bytes(), &e) != nil || e.Error.Code != tc.code || e.Error.Field != "logo" {
 				t.Errorf("got %s, want code %q at the logo", w.Body.String(), tc.code)
 			}

@@ -243,7 +243,7 @@ func TestInvoicingExpenseReceipt_RejectsOversizeAndUnsupportedType(t *testing.T)
 		{"no file", "", nil, codeMissingFile, 0},
 	} {
 		w := uploadReceipt(r, int(e.ID), tc.filename, tc.content, "")
-		var env refusalEnvelope
+		var env fieldRefusalEnvelope
 		if json.Unmarshal(w.Body.Bytes(), &env) != nil || w.Code != http.StatusBadRequest || env.Error.Code != tc.code || env.Error.Field != "receipt" || env.Error.Limit != tc.limit {
 			t.Errorf("%s: %d %s; want %s limit %d at the receipt", tc.name, w.Code, w.Body.String(), tc.code, tc.limit)
 		}

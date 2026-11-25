@@ -68,6 +68,9 @@ type refusal struct {
 	width   int // an image's size, where the refusal names it
 	height  int
 	whole   bool // message is a whole sentence, not prefixed with the field
+	// details is ErrorDetail.Details, for a client that reads its figures
+	// there (system_3 #12274: a draft line's "position").
+	details map[string]interface{}
 }
 
 func refuse(code, message string) *refusal { return &refusal{code: code, message: message} }
@@ -91,7 +94,7 @@ func respondFieldRefusal(c *gin.Context, field string, r *refusal) {
 		msg = field + " " + msg
 	}
 	log.Printf("Error response: %d - %s - %s", http.StatusBadRequest, r.code, msg)
-	c.JSON(http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: msg, Field: field, Limit: r.limit, Lines: r.lines, Item: r.item, Width: r.width, Height: r.height}})
+	c.JSON(http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: msg, Field: field, Limit: r.limit, Lines: r.lines, Item: r.item, Width: r.width, Height: r.height, Details: r.details}})
 }
 
 var notAString = refuse(codeNotAString, "must be a string")

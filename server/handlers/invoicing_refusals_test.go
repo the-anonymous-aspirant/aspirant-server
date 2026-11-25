@@ -16,7 +16,7 @@ import (
 // sentence prints. The client holds one sentence per code; these tests are
 // the server's half of that contract.
 
-type refusalEnvelope struct {
+type fieldRefusalEnvelope struct {
 	Error struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
@@ -31,7 +31,7 @@ type refusalEnvelope struct {
 // message that still names the field it is about (the logs read it).
 func assertRefusal(t *testing.T, name string, w *httptest.ResponseRecorder, code, field string, limit int64) {
 	t.Helper()
-	var e refusalEnvelope
+	var e fieldRefusalEnvelope
 	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != http.StatusBadRequest {
 		t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		return
@@ -165,7 +165,7 @@ func TestProfileAndClient_EachCauseHasItsOwnCode(t *testing.T) {
 	}
 	// An address of too many lines names both of its numbers.
 	w := invoicingDo(f.r, "PUT", "/invoicing/profile", profile(`"address":"`+strings.Repeat("Zeile\\n", maxProfileAddressLines)+`Ende"`))
-	var e refusalEnvelope
+	var e fieldRefusalEnvelope
 	_ = json.Unmarshal(w.Body.Bytes(), &e)
 	if e.Error.Code != codeAddressTooLong || e.Error.Field != "address" || e.Error.Limit != maxProfileLineRunes || e.Error.Lines != maxProfileAddressLines {
 		t.Errorf("profile address of %d lines: %+v", maxProfileAddressLines+1, e.Error)
@@ -197,7 +197,7 @@ func TestDraft_EachCauseHasItsOwnCode(t *testing.T) {
 		{"a client id that is not one", `{"client_id":-3}`, codeInvalidID, "client_id", 0, 0},
 	} {
 		w := invoicingDo(f.r, "PUT", path, tc.body)
-		var e refusalEnvelope
+		var e fieldRefusalEnvelope
 		var item struct {
 			Error struct {
 				Item int `json:"item"`
@@ -299,7 +299,7 @@ func TestN26Confirm_ARefusedRowAnswersItsPosition(t *testing.T) {
 		return `{"document_kind":"` + kind + `","transaction_id":"N1","paid_on":"2026-07-14","gross_cents":1000,"currency":"EUR","sender_name":"Mara Esempio"}`
 	}
 	w := invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+row(n26KindAccountStatement)+`,`+row("fax")+`]}`)
-	var e refusalEnvelope
+	var e fieldRefusalEnvelope
 	var item struct {
 		Error struct {
 			Item int `json:"item"`
@@ -313,7 +313,7 @@ func TestN26Confirm_ARefusedRowAnswersItsPosition(t *testing.T) {
 	// A row whose payer is PayPal has its own code, at its position.
 	paypal := strings.Replace(row(n26KindAccountStatement), "Mara Esempio", "PayPal Europe S.a.r.l. et Cie S.C.A", 1)
 	w = invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+row(n26KindAccountStatement)+`,`+paypal+`]}`)
-	e, item.Error.Item = refusalEnvelope{}, 0
+	e, item.Error.Item = fieldRefusalEnvelope{}, 0
 	_ = json.Unmarshal(w.Body.Bytes(), &e)
 	_ = json.Unmarshal(w.Body.Bytes(), &item)
 	if w.Code != http.StatusBadRequest || e.Error.Code != codePayPalTransferRow || item.Error.Item != 2 || !strings.HasPrefix(e.Error.Message, "row 1: the payer is PayPal") {
@@ -321,7 +321,7 @@ func TestN26Confirm_ARefusedRowAnswersItsPosition(t *testing.T) {
 	}
 	many := strings.TrimSuffix(strings.Repeat(row(n26KindAccountStatement)+",", maxN26ConfirmRows+1), ",")
 	w = invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+many+`]}`)
-	e = refusalEnvelope{}
+	e = fieldRefusalEnvelope{}
 	_ = json.Unmarshal(w.Body.Bytes(), &e)
 	if e.Error.Code != "too_many_rows" || e.Error.Limit != maxN26ConfirmRows {
 		t.Errorf("too many rows: %d %s", w.Code, w.Body.String())
@@ -353,7 +353,7 @@ func TestBookPresetName_EachCauseHasItsOwnCode(t *testing.T) {
 		{"a name already used", preset("JOBCENTER"), http.StatusConflict, "duplicate_preset", 0},
 	} {
 		w := invoicingDo(r, "POST", "/invoicing/book/presets", tc.body)
-		var e refusalEnvelope
+		var e fieldRefusalEnvelope
 		json.Unmarshal(w.Body.Bytes(), &e)
 		if w.Code != tc.status || e.Error.Code != tc.code || e.Error.Field != "name" || e.Error.Limit != tc.limit {
 			t.Errorf("%s: %d %s, want %d %q at name, limit %d", tc.name, w.Code, w.Body.String(), tc.status, tc.code, tc.limit)
@@ -377,7 +377,7 @@ func TestAddPayers_ARefusedNameAnswersItsCauseAndPayer(t *testing.T) {
 		w := invoicingDo(f.r, "POST", "/invoicing/payers", fmt.Sprintf(`{"payers":[
 			{"payment_ids":[%d],"new_client_name":"Mara Esempio"},
 			{"payment_ids":[%d],"new_client_name":%q}]}`, a, b, tc.newName))
-		var e refusalEnvelope
+		var e fieldRefusalEnvelope
 		json.Unmarshal(w.Body.Bytes(), &e)
 		if w.Code != http.StatusBadRequest || e.Error.Code != tc.code || e.Error.Field != "new_client_name" || e.Error.Item != 2 || e.Error.Limit != tc.limit {
 			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body.String())

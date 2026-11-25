@@ -176,7 +176,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	}
 	// The one row check's note rule (system_3 #12265).
 	if !rowNoteText(note) {
-		bad("note", "has a direction-override character: remove it")
+		bad("note", refuse(codeHiddenCharacters, "has a direction-override character: remove it"))
 		return
 	}
 	// "Paid to (optional)" (system_3 #10555-A1, design §3.143 Decision 3):
