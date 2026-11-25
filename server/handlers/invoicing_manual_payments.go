@@ -209,7 +209,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		return
 	}
 	var gross int64
-	if err := json.Unmarshal(body["gross_cents"], &gross); err != nil || gross <= 0 || gross > maxUnitPriceCents {
+	if err := json.Unmarshal(body["gross_cents"], &gross); err != nil || !rowAmountInBounds(gross) {
 		bad("gross_cents", "must be a whole number of cents above zero")
 		return
 	}
@@ -286,6 +286,11 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	}
 	if utf8.RuneCountInString(note) > maxManualNoteRunes || hasControlChars(note) {
 		bad("note", fmt.Sprintf("must be at most %d characters", maxManualNoteRunes))
+		return
+	}
+	// The one row check's note rule (system_3 #12265).
+	if !rowNoteText(note) {
+		bad("note", "has a direction-override character: remove it")
 		return
 	}
 
