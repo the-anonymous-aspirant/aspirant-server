@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,26 @@ func TestManualPayment_LookAlikeOnlyInOwnBook(t *testing.T) {
 	}
 	if code, _, body := createManual(t, f, `{"paid_on":"2026-08-03","gross_cents":7000,"method":"cash","sender_name":"Lena Maier"}`); code != http.StatusCreated {
 		t.Errorf("another book's twin: %d %s, want saved", code, body)
+	}
+}
+
+// Another user's book is never searched, for an expense either: the 409
+// carries the whole look-alike row, so another book's row must never be it
+// (security, c77088 on #12295).
+func TestManualExpense_LookAlikeOnlyInOwnBook(t *testing.T) {
+	db, r := newExpenseFixture(t)
+	other := data_models.InvoicingExpense{OwnerUserID: expenseFixtureUser + 1, Source: "manual", TransactionID: "M-OTHER-EXP",
+		PaidOn: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC), Currency: "EUR", AmountCents: 1299, Category: "other", Entry: "manual",
+		Payee: "Boesner", Note: "Another book's note"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	code, e, body := createExpense(t, r, `{"paid_on":"2026-10-03","amount_cents":1299,"payee":"Boesner"}`)
+	if code != http.StatusCreated || e.ID == 0 || e.ID == other.ID {
+		t.Fatalf("another book's twin: %d %s, want saved as a new expense", code, body)
+	}
+	if strings.Contains(body, "duplicate_of") || strings.Contains(body, "Another book's note") || strings.Contains(body, "M-OTHER-EXP") {
+		t.Errorf("the answer names another book's expense: %s", body)
 	}
 }
 
