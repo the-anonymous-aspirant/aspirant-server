@@ -52,6 +52,7 @@ const (
 	codeAmountDecimals     = "too_many_decimals"     // an amount in a file with more than two decimals
 	codeInvalidCurrency    = "invalid_currency"      // not a three-letter ISO currency code
 	codeDateOrdersDisagree = "date_orders_disagree"  // a file\'s dates written day/month and month/day
+	codePaymentListedTwice = "payment_listed_twice"  // a payment id twice in one list; duplicate_payment is one already in the book
 )
 
 // refusal is why one field cannot be accepted. nil means it can.
@@ -155,4 +156,20 @@ func emailRefusal(s string) *refusal {
 		return refuse(codeInvalidEmail, "must be a valid address when given")
 	}
 	return nil
+}
+
+// respondRowRefusal refuses row i (0-based) of a confirm. item is its
+// 1-based position, so the client names the row from what it sent: its
+// payer and date, never a number (c77188 point 9). The message is the
+// one the logs have always read.
+func respondRowRefusal(c *gin.Context, i int, msg string) {
+	respondFieldRefusal(c, "rows", &refusal{code: "invalid_row", item: i + 1, whole: true, message: fmt.Sprintf("row %d: %s", i, msg)})
+}
+
+// respondNamedRowRefusal is respondRowRefusal for a row the hand entry's
+// check refused: the message names the row by its day and payer or payee
+// (importRowName, system_3 #12265), as a client that shows it as written
+// reads it, and item still gives its position.
+func respondNamedRowRefusal(c *gin.Context, i int, name, msg string) {
+	respondFieldRefusal(c, "rows", &refusal{code: "invalid_row", item: i + 1, whole: true, message: name + ": " + msg})
 }

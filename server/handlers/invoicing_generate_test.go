@@ -226,7 +226,7 @@ func TestGenerate_IDsModeDraftsEachAndRefusesWhatCannotBeInvoiced(t *testing.T) 
 	}{
 		"a gift":            {paymentIDsBody(f.payments[2].ID, f.payments[3].ID), http.StatusUnprocessableEntity, "payment_not_paid_work"},
 		"an unknown id":     {paymentIDsBody(f.payments[2].ID, 99999), http.StatusUnprocessableEntity, "payment_not_found"},
-		"listed twice":      {paymentIDsBody(f.payments[2].ID, f.payments[2].ID), http.StatusBadRequest, "duplicate_payment"},
+		"listed twice":      {paymentIDsBody(f.payments[2].ID, f.payments[2].ID), http.StatusBadRequest, codePaymentListedTwice},
 		"an empty list":     {`{"payment_ids":[]}`, http.StatusBadRequest, "at least one payment"},
 		"both fields":       {`{"month":"2026-07","payment_ids":[1]}`, http.StatusBadRequest, "exactly one of month or payment_ids"},
 		"neither field":     {`{}`, http.StatusBadRequest, "exactly one of month or payment_ids"},

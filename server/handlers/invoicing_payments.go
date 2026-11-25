@@ -545,8 +545,8 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 		return
 	}
 	if len(req.Rows) > maxPayPalExpenseConfirmRows {
-		respondError(c, http.StatusBadRequest, "too_many_rows",
-			fmt.Sprintf("confirm at most %d rows per request", maxPayPalExpenseConfirmRows))
+		respondFieldRefusal(c, "rows", &refusal{code: "too_many_rows", limit: maxPayPalExpenseConfirmRows, whole: true,
+			message: fmt.Sprintf("confirm at most %d rows per request", maxPayPalExpenseConfirmRows)})
 		return
 	}
 	type validated struct {
@@ -556,7 +556,7 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 	rows := make([]validated, 0, len(req.Rows))
 	for _, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.PayeeName, "to"), msg))
+			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.PayeeName, "to"), msg)
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.PayeeName = strings.TrimSpace(row.PayeeName)
@@ -631,7 +631,7 @@ func ImportPayPalExpensesConfirmHandler(c *gin.Context) {
 		}
 		if !ok {
 			tx.Rollback()
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, categoryRefusal[v.row.Category]))
+			respondRowRefusal(c, i, categoryRefusal[v.row.Category])
 			return
 		}
 		if seen[v.row.TransactionID] {

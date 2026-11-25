@@ -865,8 +865,8 @@ func ImportN26ParseHandler(c *gin.Context) {
 		return
 	}
 	if len(files) > maxN26FilesPerRequest {
-		respondError(c, http.StatusBadRequest, "too_many_files",
-			fmt.Sprintf("upload at most %d files per request", maxN26FilesPerRequest))
+		respondFieldRefusal(c, "files", &refusal{code: "too_many_files", limit: maxN26FilesPerRequest, whole: true,
+			message: fmt.Sprintf("upload at most %d files per request", maxN26FilesPerRequest)})
 		return
 	}
 
@@ -1026,8 +1026,8 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	// is bounded (security review N3, #9812 c60279). 20 files of statement
 	// rows stay well below it.
 	if len(req.Rows) > maxN26ConfirmRows {
-		respondError(c, http.StatusBadRequest, "too_many_rows",
-			fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows))
+		respondFieldRefusal(c, "rows", &refusal{code: "too_many_rows", limit: maxN26ConfirmRows, whole: true,
+			message: fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows)})
 		return
 	}
 	type validated struct {
@@ -1037,7 +1037,7 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	rows := make([]validated, 0, len(req.Rows))
 	for _, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.SenderName, "from"), msg))
+			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.SenderName, "from"), msg)
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.SenderName = strings.TrimSpace(row.SenderName)
@@ -1235,8 +1235,8 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		return
 	}
 	if len(req.Rows) > maxN26ConfirmRows {
-		respondError(c, http.StatusBadRequest, "too_many_rows",
-			fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows))
+		respondFieldRefusal(c, "rows", &refusal{code: "too_many_rows", limit: maxN26ConfirmRows, whole: true,
+			message: fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows)})
 		return
 	}
 	type validated struct {
@@ -1246,7 +1246,7 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 	rows := make([]validated, 0, len(req.Rows))
 	for _, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.PayeeName, "to"), msg))
+			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.PayeeName, "to"), msg)
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.PayeeName = strings.TrimSpace(row.PayeeName)
@@ -1321,7 +1321,7 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		}
 		if !ok {
 			tx.Rollback()
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, categoryRefusal[v.row.Category]))
+			respondRowRefusal(c, i, categoryRefusal[v.row.Category])
 			return
 		}
 		if seen[v.row.TransactionID] {

@@ -279,3 +279,32 @@ func TestParsePayPalXLSX_AValueNamesItsSheetRow(t *testing.T) {
 		t.Fatalf("got %v (%+v), want row 14's currency", err, ve)
 	}
 }
+
+// A confirm's refused row answers its 1-based position, so the client
+// names it from what it sent (c77188 point 9); a cap names its number.
+func TestN26Confirm_ARefusedRowAnswersItsPosition(t *testing.T) {
+	db := setupImportFailuresDB(t)
+	r := setupN26Router(db, 7)
+	row := func(kind string) string {
+		return `{"document_kind":"` + kind + `","transaction_id":"N1","paid_on":"2026-07-14","gross_cents":1000,"currency":"EUR","sender_name":"Mara Esempio"}`
+	}
+	w := invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+row(n26KindAccountStatement)+`,`+row("fax")+`]}`)
+	var e refusalEnvelope
+	var item struct {
+		Error struct {
+			Item int `json:"item"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	_ = json.Unmarshal(w.Body.Bytes(), &item)
+	if w.Code != http.StatusBadRequest || e.Error.Code != "invalid_row" || e.Error.Field != "rows" || item.Error.Item != 2 {
+		t.Errorf("the second row: %d %s", w.Code, w.Body.String())
+	}
+	many := strings.TrimSuffix(strings.Repeat(row(n26KindAccountStatement)+",", maxN26ConfirmRows+1), ",")
+	w = invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+many+`]}`)
+	e = refusalEnvelope{}
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if e.Error.Code != "too_many_rows" || e.Error.Limit != maxN26ConfirmRows {
+		t.Errorf("too many rows: %d %s", w.Code, w.Body.String())
+	}
+}

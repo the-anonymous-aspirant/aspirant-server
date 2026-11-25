@@ -72,7 +72,7 @@ func parseGenerateRequest(body map[string]json.RawMessage) (month string, ids []
 	seen := map[uint]bool{}
 	for _, id := range ids {
 		if seen[id] {
-			return "", nil, false, guard(http.StatusBadRequest, "duplicate_payment", "payment %d is listed twice", id)
+			return "", nil, false, guard(http.StatusBadRequest, codePaymentListedTwice, "payment %d is listed twice", id)
 		}
 		seen[id] = true
 	}

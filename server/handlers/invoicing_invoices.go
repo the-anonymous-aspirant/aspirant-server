@@ -111,7 +111,7 @@ func checkInvoiceablePayments(tx *gorm.DB, owner uint, ids []uint, invoiceID uin
 	var out []data_models.InvoicingPayment
 	for _, id := range ids {
 		if seen[id] {
-			return nil, guard(http.StatusBadRequest, "duplicate_payment", "payment %d is listed twice", id), nil
+			return nil, guard(http.StatusBadRequest, codePaymentListedTwice, "payment %d is listed twice", id), nil
 		}
 		seen[id] = true
 		p, err := data_models.GetInvoicingPayment(tx, owner, id)
