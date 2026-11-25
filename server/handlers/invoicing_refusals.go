@@ -21,34 +21,37 @@ import (
 // The codes are a contract with the client: a renamed code reads as the
 // client's fallback line. Add a code, never repurpose one.
 const (
-	codeNotAString       = "not_a_string"          // a field that must be a string is not one
-	codeInvalidDate      = "invalid_date"          // not a YYYY-MM-DD date
-	codeDateInFuture     = "date_in_future"        // after today in Berlin
-	codeDateTooEarly     = "date_too_early"        // before earliestPaymentDate; limit = its year
-	codeInvalidAmount    = "invalid_amount"        // missing, not whole cents, or not above zero
-	codeAmountTooLarge   = "amount_too_large"      // above maxUnitPriceCents
-	codeTooLong          = "too_long"              // over limit characters, or several lines in a one-line field
-	codeHiddenCharacters = "hidden_characters"     // a tab, control or invisible format character
-	codeNoLetterOrDigit  = "no_letter_or_digit"    // a name made only of punctuation
-	codeInvalidEmail     = "invalid_email"         // not one bare address
-	codeInvalidChoice    = "invalid_choice"        // not one of the values the field takes
-	codeInvalidID        = "invalid_id"            // an id that is not a positive whole number
-	codeNoSuchClient     = "no_such_client"        // client_id names no client of the owner
-	codeClientConflict   = "client_and_new_client" // client_id and new_client_name together
-	codeNeedsNewClient   = "needs_new_client"      // a new client's details without its name
-	codeNotCategorisable = "not_categorisable"     // a category on a bank withdrawal
-	codeRequired         = "required"              // an empty field that must be given
-	codeInvalidCategory  = "invalid_category"      // not one of the owner's expense categories
-	codeInvalidPrefix    = "invalid_prefix"        // an invoice number prefix of other characters or over limit
-	codeNumberTooSmall   = "number_too_small"      // under limit
-	codeBelowZero        = "below_zero"            // a draft line\'s quantity or unit price under 0
-	codeQuantityTooLarge = "quantity_too_large"    // a draft line\'s quantity over limit units
-	codeInvalidLineItems = "invalid_line_items"    // line_items is not a list of line items
-	codeInvalidVATRate   = "invalid_vat_rate"      // not basis points 0-10000 in steps of 10
-	codeMissingFile      = "missing_file"          // no file in the form field
-	codeEmptyFile        = "empty_file"            // a file of no bytes
-	codeFileTooLarge     = "too_large"             // over limit MB
-	codeUnsupportedType  = "unsupported_type"      // not one of the types the field takes
+	codeNotAString         = "not_a_string"          // a field that must be a string is not one
+	codeInvalidDate        = "invalid_date"          // not a YYYY-MM-DD date
+	codeDateInFuture       = "date_in_future"        // after today in Berlin
+	codeDateTooEarly       = "date_too_early"        // before earliestPaymentDate; limit = its year
+	codeInvalidAmount      = "invalid_amount"        // missing, not whole cents, or not above zero
+	codeAmountTooLarge     = "amount_too_large"      // above maxUnitPriceCents
+	codeTooLong            = "too_long"              // over limit characters, or several lines in a one-line field
+	codeHiddenCharacters   = "hidden_characters"     // a tab, control or invisible format character
+	codeNoLetterOrDigit    = "no_letter_or_digit"    // a name made only of punctuation
+	codeInvalidEmail       = "invalid_email"         // not one bare address
+	codeInvalidChoice      = "invalid_choice"        // not one of the values the field takes
+	codeInvalidID          = "invalid_id"            // an id that is not a positive whole number
+	codeNoSuchClient       = "no_such_client"        // client_id names no client of the owner
+	codeClientConflict     = "client_and_new_client" // client_id and new_client_name together
+	codeNeedsNewClient     = "needs_new_client"      // a new client's details without its name
+	codeNotCategorisable   = "not_categorisable"     // a category on a bank withdrawal
+	codeRequired           = "required"              // an empty field that must be given
+	codeInvalidCategory    = "invalid_category"      // not one of the owner's expense categories
+	codeInvalidPrefix      = "invalid_prefix"        // an invoice number prefix of other characters or over limit
+	codeNumberTooSmall     = "number_too_small"      // under limit
+	codeBelowZero          = "below_zero"            // a draft line\'s quantity or unit price under 0
+	codeQuantityTooLarge   = "quantity_too_large"    // a draft line\'s quantity over limit units
+	codeInvalidLineItems   = "invalid_line_items"    // line_items is not a list of line items
+	codeInvalidVATRate     = "invalid_vat_rate"      // not basis points 0-10000 in steps of 10
+	codeMissingFile        = "missing_file"          // no file in the form field
+	codeEmptyFile          = "empty_file"            // a file of no bytes
+	codeFileTooLarge       = "too_large"             // over limit MB
+	codeUnsupportedType    = "unsupported_type"      // not one of the types the field takes
+	codeAmountDecimals     = "too_many_decimals"     // an amount in a file with more than two decimals
+	codeInvalidCurrency    = "invalid_currency"      // not a three-letter ISO currency code
+	codeDateOrdersDisagree = "date_orders_disagree"  // a file\'s dates written day/month and month/day
 )
 
 // refusal is why one field cannot be accepted. nil means it can.

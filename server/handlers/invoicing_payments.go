@@ -77,6 +77,18 @@ type importErrorResponse struct {
 // failure the message is the parser's own text, which quotes the file's
 // cells (an amount, a date) from a third party's bank export (system_3
 // #10583, security c65625). The uploader still gets the full message.
+// maxEchoedValueRunes bounds a file's value echoed in a refusal: enough to
+// recognise it, never the whole of a long cell.
+const maxEchoedValueRunes = 40
+
+// clipValue is v cut to maxEchoedValueRunes, marked when cut.
+func clipValue(v string) string {
+	if utf8.RuneCountInString(v) <= maxEchoedValueRunes {
+		return v
+	}
+	return string([]rune(v)[:maxEchoedValueRunes-1]) + "…"
+}
+
 func respondImportError(c *gin.Context, status int, code, message string, copyExpiresAt *time.Time) {
 	log.Printf("Error response: %d - %s", status, code)
 	c.JSON(status, importErrorResponse{Error: ErrorDetail{Code: code, Message: message}, CopyExpiresAt: copyExpiresAt})
@@ -112,7 +124,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 
 	fh, err := c.FormFile("file")
 	if err != nil {
-		RespondWithError(c, http.StatusBadRequest, "Upload a PayPal CSV or Excel file in the form field \"file\"")
+		respondImportError(c, http.StatusBadRequest, codeMissingFile, "Upload a PayPal CSV or Excel file in the form field \"file\"", nil)
 		return
 	}
 	userID := invoicingUserID(c)
@@ -129,7 +141,14 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxPayPalImportBytes+1))
-	if err != nil || len(data) > maxPayPalImportBytes {
+	// A read that fails is the server's, not a size (c77188 point 9).
+	if err != nil {
+		log.Printf("Error reading a PayPal import: %v", err)
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "read_failed", "", 0)
+		RespondWithError(c, http.StatusInternalServerError, "Could not read the uploaded file")
+		return
+	}
+	if len(data) > maxPayPalImportBytes {
 		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "too_large", "", 0)
 		respondImportError(c, http.StatusRequestEntityTooLarge, "too_large", "This file is larger than 5 MB.", nil)
 		return
@@ -161,10 +180,23 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		} else {
 			// date_order_ambiguous excluded: it always resolves on an
 			// immediate retry of the same file (system_3 #10536), so it
-			// reads as a normal interactive step, not a failure.
+			// reads as a normal interactive step, not a failure. The
+			// failure keeps the format's code: one class per file kind.
 			expires = recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, code, format, 0)
 		}
-		respondImportError(c, http.StatusBadRequest, code, err.Error(), expires)
+		// A value on a line, and dates in two orders, answer a code of
+		// their own; anything else is the file not being read (c77188
+		// group 4).
+		detail := ErrorDetail{Code: code, Message: err.Error(), Field: "file"}
+		var ve *paypalValueError
+		switch {
+		case errors.As(err, &ve):
+			detail.Code, detail.Line, detail.Value = ve.Code, ve.Line, clipValue(ve.Value)
+		case errors.Is(err, ErrPayPalDateOrdersDisagree):
+			detail.Code = codeDateOrdersDisagree
+		}
+		log.Printf("Error response: %d - %s", http.StatusBadRequest, detail.Code)
+		c.JSON(http.StatusBadRequest, importErrorResponse{Error: detail, CopyExpiresAt: expires})
 		return
 	}
 

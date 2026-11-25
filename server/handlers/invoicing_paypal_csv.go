@@ -63,6 +63,41 @@ const paypalMaxRowTextBytes = 32 << 20
 
 // ErrPayPalDateOrderAmbiguous is returned when every slash date in the file
 // reads both ways; the caller must pass the order explicitly.
+// ErrPayPalDateOrdersDisagree is a file whose slashed dates read one way
+// on some lines and the other way on others.
+var ErrPayPalDateOrdersDisagree = errors.New("dates in the file disagree on day/month order")
+
+// paypalValueError is a value on one line of the file that cannot be read.
+// Line is the line ze can find: the physical line of a CSV, the row number
+// of a sheet. Code tells the causes apart; Value is the cell as written
+// (system_3 #12300, c77188 group 4).
+type paypalValueError struct {
+	Line        int
+	Code, Value string
+	msg         string
+}
+
+func (e *paypalValueError) Error() string {
+	if e.Line > 0 {
+		return fmt.Sprintf("line %d: %s", e.Line, e.msg)
+	}
+	return e.msg
+}
+
+func amountRefusal(code, raw, why string) *paypalValueError {
+	return &paypalValueError{Code: code, Value: raw, msg: fmt.Sprintf("amount %q %s", raw, why)}
+}
+
+// atLine places a value error on its line; any other error is prefixed.
+func atLine(line int, err error) error {
+	var ve *paypalValueError
+	if errors.As(err, &ve) {
+		ve.Line = line
+		return ve
+	}
+	return fmt.Errorf("line %d: %w", line, err)
+}
+
 var ErrPayPalDateOrderAmbiguous = errors.New("every date in the file reads as both day/month and month/day; re-upload with date_order=dmy or date_order=mdy")
 
 type paypalRow struct {
@@ -339,7 +374,7 @@ func parseCentsIn(raw string, decimal byte) (int64, error) {
 		case tail == 1 || tail == 2:
 			decimalAt = at
 		case tail > 3 || (tail == 3 && s[at] == decimal):
-			return 0, fmt.Errorf("amount %q has more than two decimals", raw)
+			return 0, amountRefusal(codeAmountDecimals, raw, "has more than two decimals")
 		}
 	}
 	if decimalAt >= 0 {
@@ -353,29 +388,29 @@ func parseCentsIn(raw string, decimal byte) (int64, error) {
 	// second sign ("--100000001", "5.-1") would slip past the ceiling below
 	// as a negative and flip back to a huge positive (security c76329).
 	if strings.TrimLeft(intPart, "0123456789") != "" || strings.TrimLeft(frac, "0123456789") != "" {
-		return 0, fmt.Errorf("amount %q is not a number", raw)
+		return 0, amountRefusal(codeInvalidAmount, raw, "is not a number")
 	}
 	if len(frac) > 2 {
-		return 0, fmt.Errorf("amount %q has more than two decimals", raw)
+		return 0, amountRefusal(codeAmountDecimals, raw, "has more than two decimals")
 	}
 	for len(frac) < 2 {
 		frac += "0"
 	}
 	whole, err := strconv.ParseInt(intPart, 10, 64)
 	if errors.Is(err, strconv.ErrRange) {
-		return 0, fmt.Errorf("amount %q is above 100000000 euros", raw)
+		return 0, amountRefusal(codeAmountTooLarge, raw, "is above 100000000 euros")
 	}
 	if err != nil {
-		return 0, fmt.Errorf("amount %q is not a number", raw)
+		return 0, amountRefusal(codeInvalidAmount, raw, "is not a number")
 	}
 	cents, err := strconv.ParseInt(frac, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("amount %q is not a number", raw)
+		return 0, amountRefusal(codeInvalidAmount, raw, "is not a number")
 	}
 	// The hand entry's ceiling (maxUnitPriceCents): no file amount above it
 	// is real, and it keeps every sum far inside int64.
 	if whole > maxUnitPriceCents/100 || whole*100+cents > maxUnitPriceCents {
-		return 0, fmt.Errorf("amount %q is above 100000000 euros", raw)
+		return 0, amountRefusal(codeAmountTooLarge, raw, "is above 100000000 euros")
 	}
 	v := whole*100 + cents
 	if neg {
@@ -414,7 +449,7 @@ func resolveDateOrder(dates []string, requested string) (string, error) {
 	case !sawSlash:
 		return paypalDateOrderAuto, nil
 	case firstOver12 && secondOver12:
-		return "", errors.New("dates in the file disagree on day/month order")
+		return "", ErrPayPalDateOrdersDisagree
 	case firstOver12:
 		return paypalDateOrderDMY, nil
 	case secondOver12:
@@ -445,11 +480,11 @@ func parsePayPalDate(raw, order string) (time.Time, error) {
 			d, mo = a, b
 		}
 	} else {
-		return time.Time{}, fmt.Errorf("date %q is not in a recognised format", raw)
+		return time.Time{}, &paypalValueError{Code: codeInvalidDate, Value: raw, msg: fmt.Sprintf("date %q is not in a recognised format", raw)}
 	}
 	t := time.Date(y, time.Month(mo), d, 0, 0, 0, 0, time.UTC)
 	if t.Year() != y || int(t.Month()) != mo || t.Day() != d {
-		return time.Time{}, fmt.Errorf("date %q is not a calendar date", raw)
+		return time.Time{}, &paypalValueError{Code: codeInvalidDate, Value: raw, msg: fmt.Sprintf("date %q is not a calendar date", raw)}
 	}
 	return t, nil
 }
@@ -511,6 +546,7 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 	}
 
 	var records [][]string
+	var lines []int
 	for {
 		rec, err := r.Read()
 		if err == io.EOF {
@@ -522,9 +558,13 @@ func ParsePayPalActivityCSV(data []byte, dateOrder string) (*paypalParseResult, 
 		if len(rec) == 1 && strings.TrimSpace(rec[0]) == "" {
 			continue
 		}
+		// The line the record starts on, counted as an editor counts it,
+		// so a quoted field over two lines does not shift the rest.
+		line, _ := r.FieldPos(0)
 		records = append(records, rec)
+		lines = append(lines, line)
 	}
-	return parsePayPalRecords(col, records, nil, dateOrder)
+	return parsePayPalRecords(col, records, nil, lines, dateOrder)
 }
 
 // excelSerialDate converts an Excel date serial to a calendar date. In the
@@ -560,9 +600,9 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 		}
 		return true
 	}
-	rows := sheet.Rows
+	rows, nums := sheet.Rows, sheet.RowNums
 	for len(rows) > 0 && empty(rows[0]) {
-		rows = rows[1:]
+		rows, nums = rows[1:], nums[1:]
 	}
 	if len(rows) == 0 {
 		return nil, errors.New("the worksheet is empty")
@@ -586,7 +626,8 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 	// a dot and two decimals, so never evidence of the file's separator
 	// (system_3 #12260, design_agent c76354).
 	var written [][]bool
-	for _, row := range rows[1:] {
+	var lines []int
+	for k, row := range rows[1:] {
 		if empty(row) {
 			continue
 		}
@@ -611,8 +652,9 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 		}
 		records = append(records, rec)
 		written = append(written, wrote)
+		lines = append(lines, nums[k+1])
 	}
-	return parsePayPalRecords(col, records, written, dateOrder)
+	return parsePayPalRecords(col, records, written, lines, dateOrder)
 }
 
 // parsePayPalRecords classifies the records of either export format. Rows
@@ -624,7 +666,7 @@ func ParsePayPalActivityXLSX(data []byte, dateOrder string) (*paypalParseResult,
 //
 // written, when set, marks per record the cells an .xlsx reader wrote from a
 // number; they take no part in reading the file's decimal separator.
-func parsePayPalRecords(col map[string]int, records [][]string, written [][]bool, dateOrder string) (*paypalParseResult, error) {
+func parsePayPalRecords(col map[string]int, records [][]string, written [][]bool, lines []int, dateOrder string) (*paypalParseResult, error) {
 	get := func(rec []string, field string) string {
 		i, ok := col[field]
 		if !ok || i >= len(rec) {
@@ -667,22 +709,25 @@ func parsePayPalRecords(col map[string]int, records [][]string, written [][]bool
 	}
 	decimal := paypalDecimalSeparator(amounts)
 	for i, rec := range records {
-		line := i + 2 // 1-based, after the header
+		line := i + 2 // 1-based, after the header, when no lines are given
+		if i < len(lines) {
+			line = lines[i]
+		}
 		typ := strings.ToLower(get(rec, "type"))
 		status := strings.ToLower(get(rec, "status"))
 		impact := strings.ToLower(get(rec, "balance_impact"))
 
 		gross, err := parseCentsIn(get(rec, "gross"), decimal)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", line, err)
+			return nil, atLine(line, err)
 		}
 		fee, err := parseCentsIn(get(rec, "fee"), decimal)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", line, err)
+			return nil, atLine(line, err)
 		}
 		net, err := parseCentsIn(get(rec, "net"), decimal)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", line, err)
+			return nil, atLine(line, err)
 		}
 		if _, hasNet := col["net"]; !hasNet {
 			net = gross + fee
@@ -770,13 +815,15 @@ func parsePayPalRecords(col map[string]int, records [][]string, written [][]bool
 		}
 		paidOn, err := parsePayPalDate(get(rec, "date"), order)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", line, err)
+			return nil, atLine(line, err)
 		}
 		// The currency is printed and exported, so it must be a real ISO
 		// code, not free text from the file (@security N6, c51502 on #8374).
 		currency := strings.ToUpper(get(rec, "currency"))
 		if !isoCurrency.MatchString(currency) {
-			return nil, fmt.Errorf("line %d: currency %q is not a three-letter ISO code", line, get(rec, "currency"))
+			raw := get(rec, "currency")
+			return nil, &paypalValueError{Line: line, Code: codeInvalidCurrency, Value: raw,
+				msg: fmt.Sprintf("currency %q is not a three-letter ISO code", raw)}
 		}
 
 		var notes []string

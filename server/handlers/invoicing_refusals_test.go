@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // system_3 #12300 ruling 1: each refusal of the payment and expense dialogs
@@ -205,5 +207,75 @@ func TestDraft_EachCauseHasItsOwnCode(t *testing.T) {
 		if w.Code != http.StatusBadRequest || e.Error.Code != tc.code || e.Error.Field != tc.field || e.Error.Limit != tc.limit || item.Error.Item != tc.item {
 			t.Errorf("%s: %d %s; want %s %s limit %d item %d", tc.name, w.Code, w.Body.String(), tc.code, tc.field, tc.limit, tc.item)
 		}
+	}
+}
+
+// A PayPal file's value that cannot be read names its line as ze finds it
+// in the file, its value and its cause (c77188 group 4).
+func TestPayPalImport_AValueNamesItsLineValueAndCode(t *testing.T) {
+	db := setupPaymentsDB(t)
+	r := setupPaymentsRouter(db, 7)
+	head := "Date,Time,TimeZone,Name,Type,Status,Currency,Gross,Fee,Net,Transaction ID,Note\n"
+	good := func(id string) string {
+		return "14.07.2026,10:00:00,CET,Galerie Nord,General Payment,Completed,EUR,10.00,0.00,10.00," + id + ",\n"
+	}
+	// The header is line 1 and T1 line 2. T2's note runs over lines 3 and
+	// 4, so the bad record, the third, starts on line 5; counting records
+	// would call it line 4.
+	twoLine := "14.07.2026,10:00:00,CET,Galerie Nord,General Payment,Completed,EUR,10.00,0.00,10.00,T2,\"Wand\nbild\"\n"
+	for _, tc := range []struct {
+		name, bad, code, value string
+	}{
+		{"three decimals", "14.07.2026,10:00:00,CET,Ada,General Payment,Completed,EUR,12.345,0.00,12.35,T9,\n", codeAmountDecimals, "12.345"},
+		{"not a date", "31.02.2026,10:00:00,CET,Ada,General Payment,Completed,EUR,10.00,0.00,10.00,T9,\n", codeInvalidDate, "31.02.2026"},
+		{"not a currency", "14.07.2026,10:00:00,CET,Ada,General Payment,Completed,EURO,10.00,0.00,10.00,T9,\n", codeInvalidCurrency, "EURO"},
+		{"not a number", "14.07.2026,10:00:00,CET,Ada,General Payment,Completed,EUR,zehn,0.00,10.00,T9,\n", codeInvalidAmount, "zehn"},
+	} {
+		w := uploadCSV(t, r, head+good("T1")+twoLine+tc.bad, "")
+		var e struct {
+			Error struct {
+				Code, Field, Value string
+				Line               int
+			} `json:"error"`
+		}
+		if json.Unmarshal(w.Body.Bytes(), &e) != nil || w.Code != http.StatusBadRequest ||
+			e.Error.Code != tc.code || e.Error.Line != 5 || e.Error.Value != tc.value || e.Error.Field != "file" {
+			t.Errorf("%s: %d %s; want %s on line 5, value %q", tc.name, w.Code, w.Body.String(), tc.code, tc.value)
+		}
+	}
+	// Two date orders in one file.
+	mixed := head + "13/07/2026,10:00:00,CET,A,General Payment,Completed,EUR,1.00,0.00,1.00,T1,\n" +
+		"07/14/2026,10:00:00,CET,B,General Payment,Completed,EUR,1.00,0.00,1.00,T2,\n"
+	if w := uploadCSV(t, r, mixed, ""); !strings.Contains(w.Body.String(), `"code":"`+codeDateOrdersDisagree+`"`) {
+		t.Errorf("two date orders: %d %s", w.Code, w.Body.String())
+	}
+	// A long value is clipped in value. The message quotes the whole cell,
+	// as it always has (#10583 keeps it out of the log).
+	long := strings.Repeat("9", 80) + ".001"
+	w := uploadCSV(t, r, head+"14.07.2026,10:00:00,CET,A,General Payment,Completed,EUR,"+long+",0.00,1.00,T1,\n", "")
+	var e struct {
+		Error struct {
+			Value string
+			Line  int
+		} `json:"error"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &e) != nil || e.Error.Line != 2 || utf8.RuneCountInString(e.Error.Value) != maxEchoedValueRunes || !strings.HasSuffix(e.Error.Value, "…") {
+		t.Errorf("a long value: %s", w.Body.String())
+	}
+}
+
+// A sheet leaves its empty rows out; the line is the row number the
+// spreadsheet shows, read from the row's r attribute.
+func TestParsePayPalXLSX_AValueNamesItsSheetRow(t *testing.T) {
+	cell := func(s string) string { return `<c t="inlineStr"><is><t>` + s + `</t></is></c>` }
+	headRow := `<row r="1">` + cell("Date") + cell("Name") + cell("Type") + cell("Status") + cell("Currency") + cell("Gross") + cell("Transaction ID") + `</row>`
+	sheet := sheetXML(headRow,
+		`<row r="2">`+cell("14.07.2026")+cell("Shop")+cell("General Payment")+cell("Completed")+cell("EUR")+cell("10.00")+cell("M1")+`</row>`,
+		`<row r="14">`+cell("14.07.2026")+cell("Shop")+cell("General Payment")+cell("Completed")+cell("EURO")+cell("10.00")+cell("M2")+`</row>`,
+	)
+	_, err := ParsePayPalActivityXLSX(zipParts(t, workbookParts(sheet, "", false)), "")
+	var ve *paypalValueError
+	if !errors.As(err, &ve) || ve.Line != 14 || ve.Code != codeInvalidCurrency || ve.Value != "EURO" {
+		t.Fatalf("got %v (%+v), want row 14's currency", err, ve)
 	}
 }

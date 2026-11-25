@@ -65,6 +65,10 @@ type ErrorDetail struct {
 	// names it (a logo too large).
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`
+	// Line and Value name a value in an imported file that cannot be read:
+	// the line ze can find it on, and the value as the file writes it.
+	Line  int    `json:"line,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 type ErrorResponse struct {
