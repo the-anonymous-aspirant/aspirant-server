@@ -194,6 +194,8 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			detail.Code, detail.Line, detail.Value = ve.Code, ve.Line, clipValue(ve.Value)
 		case errors.Is(err, ErrPayPalDateOrdersDisagree):
 			detail.Code = codeDateOrdersDisagree
+		case errors.Is(err, ErrPayPalNotActivityExport):
+			detail.Code = codeNotPayPalExport
 		}
 		log.Printf("Error response: %d - %s", http.StatusBadRequest, detail.Code)
 		c.JSON(http.StatusBadRequest, importErrorResponse{Error: detail, CopyExpiresAt: expires})

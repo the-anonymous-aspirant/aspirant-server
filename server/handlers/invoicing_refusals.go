@@ -54,6 +54,7 @@ const (
 	codeDateOrdersDisagree = "date_orders_disagree"  // a file\'s dates written day/month and month/day
 	codePaymentListedTwice = "payment_listed_twice"  // a payment id twice in one list; duplicate_payment is one already in the book
 	codeBuiltinPresetName  = "builtin_preset_name"   // a preset named as the built-in Work only
+	codeNotPayPalExport    = "not_paypal_export"     // a CSV or sheet without the activity export\'s columns
 )
 
 // refusal is why one field cannot be accepted. nil means it can.

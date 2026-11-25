@@ -250,6 +250,15 @@ func TestPayPalImport_AValueNamesItsLineValueAndCode(t *testing.T) {
 	if w := uploadCSV(t, r, mixed, ""); !strings.Contains(w.Body.String(), `"code":"`+codeDateOrdersDisagree+`"`) {
 		t.Errorf("two date orders: %d %s", w.Code, w.Body.String())
 	}
+	// A sheet of someone else's columns is not PayPal's export, apart from
+	// a file that could not be read at all.
+	if w := uploadCSV(t, r, "Datum,Betrag,Verwendungszweck\n14.07.2026,10.00,Miete\n", ""); !strings.Contains(w.Body.String(), `"code":"`+codeNotPayPalExport+`"`) ||
+		!strings.Contains(w.Body.String(), "not a PayPal activity export: missing column(s)") {
+		t.Errorf("another bank's columns: %d %s", w.Code, w.Body.String())
+	}
+	if w := uploadCSV(t, r, head+"\"unclosed,quote\n\"x\"y,1\n", ""); strings.Contains(w.Body.String(), codeNotPayPalExport) {
+		t.Errorf("a malformed file read as another export: %s", w.Body.String())
+	}
 	// A long value is clipped in value. The message quotes the whole cell,
 	// as it always has (#10583 keeps it out of the log).
 	long := strings.Repeat("9", 80) + ".001"

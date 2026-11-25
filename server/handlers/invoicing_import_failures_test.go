@@ -708,7 +708,8 @@ func TestPayPalInvalidFileErrorCarriesItsCopyExpiryOnlyWhenKept(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Error.Code != "invalid_csv" || !near(body.CopyExpiresAt, time.Now().UTC().Add(importFailureWindow())) {
+	// The answer names the cause; the kept failure keeps the format's code.
+	if body.Error.Code != codeNotPayPalExport || !near(body.CopyExpiresAt, time.Now().UTC().Add(importFailureWindow())) {
 		t.Fatalf("body: %s", w.Body.String())
 	}
 

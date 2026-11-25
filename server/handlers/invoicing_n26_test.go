@@ -408,6 +408,7 @@ func TestN26ParsePerFileErrors(t *testing.T) {
 	w := uploadN26(t, r, map[string][]byte{
 		"not-a-pdf.txt": []byte("just text"),
 		"too-big.pdf":   append([]byte("%PDF-1.7 "), make([]byte, maxN26PDFBytes+1)...),
+		"empty.pdf":     {},
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("parse: %d %s", w.Code, w.Body.String())
@@ -425,6 +426,10 @@ func TestN26ParsePerFileErrors(t *testing.T) {
 	}
 	if codes["too-big.pdf"] != n26ErrTooLarge {
 		t.Errorf("too-big.pdf: %q", codes["too-big.pdf"])
+	}
+	// An empty file is said as one (system_3 #12300), not as not a PDF.
+	if codes["empty.pdf"] != n26ErrEmptyFile {
+		t.Errorf("empty.pdf: %q", codes["empty.pdf"])
 	}
 }
 

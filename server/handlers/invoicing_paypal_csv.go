@@ -65,6 +65,10 @@ const paypalMaxRowTextBytes = 32 << 20
 // reads both ways; the caller must pass the order explicitly.
 // ErrPayPalDateOrdersDisagree is a file whose slashed dates read one way
 // on some lines and the other way on others.
+// ErrPayPalNotActivityExport is a file whose header lacks the activity
+// export's columns: a CSV or sheet, but not PayPal's (system_3 #12300).
+var ErrPayPalNotActivityExport = errors.New("not a PayPal activity export")
+
 var ErrPayPalDateOrdersDisagree = errors.New("dates in the file disagree on day/month order")
 
 // paypalValueError is a value on one line of the file that cannot be read.
@@ -517,7 +521,7 @@ func mapPayPalColumns(header []string) (map[string]int, error) {
 		missing = append(missing, "status (or a statement's balance)")
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("not a PayPal activity export: missing column(s) %s", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("%w: missing column(s) %s", ErrPayPalNotActivityExport, strings.Join(missing, ", "))
 	}
 	return col, nil
 }

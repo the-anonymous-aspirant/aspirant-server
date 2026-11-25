@@ -116,6 +116,7 @@ const (
 	n26ErrExtractFailed  = "extract_failed"
 	n26ErrNotN26Document = "not_n26_document"
 	n26ErrParseFailed    = "parse_failed"
+	n26ErrEmptyFile      = "empty_file"
 )
 
 // n26Candidate is one would-be payment, parsed but not stored. PaidOn is ISO
@@ -896,9 +897,20 @@ func ImportN26ParseHandler(c *gin.Context) {
 		}
 		data, err = io.ReadAll(io.LimitReader(f, maxN26PDFBytes+1))
 		f.Close()
-		if err != nil || int64(len(data)) > maxN26PDFBytes {
+		// A read that fails is not a file too large (system_3 #12300), and
+		// an empty file is said as one.
+		if err != nil {
+			data = nil
+			fail(n26ErrExtractFailed, "could not read the uploaded file")
+			continue
+		}
+		if int64(len(data)) > maxN26PDFBytes {
 			data = nil
 			fail(n26ErrTooLarge, "the file is larger than 5 MB")
+			continue
+		}
+		if len(data) == 0 {
+			fail(n26ErrEmptyFile, "the file is empty")
 			continue
 		}
 		// The CSV export (system_3 #10543) is recognised from its bytes and
