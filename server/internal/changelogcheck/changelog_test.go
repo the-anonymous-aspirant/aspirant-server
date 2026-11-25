@@ -32,12 +32,41 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
+// readInputs opens every file the scripts read, from this test's own
+// process. `go test` caches a passing result and reuses it while the files
+// the test binary opened are unchanged; it cannot see what a child shell
+// reads. Without this, a fragment broken after the last pass read green from
+// the cache, and every verify mounts its tree at the same /src, so one tree's
+// pass was reused for another (system_3 #12430: a malformed fragment reached
+// main through a cached pass).
+func readInputs(t *testing.T, root string) {
+	t.Helper()
+	for _, rel := range []string{"scripts/changelog.sh", "tests/changelog_unit.sh", "CHANGELOG.md"} {
+		if _, err := os.ReadFile(filepath.Join(root, rel)); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+	}
+	dir := filepath.Join(root, "docs", "changelog.d")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			if _, err := os.ReadFile(filepath.Join(dir, e.Name())); err != nil {
+				t.Fatalf("read %s: %v", e.Name(), err)
+			}
+		}
+	}
+}
+
 // runSh runs a repo shell script with sh from the repo root and fails the
 // test with its output when it exits non-zero. A missing sh fails too: a
 // verify that cannot run the check must not read green.
 func runSh(t *testing.T, script string, args ...string) {
 	t.Helper()
 	root := repoRoot(t)
+	readInputs(t, root)
 	cmd := exec.Command("sh", append([]string{script}, args...)...)
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
