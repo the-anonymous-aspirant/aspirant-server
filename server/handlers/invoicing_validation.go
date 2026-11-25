@@ -108,7 +108,9 @@ func validateInvoicing(db *gorm.DB, owner uint) (*validationReport, error) {
 			}
 			net += it.LineTotalCents
 		}
-		if net != inv.NetCents || inv.NetCents+inv.VatCents != inv.TotalCents {
+		// The lines sum to the total on an invoice priced from what was
+		// received (system_3 #12261), and to the net on one issued before it.
+		if (net != inv.TotalCents && net != inv.NetCents) || inv.NetCents+inv.VatCents != inv.TotalCents {
 			add("total_mismatch_items", inv.ID, 0, "Invoice %s: the amounts don't add up (lines %s, net %s, total %s).", label[inv.ID],
 				screenMoney(net, inv.Currency), screenMoney(inv.NetCents, inv.Currency), screenMoney(inv.TotalCents, inv.Currency))
 		}

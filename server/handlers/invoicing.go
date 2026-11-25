@@ -138,14 +138,22 @@ func GetInvoicingProfileHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
 		return
 	}
+	// draft_count is how many drafts the VAT setting prices: each is worked
+	// out again with the setting on its next read (system_3 #12261, ruling 3).
+	var drafts int
+	if err := db.Model(&data_models.InvoicingInvoice{}).Where("owner_user_id = ? AND status = ?", owner, data_models.InvoiceStatusDraft).Count(&drafts).Error; err != nil {
+		log.Printf("Error counting drafts: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error retrieving profile")
+		return
+	}
 	// has_logo tells the editor whether to fetch the preview; the bytes are
 	// served by GET /invoicing/profile/logo, never in this payload.
 	if p == nil {
 		d := data_models.DefaultInvoicingProfile()
-		c.JSON(http.StatusOK, gin.H{"profile": d, "saved": false, "has_logo": logo != nil})
+		c.JSON(http.StatusOK, gin.H{"profile": d, "saved": false, "has_logo": logo != nil, "draft_count": drafts})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true, "has_logo": logo != nil})
+	c.JSON(http.StatusOK, gin.H{"profile": p, "saved": true, "has_logo": logo != nil, "draft_count": drafts})
 }
 
 // PutInvoicingProfileHandler replaces the issuer profile. The admin seeds it

@@ -162,21 +162,55 @@ func mixedCurrencies(payments []data_models.InvoicingPayment, draftCurrency stri
 		"the payments are in different currencies (%s); an invoice holds one currency, so invoice them separately", strings.Join(codes, ", "))
 }
 
-// recomputeTotals sets net, VAT and total from the line items. VAT applies
-// only when the issuer is not a Kleinunternehmerin.
+// recomputeTotals sets net, VAT and total from the line items.
 func recomputeTotals(inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem, kleinunternehmer bool) {
-	var net int64
+	var sum int64
 	for _, it := range items {
-		net += it.LineTotalCents
+		sum += it.LineTotalCents
 	}
-	inv.NetCents, inv.VatCents = net, 0
+	totalsFromLines(inv, sum, kleinunternehmer)
+}
+
+// totalsFromLines prices an invoice from what was received (system_3 #12261,
+// ruling 2): the lines are gross, so their sum is the total. With VAT on, the
+// VAT is the share of it at the invoice's rate, total × bp / (10000 + bp)
+// rounded half away from zero, and the net is the rest. A
+// Kleinunternehmerin charges none. Adding VAT on top of a net would ask for
+// more than was paid, and some totals (100,01 at 19 %) no whole-cent net
+// reaches at all.
+func totalsFromLines(inv *data_models.InvoicingInvoice, sum int64, kleinunternehmer bool) {
+	inv.NetCents, inv.VatCents, inv.TotalCents = sum, 0, sum
 	if !kleinunternehmer {
-		// net × bp / 10000, rounded half away from zero. LineTotalCents
-		// rounds q×p/1000, and vat_rate_bp is kept a multiple of 10, so
-		// bp/10 is exact and the same rounding applies.
-		inv.VatCents = data_models.LineTotalCents(net, int64(inv.VatRateBP/10))
+		inv.VatCents = vatShareOfGross(sum, int64(inv.VatRateBP))
+		inv.NetCents = sum - inv.VatCents
 	}
-	inv.TotalCents = inv.NetCents + inv.VatCents
+}
+
+// vatShareOfGross is gross × bp / (10000 + bp), rounded half away from zero.
+func vatShareOfGross(gross, bp int64) int64 {
+	d := 10000 + bp
+	p := gross * bp
+	if p >= 0 {
+		return (2*p + d) / (2 * d)
+	}
+	return -((-2*p + d) / (2 * d))
+}
+
+// draftTotalsNow works a draft's net, VAT and total out again from its lines
+// and the profile's current setting (system_3 #12261, ruling 1). A draft
+// shows what issuing would print, never a total stored under an earlier
+// setting. An issued or cancelled invoice keeps what it was issued with. It
+// writes nothing.
+func draftTotalsNow(db *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem) error {
+	if inv.Status != data_models.InvoiceStatusDraft {
+		return nil
+	}
+	klein, err := profileIsKleinunternehmer(db, owner)
+	if err != nil {
+		return err
+	}
+	recomputeTotals(inv, items, klein)
+	return nil
 }
 
 func profileIsKleinunternehmer(tx *gorm.DB, owner uint) (bool, error) {
@@ -243,6 +277,9 @@ func loadInvoiceDetail(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice
 	}
 	if items == nil {
 		items = []data_models.InvoicingLineItem{}
+	}
+	if err := draftTotalsNow(db, owner, &inv, items); err != nil {
+		return nil, err
 	}
 	if payments == nil {
 		payments = []data_models.InvoicingPayment{}
@@ -712,6 +749,42 @@ func GetInvoiceHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
+// listedDraftTotalsNow is draftTotalsNow for the drafts of a list, with one
+// read of their line sums.
+func listedDraftTotalsNow(db *gorm.DB, owner uint, rows []invoiceListRow) error {
+	var drafts []uint
+	for _, r := range rows {
+		if r.Status == data_models.InvoiceStatusDraft {
+			drafts = append(drafts, r.ID)
+		}
+	}
+	if len(drafts) == 0 {
+		return nil
+	}
+	klein, err := profileIsKleinunternehmer(db, owner)
+	if err != nil {
+		return err
+	}
+	var sums []struct {
+		InvoiceID uint
+		Sum       int64
+	}
+	if err := db.Table("invoicing_line_items").Select("invoice_id, COALESCE(SUM(line_total_cents), 0) AS sum").
+		Where("invoice_id IN (?)", drafts).Group("invoice_id").Scan(&sums).Error; err != nil {
+		return err
+	}
+	byID := make(map[uint]int64, len(sums))
+	for _, s := range sums {
+		byID[s.InvoiceID] = s.Sum
+	}
+	for i := range rows {
+		if rows[i].Status == data_models.InvoiceStatusDraft {
+			totalsFromLines(&rows[i].InvoicingInvoice, byID[rows[i].ID], klein)
+		}
+	}
+	return nil
+}
+
 type invoiceListRow struct {
 	data_models.InvoicingInvoice
 	ClientName string `json:"client_name"`
@@ -758,6 +831,10 @@ func ListInvoicesHandler(c *gin.Context) {
 	}
 	var scanned []invoiceListRow
 	if err := q.Scan(&scanned).Error; err != nil {
+		respondInvoicingInternal(c, nil, "listing invoices", err)
+		return
+	}
+	if err := listedDraftTotalsNow(db, invoicingUserID(c), scanned); err != nil {
 		respondInvoicingInternal(c, nil, "listing invoices", err)
 		return
 	}
