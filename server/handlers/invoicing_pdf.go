@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 
@@ -51,9 +52,16 @@ func storeInvoicePDF(tx *gorm.DB, inv *data_models.InvoicingInvoice, profile *da
 
 var unsafeFilenameChars = regexp.MustCompile(`[^0-9A-Za-z-]`)
 
-// GetInvoicePDFHandler serves the stored PDF of an issued (or cancelled)
-// invoice. A draft has no PDF: nothing is printed until the server has
-// assigned the number and the date.
+// GetInvoicePDFHandler serves the stored PDF of an issued invoice. A draft
+// has no PDF: nothing is printed until the server has assigned the number and
+// the date.
+//
+// A cancelled invoice is served marked (system_3 #12267): a copy of the
+// stored PDF with "STORNIERT am <Berlin day>" across every page, named
+// Rechnung-<number>-storniert.pdf. The stored bytes are not changed. When the
+// copy cannot be made the route refuses (500, cancelled_mark_failed) and never
+// falls back to the unmarked file, and the marked answer carries no
+// X-Content-SHA256: that hash names the stored bytes, which were not sent.
 func GetInvoicePDFHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	id, ok := parseInvoiceID(c)
@@ -86,9 +94,29 @@ func GetInvoicePDFHandler(c *gin.Context) {
 	if inv.InvoiceNumber != nil {
 		number = unsafeFilenameChars.ReplaceAllString(*inv.InvoiceNumber, "_")
 	}
+	if inv.Status == data_models.InvoiceStatusCancelled {
+		marked, err := markCancelledPDF(inv, stored.Content)
+		if err != nil {
+			log.Printf("Invoicing: marking cancelled invoice %d: %v", inv.ID, err)
+			respondError(c, http.StatusInternalServerError, "cancelled_mark_failed", "The marked copy could not be made.")
+			return
+		}
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="Rechnung-%s-storniert.pdf"`, number))
+		c.Data(http.StatusOK, "application/pdf", marked)
+		return
+	}
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="Rechnung-%s.pdf"`, number))
 	c.Header("X-Content-SHA256", stored.SHA256)
 	c.Data(http.StatusOK, "application/pdf", stored.Content)
+}
+
+// markCancelledPDF marks a cancelled invoice's stored PDF with the Berlin day
+// of its Storno, written as the invoice writes its dates.
+func markCancelledPDF(inv *data_models.InvoicingInvoice, stored []byte) ([]byte, error) {
+	if inv.CancelledAt == nil {
+		return nil, fmt.Errorf("cancelled invoice %d has no cancellation time", inv.ID)
+	}
+	return invoicing_pdf.MarkCancelled(stored, berlinDay(*inv.CancelledAt).Format("02.01.2006"))
 }
 
 // asUnprintable unwraps a font-coverage refusal from the renderer.

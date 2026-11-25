@@ -23,7 +23,10 @@ import (
 // only flips status/metadata, the bytes from issuing are kept as-is -- the
 // same fact ExportInvoicesZipHandler already excludes cancelled invoices
 // for), so merging one in would produce a document that reads as a valid,
-// uncancelled invoice. A refused id fails the whole request with a stated
+// uncancelled invoice. The single download now marks a cancelled invoice
+// (system_3 #12267); whether the merge and the ZIP take marked copies is a
+// separate decision, so until then a cancelled invoice is left out. A
+// refused id fails the whole request with a stated
 // reason rather than being silently skipped, so a stale client can never get
 // a shorter file than it asked for (ack D13).
 
@@ -105,7 +108,7 @@ func invoicesForMerge(db *gorm.DB, owner uint, ids []uint) ([]data_models.Invoic
 		switch inv.Status {
 		case data_models.InvoiceStatusCancelled:
 			return nil, guard(http.StatusUnprocessableEntity, "invoice_cancelled",
-				"invoice %s is cancelled; its stored PDF does not show that, so it is left out of a merged download", invoiceLabel(inv))
+				"invoice %s is cancelled; a cancelled invoice is left out.", invoiceLabel(inv))
 		case data_models.InvoiceStatusDraft:
 			return nil, guard(http.StatusUnprocessableEntity, "invoice_draft",
 				"invoice %s is a draft; it has no stored PDF yet", invoiceLabel(inv))

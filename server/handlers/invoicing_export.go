@@ -57,6 +57,15 @@ func csvDate(t *time.Time) string {
 	return t.Format(invoicingDateLayout)
 }
 
+// csvBerlinDay writes a stored UTC moment as its Berlin day, in the CSV's
+// own date form (system_3 #12267, #12269).
+func csvBerlinDay(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return berlinDay(*t).Format(invoicingDateLayout)
+}
+
 // writeCSV renders rows as a German-Excel-friendly CSV: UTF-8 BOM, ';'
 // separated.
 func writeCSV(header []string, rows [][]string) ([]byte, error) {
@@ -188,7 +197,7 @@ func invoiceCSVRow(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice) ([
 		spreadsheetSafe(number), inv.Status, csvDate(inv.IssueDate), csvDate(inv.ServiceDateFrom), csvDate(inv.ServiceDateTo),
 		spreadsheetSafe(name), spreadsheetSafe(strings.ReplaceAll(address, "\n", ", ")),
 		csvMoney(inv.NetCents), csvMoney(inv.VatCents), csvMoney(inv.TotalCents), spreadsheetSafe(inv.Currency),
-		spreadsheetSafe(strings.Join(ids, " ")), csvDate(inv.CancelledAt), spreadsheetSafe(inv.CancelReason),
+		spreadsheetSafe(strings.Join(ids, " ")), csvBerlinDay(inv.CancelledAt), spreadsheetSafe(inv.CancelReason),
 	}, nil
 }
 

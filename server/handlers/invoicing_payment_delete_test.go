@@ -174,9 +174,11 @@ func TestDeletePayment_OnACancelledInvoiceLeavesItsPDFUntouched(t *testing.T) {
 	if pdfAfter == nil || !bytes.Equal(pdfAfter.Content, pdfBefore.Content) {
 		t.Fatal("the cancelled invoice's stored PDF changed")
 	}
+	// The download is the stored PDF marked as cancelled (#12267), so it still
+	// opens after the delete.
 	served := invoicingDo(f.r, "GET", fmt.Sprintf("/invoicing/invoices/%d/pdf", id), "")
-	if served.Code != http.StatusOK || !bytes.Equal(served.Body.Bytes(), pdfBefore.Content) {
-		t.Fatalf("served PDF after delete: %d, equal %v", served.Code, bytes.Equal(served.Body.Bytes(), pdfBefore.Content))
+	if served.Code != http.StatusOK || !strings.Contains(rawPDFText(t, served.Body.Bytes()), "STORNIERTam") {
+		t.Fatalf("served PDF after delete: %d %s", served.Code, served.Header())
 	}
 	invAfter, _ := data_models.GetInvoicingInvoice(f.db, invoiceFixtureUser, id)
 	if invAfter.Status != data_models.InvoiceStatusCancelled || *invAfter.InvoiceNumber != *invBefore.InvoiceNumber || invAfter.TotalCents != invBefore.TotalCents {

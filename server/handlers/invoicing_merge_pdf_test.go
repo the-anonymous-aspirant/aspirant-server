@@ -74,7 +74,7 @@ func TestExportInvoicesMergedPDF_Refusals(t *testing.T) {
 		"non-numeric id":      {"/invoicing/export/invoices-merged.pdf?ids=abc", http.StatusBadRequest, "bad_id"},
 		"nonexistent id":      {"/invoicing/export/invoices-merged.pdf?ids=999999", http.StatusUnprocessableEntity, "invoice_not_found"},
 		"draft, not issued":   {fmt.Sprintf("/invoicing/export/invoices-merged.pdf?ids=%d", draftID), http.StatusUnprocessableEntity, "invoice_draft"},
-		"cancelled, not kept": {fmt.Sprintf("/invoicing/export/invoices-merged.pdf?ids=%d", cancelID), http.StatusUnprocessableEntity, "invoice_cancelled"},
+		"cancelled, not kept": {fmt.Sprintf("/invoicing/export/invoices-merged.pdf?ids=%d", cancelID), http.StatusUnprocessableEntity, "is cancelled; a cancelled invoice is left out."},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
