@@ -234,6 +234,12 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error saving profile")
 		return
 	}
+	// Checked against the stored profile, read under the lock (system_3
+	// #12270): a field the Save does not change is not checked.
+	if !checkProfileBounds(c, req, existing) {
+		tx.Rollback()
+		return
+	}
 	action := invoicingActionUpdate
 	if existing == nil {
 		action = invoicingActionCreate
@@ -587,8 +593,14 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"client": existing})
 }
 
-// ListInvoicingAuditEventsHandler serves the audit trail, newest first,
-// optionally narrowed with ?entity_type= and ?entity_id=.
+// ListInvoicingAuditEventsHandler serves the audit trail a page at a time,
+// newest first, optionally narrowed with ?entity_type= and ?entity_id=
+// (system_3 #12270). ?limit= sets the page size, up to
+// data_models.MaxAuditPageSize. Without it a page holds
+// data_models.DefaultAuditPageSize events, except that a read narrowed to
+// one record (?entity_id=) gets all of that record's events. ?cursor= is
+// the next_cursor an earlier page answered; next_cursor is null on the last
+// page.
 func ListInvoicingAuditEventsHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	var entityID uint
@@ -600,11 +612,42 @@ func ListInvoicingAuditEventsHandler(c *gin.Context) {
 		}
 		entityID = uint(v)
 	}
-	events, err := data_models.ListInvoicingAuditEvents(db, invoicingUserID(c), c.Query("entity_type"), entityID)
+	limit := data_models.DefaultAuditPageSize
+	if entityID > 0 {
+		limit = 0
+	}
+	if raw, ok := c.GetQuery("limit"); ok {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 1 || v > data_models.MaxAuditPageSize {
+			respondError(c, http.StatusBadRequest, "invalid_limit",
+				fmt.Sprintf("limit must be a whole number from 1 to %d", data_models.MaxAuditPageSize))
+			return
+		}
+		limit = v
+	}
+	var cursor uint
+	if raw, ok := c.GetQuery("cursor"); ok {
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil || v == 0 {
+			respondError(c, http.StatusBadRequest, "invalid_cursor", "cursor must be the next_cursor of an earlier page")
+			return
+		}
+		cursor = uint(v)
+	}
+	page, found, err := data_models.ListInvoicingAuditEventsPage(db, invoicingUserID(c), c.Query("entity_type"), entityID, limit, cursor)
 	if err != nil {
 		log.Printf("Error listing invoicing audit events: %v", err)
 		RespondWithError(c, http.StatusInternalServerError, "Error listing audit events")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"events": events})
+	if !found {
+		respondError(c, http.StatusBadRequest, "invalid_cursor", "cursor must be the next_cursor of an earlier page")
+		return
+	}
+	var next *string
+	if page.NextCursor > 0 {
+		v := strconv.FormatUint(uint64(page.NextCursor), 10)
+		next = &v
+	}
+	c.JSON(http.StatusOK, gin.H{"events": page.Events, "next_cursor": next})
 }
