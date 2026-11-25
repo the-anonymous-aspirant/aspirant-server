@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,8 +22,11 @@ import (
 // row is kept with the time it was removed. A payment also comes off any
 // draft it was on; its links to cancelled invoices stay, since a cancelled
 // invoice keeps its record and the row still exists. Restore clears the time
-// and re-links nothing. Delete for good ("purge") erases a row only once it
-// has been removed, and leaves a tombstone of its source and transaction id.
+// and puts a payment back on the drafts its latest removal took it off, each
+// that is still a draft, unsaved since, and one an invoice of it could be
+// (system_3 #12318); the answer says, for each draft, whether it went back
+// and why not. Delete for good ("purge") erases a row only once it has been
+// removed, and leaves a tombstone of its source and transaction id.
 // It erases the row's links too, a cancelled invoice's included; a numbered
 // invoice keeps its own copy of the payment, which it reads instead of the
 // row (system_3 #12266).
@@ -127,6 +131,160 @@ func draftInvoiceIDsForPayment(tx *gorm.DB, paymentID uint) ([]uint, error) {
 	return out, nil
 }
 
+// Why a restore did not put a payment back on a draft its latest removal
+// took it off (system_3 #12318, rulings 1 and 2 with the review's 1 to 3).
+const (
+	relinkDraftGone      = "draft_gone"      // deleted since
+	relinkDraftNotDraft  = "draft_issued"    // issued (or cancelled) since
+	relinkDraftChanged   = "draft_changed"   // saved since the removal
+	relinkNotInvoiceable = "not_invoiceable" // no longer a payment an invoice can cover
+)
+
+// restoredDraft is one draft of a restored payment's latest removal, and
+// whether the restore put the payment back on it.
+type restoredDraft struct {
+	InvoiceID uint   `json:"invoice_id"`
+	Relinked  bool   `json:"relinked"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// restoredPayment is a restore's answer for one payment. Drafts is empty when
+// its latest removal took it off no draft.
+type restoredPayment struct {
+	ID     uint            `json:"id"`
+	Drafts []restoredDraft `json:"drafts"`
+}
+
+// latestRemoval returns the id of the payment's latest remove event and the
+// drafts that removal took it off. Only the latest is read: an older
+// removal's drafts are never put back (review point 3). No event, or one
+// whose details were erased with an account, names no draft.
+func latestRemoval(tx *gorm.DB, owner, paymentID uint) (uint, []uint, error) {
+	var ev data_models.InvoicingAuditEvent
+	err := tx.Where("user_id = ? AND entity_type = ? AND entity_id = ? AND action = ?",
+		owner, invoicingEntityPayment, paymentID, invoicingActionRemove).Last(&ev).Error
+	if gorm.IsRecordNotFoundError(err) {
+		return 0, nil, nil
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	var d struct {
+		Drafts []uint `json:"unlinked_draft_ids"`
+	}
+	if ev.Details != "" {
+		if err := json.Unmarshal([]byte(ev.Details), &d); err != nil {
+			log.Printf("payment %d: removal %d details: %v", paymentID, ev.ID, err)
+			return ev.ID, nil, nil
+		}
+	}
+	return ev.ID, d.Drafts, nil
+}
+
+// relinkRefusal says why payment p cannot go back on draft draftID, which its
+// removal (event removalID) took it off, or "" when it can. The payment's own
+// removal is not looked at: restore asks after clearing it, the empty
+// draft's line before.
+func relinkRefusal(tx *gorm.DB, owner uint, p data_models.InvoicingPayment, removalID, draftID uint) (string, error) {
+	inv, err := data_models.GetInvoicingInvoice(tx, owner, draftID)
+	if err != nil {
+		return "", err
+	}
+	if inv == nil {
+		return relinkDraftGone, nil
+	}
+	if inv.Status != data_models.InvoiceStatusDraft {
+		return relinkDraftNotDraft, nil
+	}
+	// Saved since: ze may have taken the payment's line out, and the draft
+	// would then list a payment it no longer charges (review point 1).
+	var saves int
+	if err := tx.Model(&data_models.InvoicingAuditEvent{}).
+		Where("user_id = ? AND entity_type = ? AND entity_id = ? AND action = ? AND id > ?",
+			owner, invoicingEntityInvoice, draftID, invoicingActionUpdate, removalID).Count(&saves).Error; err != nil {
+		return "", err
+	}
+	if saves > 0 {
+		return relinkDraftChanged, nil
+	}
+	// Still a payment the draft could list (review point 2): a removed
+	// payment's category can change.
+	if p.Kind != data_models.PaymentKindIncoming || p.Category != data_models.PaymentCategoryPaidWork || isPayPalTransferIntoN26(p) {
+		return relinkNotInvoiceable, nil
+	}
+	if mixedCurrencies([]data_models.InvoicingPayment{p}, inv.Currency) != nil {
+		return relinkNotInvoiceable, nil
+	}
+	issued, err := data_models.IssuedInvoiceForPayment(tx, p.ID, draftID)
+	if err != nil {
+		return "", err
+	}
+	if issued != 0 {
+		return relinkNotInvoiceable, nil
+	}
+	return "", nil
+}
+
+// restorePaymentDrafts puts a just-restored payment back on its latest
+// removal's drafts, each that relinkRefusal passes, and answers for each.
+func restorePaymentDrafts(tx *gorm.DB, owner uint, p data_models.InvoicingPayment) (restoredPayment, error) {
+	out := restoredPayment{ID: p.ID, Drafts: []restoredDraft{}}
+	removalID, drafts, err := latestRemoval(tx, owner, p.ID)
+	if err != nil {
+		return out, err
+	}
+	for _, draftID := range ascending(drafts) {
+		// Wait for a save or an issue of the draft in flight. The issuing
+		// lock, held already, orders this against a payment_ids edit.
+		if _, err := lockInvoiceRow(tx, owner, draftID); err != nil {
+			return out, err
+		}
+		reason, err := relinkRefusal(tx, owner, p, removalID, draftID)
+		if err != nil {
+			return out, err
+		}
+		if reason == "" {
+			if err := tx.Create(&data_models.InvoicingInvoicePayment{InvoiceID: draftID, PaymentID: p.ID}).Error; err != nil {
+				return out, fmt.Errorf("relink %d to %d: %w", p.ID, draftID, err)
+			}
+		}
+		out.Drafts = append(out.Drafts, restoredDraft{InvoiceID: draftID, Relinked: reason == "", Reason: reason})
+	}
+	return out, nil
+}
+
+// restorablePaymentIDs lists the removed payments that a restore would put
+// back on an empty draft: those whose latest removal names it and that pass
+// relinkRefusal. The empty draft's line names the way back only when there
+// is one (review point 4).
+func restorablePaymentIDs(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice) ([]uint, error) {
+	var removed []data_models.InvoicingPayment
+	if err := db.Where("owner_user_id = ? AND removed_at IS NOT NULL", owner).
+		Order("id asc").Find(&removed).Error; err != nil {
+		return nil, err
+	}
+	out := []uint{}
+	for _, p := range removed {
+		removalID, drafts, err := latestRemoval(db, owner, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range drafts {
+			if d != inv.ID {
+				continue
+			}
+			reason, err := relinkRefusal(db, owner, p, removalID, d)
+			if err != nil {
+				return nil, err
+			}
+			if reason == "" {
+				out = append(out, p.ID)
+			}
+		}
+	}
+	return out, nil
+}
+
 // PaymentsRowActionHandler returns the handler for one action on payments.
 func PaymentsRowActionHandler(action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -138,7 +296,7 @@ func PaymentsRowActionHandler(action string) gin.HandlerFunc {
 		owner := invoicingUserID(c)
 		tx := db.Begin()
 		defer tx.RollbackUnlessCommitted()
-		refusal, err := applyPaymentRowAction(tx, owner, ids, action)
+		restored, refusal, err := applyPaymentRowAction(tx, owner, ids, action)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("payment %s: %v", action, err)
@@ -155,7 +313,11 @@ func PaymentsRowActionHandler(action string) gin.HandlerFunc {
 			RespondWithError(c, http.StatusInternalServerError, "Error updating payments")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"action": action, "ids": ids})
+		body := gin.H{"action": action, "ids": ids}
+		if action == rowRestore {
+			body["restored"] = restored
+		}
+		c.JSON(http.StatusOK, body)
 	}
 }
 
@@ -178,16 +340,27 @@ func issuedInvoiceRefusal(tx *gorm.DB, owner uint, p data_models.InvoicingPaymen
 		"payment %s is on issued invoice %s; cancel that invoice first", paymentLabel(p), label), nil
 }
 
-func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (*rowRefusal, error) {
+func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) ([]restoredPayment, *rowRefusal, error) {
+	payments, refusal, err := checkPaymentRowAction(tx, owner, ids, action)
+	if refusal != nil || err != nil {
+		return nil, refusal, err
+	}
+	restored, err := writePaymentRowAction(tx, owner, payments, action)
+	return restored, nil, err
+}
+
+// checkPaymentRowAction takes the locks and reads and checks every row before
+// any is written.
+func checkPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) ([]data_models.InvoicingPayment, *rowRefusal, error) {
 	// The issuing lock orders this against a draft create, a payment_ids
 	// edit or an issue that would link or freeze one of these payments, as
 	// the legacy delete does (#8409 security F1).
 	if _, err := lockIssuing(tx, owner); err != nil {
-		return nil, fmt.Errorf("issuing lock: %w", err)
+		return nil, nil, fmt.Errorf("issuing lock: %w", err)
 	}
 	for _, id := range ascending(ids) {
 		if err := lockPaymentRow(tx, owner, id); err != nil {
-			return nil, fmt.Errorf("row lock %d: %w", id, err)
+			return nil, nil, fmt.Errorf("row lock %d: %w", id, err)
 		}
 	}
 	// Read and check every row before writing any.
@@ -195,22 +368,22 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 	for _, id := range ids {
 		p, err := data_models.GetInvoicingPayment(tx, owner, id)
 		if err != nil {
-			return nil, fmt.Errorf("read %d: %w", id, err)
+			return nil, nil, fmt.Errorf("read %d: %w", id, err)
 		}
 		if p == nil {
-			return refuseRow(http.StatusNotFound, "not_found", "payment %d not found", id), nil
+			return nil, refuseRow(http.StatusNotFound, "not_found", "payment %d not found", id), nil
 		}
 		switch action {
 		case rowRemove:
 			if p.RemovedAt != nil {
-				return refuseRow(http.StatusConflict, "already_removed", "payment %s is already removed", paymentLabel(*p)), nil
+				return nil, refuseRow(http.StatusConflict, "already_removed", "payment %s is already removed", paymentLabel(*p)), nil
 			}
 			if refusal, err := issuedInvoiceRefusal(tx, owner, *p); refusal != nil || err != nil {
-				return refusal, err
+				return nil, refusal, err
 			}
 		case rowRestore, rowPurge:
 			if p.RemovedAt == nil {
-				return refuseRow(http.StatusConflict, "not_removed",
+				return nil, refuseRow(http.StatusConflict, "not_removed",
 					"payment %s is not removed; only a removed payment can be %s", paymentLabel(*p), pastTense(action)), nil
 			}
 			// Purge is the one step that cannot be undone, and it deletes
@@ -222,13 +395,18 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 			// still lists (system_3 #10647-A1, security c66061).
 			if action == rowPurge {
 				if refusal, err := issuedInvoiceRefusal(tx, owner, *p); refusal != nil || err != nil {
-					return refusal, err
+					return nil, refusal, err
 				}
 			}
 		}
 		payments = append(payments, *p)
 	}
+	return payments, nil, nil
+}
 
+// writePaymentRowAction writes an action checkPaymentRowAction passed.
+func writePaymentRowAction(tx *gorm.DB, owner uint, payments []data_models.InvoicingPayment, action string) ([]restoredPayment, error) {
+	restored := []restoredPayment{}
 	now := invoicingNow().UTC()
 	for _, p := range payments {
 		switch action {
@@ -258,7 +436,18 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 				Update("removed_at", gorm.Expr("NULL")).Error; err != nil {
 				return nil, fmt.Errorf("restore %d: %w", p.ID, err)
 			}
-			details := auditDetails(gin.H{"before": gin.H{"removed_at": p.RemovedAt}, "after": gin.H{"removed_at": nil}})
+			back, err := restorePaymentDrafts(tx, owner, p)
+			if err != nil {
+				return nil, fmt.Errorf("drafts of %d: %w", p.ID, err)
+			}
+			restored = append(restored, back)
+			relinked := []uint{}
+			for _, d := range back.Drafts {
+				if d.Relinked {
+					relinked = append(relinked, d.InvoiceID)
+				}
+			}
+			details := auditDetails(gin.H{"before": gin.H{"removed_at": p.RemovedAt}, "after": gin.H{"removed_at": nil}, "relinked_draft_ids": relinked})
 			if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionRestore, invoicingEntityPayment, p.ID, details); err != nil {
 				return nil, fmt.Errorf("audit %d: %w", p.ID, err)
 			}
@@ -284,7 +473,7 @@ func applyPaymentRowAction(tx *gorm.DB, owner uint, ids []uint, action string) (
 			}
 		}
 	}
-	return nil, nil
+	return restored, nil
 }
 
 // ExpensesRowActionHandler returns the handler for one action on expenses.

@@ -189,10 +189,14 @@ func TestRemovePayment_ComesOffItsDraftButKeepsACancelledInvoice(t *testing.T) {
 	if len(ev) == 0 || ev[0].Action != "remove" || !strings.Contains(ev[0].Details, fmt.Sprintf(`"unlinked_draft_ids":[%d]`, draftID)) {
 		t.Errorf("the remove records the draft it came off: %+v", ev)
 	}
-	// Restore re-links nothing.
-	rowAction(f, "payments", "restore", f.payments[0].ID)
-	if links, _ := data_models.InvoiceIDsForPayment(f.db, f.payments[0].ID); len(links) != 0 {
-		t.Errorf("restore must not re-link a draft: %v", links)
+	// Restore puts it back on that draft (system_3 #12318), and leaves the
+	// cancelled invoice's links as they are.
+	rowAction(f, "payments", "restore", f.payments[0].ID, f.payments[2].ID)
+	if links, _ := data_models.InvoiceIDsForPayment(f.db, f.payments[0].ID); len(links) != 1 || links[0] != draftID {
+		t.Errorf("restore puts the payment back on its draft: %v", links)
+	}
+	if kept, _ := data_models.InvoiceIDsForPayment(f.db, f.payments[2].ID); len(kept) != 1 || kept[0] != cancelled {
+		t.Errorf("restore leaves the cancelled invoice's record: %v", kept)
 	}
 }
 

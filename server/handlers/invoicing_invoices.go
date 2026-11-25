@@ -214,6 +214,11 @@ type invoiceDetail struct {
 	// ClientName is the name to show: frozen at issue once the invoice has
 	// left draft, the live client for a draft (see invoiceClientName).
 	ClientName string `json:"client_name"`
+	// RestorablePaymentIDs, on a draft that covers no payment, are the
+	// removed payments a restore would put back on it (system_3 #12318
+	// review point 4): its line names "Restore" only when one exists.
+	// Empty on every other invoice.
+	RestorablePaymentIDs []uint `json:"restorable_payment_ids"`
 }
 
 // invoiceClientName is the client name to show for an invoice. Once issued
@@ -257,8 +262,14 @@ func loadInvoiceDetail(db *gorm.DB, owner uint, inv data_models.InvoicingInvoice
 			live = cl.Name
 		}
 	}
+	restorable := []uint{}
+	if inv.Status == data_models.InvoiceStatusDraft && len(payments) == 0 {
+		if restorable, err = restorablePaymentIDs(db, owner, inv); err != nil {
+			return nil, err
+		}
+	}
 	return &invoiceDetail{Invoice: inv, LineItems: items, Payments: payments, Warnings: invoiceWarnings(inv, payments),
-		ClientName: invoiceClientName(inv, live)}, nil
+		ClientName: invoiceClientName(inv, live), RestorablePaymentIDs: restorable}, nil
 }
 
 func respondGuard(c *gin.Context, tx *gorm.DB, g *invoicingGuardError) {
@@ -715,6 +726,10 @@ func GetInvoiceHandler(c *gin.Context) {
 type invoiceListRow struct {
 	data_models.InvoicingInvoice
 	ClientName string `json:"client_name"`
+	// PaymentCount is how many payments the invoice lists, so that a month's
+	// review can leave out a draft that covers none (system_3 #12318 review
+	// point 5). A cancelled invoice keeps its links, and its count.
+	PaymentCount int `json:"payment_count"`
 }
 
 // ListInvoicesHandler lists invoices newest first, filtered by ?status=,
@@ -727,7 +742,8 @@ func ListInvoicesHandler(c *gin.Context) {
 	// The join carries the owner too: a draft pointing at another book's client
 	// id must not show that client's name or match ?q= (security c62302).
 	q := db.Table("invoicing_invoices").
-		Select("invoicing_invoices.*, COALESCE(invoicing_clients.name, '') AS client_name").
+		Select("invoicing_invoices.*, COALESCE(invoicing_clients.name, '') AS client_name, " +
+			"(SELECT COUNT(*) FROM invoicing_invoice_payments WHERE invoicing_invoice_payments.invoice_id = invoicing_invoices.id) AS payment_count").
 		Joins("LEFT JOIN invoicing_clients ON invoicing_clients.id = invoicing_invoices.client_id AND invoicing_clients.owner_user_id = invoicing_invoices.owner_user_id").
 		Where("invoicing_invoices.owner_user_id = ?", invoicingUserID(c)).
 		Order("invoicing_invoices.issue_date desc, invoicing_invoices.id desc")
