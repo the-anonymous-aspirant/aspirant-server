@@ -28,7 +28,7 @@ func setupInvoicingDB(t *testing.T) *gorm.DB {
 	}
 	db.AutoMigrate(&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{},
 		&data_models.InvoicingInvoice{}, &data_models.InvoicingLineItem{}, &data_models.InvoicingInvoicePayment{},
-		&data_models.InvoicingInvoicePDF{}, &data_models.InvoicingProfileLogo{})
+		&data_models.InvoicingInvoicePDF{}, &data_models.InvoicingProfileLogo{}, &data_models.InvoicingInvoicePaymentCopy{})
 	if err := data_models.EnsureInvoicingOwnerLockTable(db); err != nil {
 		t.Fatalf("lock table: %v", err)
 	}

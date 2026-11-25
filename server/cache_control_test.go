@@ -43,7 +43,7 @@ func cacheRouter(t *testing.T) *gin.Engine {
 	db.AutoMigrate(&data_models.User{}, &data_models.SiteSetting{},
 		&data_models.InvoicingProfile{}, &data_models.InvoicingClient{}, &data_models.InvoicingAuditEvent{},
 		&data_models.InvoicingPayment{}, &data_models.InvoicingInvoice{}, &data_models.InvoicingLineItem{},
-		&data_models.InvoicingInvoicePayment{}, &data_models.InvoicingInvoicePDF{}, &data_models.InvoicingProfileLogo{},
+		&data_models.InvoicingInvoicePayment{}, &data_models.InvoicingInvoicePDF{}, &data_models.InvoicingProfileLogo{}, &data_models.InvoicingInvoicePaymentCopy{},
 		&data_models.InvoicingExpense{}, &data_models.InvoicingExpenseCategory{}, &data_models.InvoicingExpenseReceipt{},
 		&data_models.InvoicingExpenseTombstone{}, &data_models.InvoicingPaymentTombstone{},
 		&data_models.InvoicingBookSelection{}, &data_models.InvoicingBookPreset{}, &data_models.InvoicingImportFailure{})

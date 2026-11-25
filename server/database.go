@@ -270,6 +270,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&data_models.InvoicingBookSelection{},     // #10555-A3: what the Book counts, and zir presets
 		&data_models.InvoicingBookPreset{},
 		&data_models.InvoicingInvoicePDF{},
+		// #12266: a numbered invoice's own record of its payments.
+		&data_models.InvoicingInvoicePaymentCopy{},
 		&data_models.InvoicingProfileLogo{}, // #9858: the issuer's logo
 	); err != nil {
 		return fmt.Errorf("migrating invoicing tables: %w", err)

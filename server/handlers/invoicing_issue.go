@@ -315,6 +315,12 @@ func IssueInvoiceHandler(c *gin.Context) {
 		respondInvoicingInternal(c, tx, "rendering the invoice PDF", err)
 		return
 	}
+	// The invoice keeps its own copy of the payments it covers, so its record
+	// does not change once a Storno frees them (system_3 #12266).
+	if err := data_models.CopyInvoicePayments(tx, inv.ID); err != nil {
+		respondInvoicingInternal(c, tx, "issuing invoice", err)
+		return
+	}
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionIssue, invoicingEntityInvoice, inv.ID,
 		auditDetails(gin.H{"invoice_number": invoiceNumber, "issue_date": issueDate.Format(invoicingDateLayout), "total_cents": inv.TotalCents, "pdf_sha256": pdfSHA, "logo_sha256": logoSHA})); err != nil {
 		respondInvoicingInternal(c, tx, "issuing invoice", err)
@@ -384,6 +390,13 @@ func CancelInvoiceHandler(c *gin.Context) {
 	}
 	if res.RowsAffected != 1 {
 		respondGuard(c, tx, guard(http.StatusConflict, "not_issued", "invoice %d is no longer issued", inv.ID))
+		return
+	}
+	// The Storno frees the payments, so an invoice issued before it kept its
+	// own copy takes one now, while they are still as they were at issue
+	// (system_3 #12266). One that has a copy keeps it.
+	if err := data_models.CopyInvoicePayments(tx, inv.ID); err != nil {
+		respondInvoicingInternal(c, tx, "cancelling invoice", err)
 		return
 	}
 	if err := data_models.RecordInvoicingAuditEvent(tx, userID, invoicingActionCancel, invoicingEntityInvoice, inv.ID,
