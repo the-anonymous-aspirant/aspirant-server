@@ -513,6 +513,14 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 			bad(f, err)
 			return
 		}
+		// A service date before 2000 is a mistyped year ("26" for 2026), as
+		// it is for a payment's date; it is refused before it can be issued
+		// (system_3 #12312 ruling 3). A date after today stays allowed on a
+		// draft: the ceiling is the issue's.
+		if d != nil && d.Before(earliestPaymentDate) {
+			respondGuard(c, tx, guard(http.StatusBadRequest, "service_date_invalid", "%s must be 2000-01-01 or later", f))
+			return
+		}
 		if f == "service_date_from" {
 			inv.ServiceDateFrom = d
 		} else {
