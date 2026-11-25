@@ -454,3 +454,74 @@ func TestInvoicingOwner_InvoicesAreSeparate(t *testing.T) {
 		t.Errorf("the list shows another book's client name: %s", body)
 	}
 }
+
+// Security's follow-up on PR 251 (c77072 on #12306): the profile's
+// next_numbers reads only the caller's own book. Two owners issue under the
+// same prefix with different counts, and one also under a prefix of its own;
+// each GET holds only its own prefixes and counts.
+func TestInvoicingOwner_NextNumbersAreSeparate(t *testing.T) {
+	f := newInvoiceFixture(t) // user 9's book: profile under "2026", payments
+	f.issue(f.draft(t, 0))
+	f.issue(f.draft(t, 1)) // user 9: 2026-001, 2026-002
+
+	const other uint = 10
+	r10 := setupInvoiceRouter(f.db, other)
+	if w := invoicingDo(r10, "PUT", "/invoicing/profile", validProfileBody); w.Code != http.StatusOK {
+		t.Fatalf("user 10 profile: %d %s", w.Code, w.Body.String())
+	}
+	w := invoicingDo(r10, "POST", "/invoicing/clients", `{"name":"Zehn Kunde","address":"Zehnweg 10\n10115 Berlin"}`)
+	var cl struct {
+		Client data_models.InvoicingClient `json:"client"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &cl); err != nil || cl.Client.ID == 0 {
+		t.Fatalf("user 10 client: %v %s", err, w.Body.String())
+	}
+	cid := cl.Client.ID
+	issue10 := func(txn string) string {
+		t.Helper()
+		pay := data_models.InvoicingPayment{OwnerUserID: other, Source: "paypal", TransactionID: txn, Kind: "incoming",
+			PaidOn: f.payments[0].PaidOn, Currency: "EUR", GrossCents: 10000, Note: "Work 10", Category: "paid_work", ClientID: &cid}
+		if err := f.db.Create(&pay).Error; err != nil {
+			t.Fatalf("seed user 10 payment: %v", err)
+		}
+		w := invoicingDo(r10, "POST", "/invoicing/invoices", fmt.Sprintf(`{"payment_ids":[%d]}`, pay.ID))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("user 10 draft: %d %s", w.Code, w.Body.String())
+		}
+		id := decodeDetail(t, w.Body.Bytes()).Invoice.ID
+		w = invoicingDo(r10, "POST", fmt.Sprintf("/invoicing/invoices/%d/issue", id), "")
+		d := decodeDetail(t, w.Body.Bytes())
+		if w.Code != http.StatusOK || d.Invoice.InvoiceNumber == nil {
+			t.Fatalf("user 10 issue: %d %s", w.Code, w.Body.String())
+		}
+		return *d.Invoice.InvoiceNumber
+	}
+	if n := issue10("TX10A"); n != "2026-001" {
+		t.Fatalf("user 10's first invoice = %s, want 2026-001 in its own book", n)
+	}
+	own := strings.Replace(validProfileBody, `"2026"`, `"ZEHN"`, 1)
+	if w := invoicingDo(r10, "PUT", "/invoicing/profile", own); w.Code != http.StatusOK {
+		t.Fatalf("user 10 new prefix: %d %s", w.Code, w.Body.String())
+	}
+	if n := issue10("TX10B"); n != "ZEHN-001" {
+		t.Fatalf("user 10's second invoice = %s, want ZEHN-001", n)
+	}
+
+	read := func(r *gin.Engine) map[string]int {
+		t.Helper()
+		w := invoicingDo(r, "GET", "/invoicing/profile", "")
+		var resp struct {
+			NextNumbers map[string]int `json:"next_numbers"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); w.Code != http.StatusOK || err != nil || resp.NextNumbers == nil {
+			t.Fatalf("GET profile: %d %v %s", w.Code, err, w.Body.String())
+		}
+		return resp.NextNumbers
+	}
+	if got := read(f.r); len(got) != 1 || got["2026"] != 3 {
+		t.Errorf("user 9's next_numbers = %v, want map[2026:3] (its own two, none of user 10's)", got)
+	}
+	if got := read(r10); len(got) != 2 || got["2026"] != 2 || got["ZEHN"] != 2 {
+		t.Errorf("user 10's next_numbers = %v, want map[2026:2 ZEHN:2]", got)
+	}
+}
