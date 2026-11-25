@@ -254,10 +254,10 @@ func n26CSVInternalRow(row n26CSVRow, accounts map[string]bool) bool {
 // scanN26CSV reads the export's money-in rows as payment candidates and its
 // money-out rows as expense candidates, leaving out zero-amount rows and the
 // internal Space transfers, which it counts.
-func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error) {
+func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, n26RowSkips, error) {
 	rows, lang, err := readN26CSV(text)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, n26RowSkips{}, err
 	}
 	accounts := map[string]bool{}
 	for _, row := range rows {
@@ -268,7 +268,7 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 
 	var in []n26Candidate
 	var out []n26ExpenseCandidate
-	skippedInternal := 0
+	var skipped n26RowSkips
 	counts := map[string]int{}
 	// The id hashes every field that tells two rows apart, plus the row's
 	// occurrence number among identical tuples, so two genuinely separate
@@ -284,10 +284,11 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 
 	for _, row := range rows {
 		if row.cents == 0 {
+			skipped.Zero++
 			continue
 		}
 		if n26CSVInternalRow(row, accounts) {
-			skippedInternal++
+			skipped.Internal++
 			continue
 		}
 		id := rowID(row)
@@ -321,7 +322,7 @@ func scanN26CSV(text string) ([]n26Candidate, []n26ExpenseCandidate, int, error)
 			fitN26Expense(&out[len(out)-1])
 		}
 	}
-	return in, out, skippedInternal, nil
+	return in, out, skipped, nil
 }
 
 // n26CSVSenderIBAN is the row's partner IBAN in NormaliseIBAN's form, or ""
@@ -391,11 +392,11 @@ func parseN26CSVExpenses(text string) ([]n26ExpenseCandidate, error) {
 }
 
 func parseN26CSVSkipped(text string) (map[string]int, error) {
-	_, _, internal, err := scanN26CSV(text)
-	if err != nil || internal == 0 {
+	_, _, skipped, err := scanN26CSV(text)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]int{n26SkipInternalTransfer: internal}, nil
+	return skipped.reasons(), nil
 }
 
 // n26CSVStrategy is the CSV export's strategy. It is not in n26Strategies,

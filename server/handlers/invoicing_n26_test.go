@@ -736,8 +736,12 @@ func TestN26StatementContinuationLinesFollowEitherDirection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if skipped != 0 {
-		t.Errorf("the Italian layout has no internal-transfer skip concept: got %d", skipped)
+	if skipped.Internal != 0 {
+		t.Errorf("the Italian layout has no internal-transfer skip concept: got %d", skipped.Internal)
+	}
+	// The 0.00 row is counted, not dropped (system_3 #12271).
+	if skipped.Zero != 1 {
+		t.Errorf("rows of 0.00: %d, want 1", skipped.Zero)
 	}
 	if len(in) != 2 || len(out) != 2 {
 		t.Fatalf("got %d in, %d out, want 2 and 2: %+v %+v", len(in), len(out), in, out)
@@ -1057,8 +1061,8 @@ func TestN26ParseKontoaktivitaetSkipsSpaceSummaryPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if len(in) != 1 || len(out) != 0 || skipped != 0 {
-		t.Fatalf("got %d in, %d out, %d skipped, want 1, 0, 0: %+v", len(in), len(out), skipped, in)
+	if len(in) != 1 || len(out) != 0 || skipped.Internal != 0 {
+		t.Fatalf("got %d in, %d out, %d skipped, want 1, 0, 0: %+v", len(in), len(out), skipped.Internal, in)
 	}
 	if in[0].SenderName != "Mara Beispiel" || in[0].GrossCents != 25000 || in[0].PaidOn != "2026-11-04" {
 		t.Errorf("the one real row: %+v", in[0])
@@ -1099,8 +1103,8 @@ func TestN26StatementMixedDetailBlocksDE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if len(in) != 2 || len(out) != 1 || skipped != 1 {
-		t.Fatalf("got %d in, %d out, %d skipped, want 2, 1, 1: %+v %+v", len(in), len(out), skipped, in, out)
+	if len(in) != 2 || len(out) != 1 || skipped.Internal != 1 || skipped.Zero != 1 {
+		t.Fatalf("got %d in, %d out, %+v skipped, want 2, 1, 1 internal and 1 of 0.00: %+v %+v", len(in), len(out), skipped, in, out)
 	}
 	if in[0].Note != "Vorschuss Wandbild" || in[1].Note != "" {
 		t.Errorf("incoming notes: %q, %q", in[0].Note, in[1].Note)
@@ -1165,8 +1169,8 @@ func TestN26StatementRealTypeVocabularyDE(t *testing.T) {
 	}
 	wantIn := []string{"Lia Beispiel", "BEISPIEL KINO"}
 	wantOut := []string{"Beispiel Vermieter", "Lia Beispiel", "BEISPIEL KINO", "Beispiel Neu", "Beispiel Versicherung"}
-	if fmt.Sprint(inNames) != fmt.Sprint(wantIn) || fmt.Sprint(outNames) != fmt.Sprint(wantOut) || skipped != 5 {
-		t.Fatalf("in %v (want %v), out %v (want %v), skipped %d (want 5)", inNames, wantIn, outNames, wantOut, skipped)
+	if fmt.Sprint(inNames) != fmt.Sprint(wantIn) || fmt.Sprint(outNames) != fmt.Sprint(wantOut) || skipped.Internal != 5 {
+		t.Fatalf("in %v (want %v), out %v (want %v), skipped %d (want 5)", inNames, wantIn, outNames, wantOut, skipped.Internal)
 	}
 	if out[0].Note != "Miete Atelier" || out[4].Note != "Police 77" || in[0].Note != "Farben geteilt" {
 		t.Errorf("a type line or IBAN leaked into a note, or a reference was lost: %q %q %q", out[0].Note, out[4].Note, in[0].Note)

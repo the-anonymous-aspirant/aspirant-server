@@ -64,8 +64,8 @@ func TestN26CSVParse(t *testing.T) {
 	}
 
 	// Both halves of the main-to-Space transfer, and nothing else.
-	if internal != 2 {
-		t.Errorf("space transfers: %d, want 2", internal)
+	if internal.Internal != 2 {
+		t.Errorf("space transfers: %d, want 2", internal.Internal)
 	}
 }
 
@@ -105,8 +105,18 @@ func TestN26CSVSkippedCounts(t *testing.T) {
 	if len(f.Candidates) != 2 || len(f.ExpenseCandidates) != 5 {
 		t.Errorf("candidates %d, expense candidates %d", len(f.Candidates), len(f.ExpenseCandidates))
 	}
-	if f.Skipped[n26SkipInternalTransfer] != 2 || f.Skipped[n26SkipPayPalTransfer] != 1 || len(f.Skipped) != 2 {
+	if f.Skipped[n26SkipInternalTransfer] != 2 || f.Skipped[n26SkipPayPalTransfer] != 1 ||
+		f.Skipped[n26SkipZeroAmount] != 1 || len(f.Skipped) != 3 {
 		t.Errorf("skipped %+v", f.Skipped)
+	}
+	// Every data row of the file is in one part of the answer (system_3
+	// #12271): the 0.00 row too, which was dropped without a count.
+	sum := len(f.Candidates) + len(f.ExpenseCandidates)
+	for _, n := range f.Skipped {
+		sum += n
+	}
+	if sum != 11 {
+		t.Errorf("the answer accounts for %d of the file's 11 data rows", sum)
 	}
 }
 
@@ -136,8 +146,8 @@ func TestN26CSVHeaders(t *testing.T) {
 	}
 	cw.Flush()
 	rin, rout, rinternal, err := scanN26CSV(buf.String())
-	if err != nil || len(rin) != 3 || len(rout) != 5 || rinternal != 2 || rin[0].SenderName != "Mara Esempio" || rin[0].GrossCents != 120000 {
-		t.Errorf("reversed columns: %v in=%d out=%d internal=%d %+v", err, len(rin), len(rout), rinternal, rin)
+	if err != nil || len(rin) != 3 || len(rout) != 5 || rinternal.Internal != 2 || rin[0].SenderName != "Mara Esempio" || rin[0].GrossCents != 120000 {
+		t.Errorf("reversed columns: %v in=%d out=%d internal=%d %+v", err, len(rin), len(rout), rinternal.Internal, rin)
 	}
 
 	// Headers in a language the table does not know fail with the named

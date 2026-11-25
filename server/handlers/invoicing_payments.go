@@ -56,6 +56,12 @@ type invoicingImportSummary struct {
 	// owner had removed, or deleted for good. This import has no review, so
 	// its summary is the only place a removed PayPal payment can be named.
 	priorCounts
+	// Differing names the rows, by transaction id, that are already in the
+	// book under the same id with another amount, currency or date (system_3
+	// #12271). They count among Duplicates and the stored row is kept: the
+	// summary says so rather than nothing. Only a payment in the book is
+	// compared; a removed or deleted one is not in it.
+	Differing []string `json:"differing,omitempty"`
 }
 
 // importErrorResponse is the usual error body plus, when a copy of the
@@ -83,6 +89,20 @@ var (
 	ole2Signature = []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}
 )
 
+// payPalRowDiffersFromStored reports whether the payment in the book under
+// row's transaction id has another amount, currency or date than row. The
+// day is compared, not the instant: both are dates.
+func payPalRowDiffersFromStored(tx *gorm.DB, owner uint, row paypalRow) (bool, error) {
+	var stored data_models.InvoicingPayment
+	err := tx.Where("owner_user_id = ? AND source = ? AND transaction_id = ? AND removed_at IS NULL",
+		owner, invoicingPaymentSourcePayPal, row.TransactionID).First(&stored).Error
+	if err != nil {
+		return false, err
+	}
+	return stored.GrossCents != row.GrossCents || stored.Currency != row.Currency ||
+		stored.PaidOn.Format("2006-01-02") != row.PaidOn.Format("2006-01-02"), nil
+}
+
 // ImportPayPalPaymentsHandler takes a PayPal activity CSV or Excel (.xlsx)
 // file (multipart field "file", optional form value date_order=dmy|mdy) and
 // stores its incoming payments and withdrawals. The format is read from the
@@ -98,7 +118,7 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	userID := invoicingUserID(c)
 	if fh.Size > maxPayPalImportBytes {
 		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "too_large", "", 0)
-		RespondWithError(c, http.StatusRequestEntityTooLarge, "The file is larger than 5 MB")
+		respondImportError(c, http.StatusRequestEntityTooLarge, "too_large", "This file is larger than 5 MB.", nil)
 		return
 	}
 	f, err := fh.Open()
@@ -111,10 +131,17 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 	data, err := io.ReadAll(io.LimitReader(f, maxPayPalImportBytes+1))
 	if err != nil || len(data) > maxPayPalImportBytes {
 		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "too_large", "", 0)
-		RespondWithError(c, http.StatusRequestEntityTooLarge, "The file is larger than 5 MB")
+		respondImportError(c, http.StatusRequestEntityTooLarge, "too_large", "This file is larger than 5 MB.", nil)
 		return
 	}
 
+	// An empty file is said so, not answered with the parser's "could not
+	// read the header row: EOF" (system_3 #12271).
+	if len(bytes.TrimSpace(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")))) == 0 {
+		recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, nil, "empty_file", "", 0)
+		respondImportError(c, http.StatusBadRequest, "empty_file", "This file is empty.", nil)
+		return
+	}
 	if bytes.HasPrefix(data, ole2Signature) {
 		expires := recordImportFailure(db, userID, "paypal", fh.Filename, fh.Size, data, "xls_unsupported", "", 0)
 		respondImportError(c, http.StatusBadRequest, "xls_unsupported",
@@ -177,6 +204,18 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			return
 		}
 		summary.count(prior)
+		if prior == data_models.PriorStored {
+			differs, err := payPalRowDiffersFromStored(tx, invoicingUserID(c), row)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error comparing payment %s: %v", row.TransactionID, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+				return
+			}
+			if differs {
+				summary.Differing = append(summary.Differing, row.TransactionID)
+			}
+		}
 		exists := prior.Seen()
 		if !exists {
 			// The same PayPal payment may already have been entered by hand
