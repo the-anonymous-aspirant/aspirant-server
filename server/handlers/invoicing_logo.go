@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,11 +32,12 @@ func PutInvoicingLogoHandler(c *gin.Context) {
 
 	file, err := c.FormFile("logo")
 	if err != nil {
-		RespondWithError(c, http.StatusBadRequest, "No logo file received")
+		respondFieldRefusal(c, "logo", refuseWhole(codeMissingFile, "No logo file received"))
 		return
 	}
 	if file.Size > invoicing_pdf.MaxLogoBytes {
-		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("the logo is larger than %d MB", invoicing_pdf.MaxLogoBytes>>20))
+		respondFieldRefusal(c, "logo", &refusal{code: codeFileTooLarge, limit: invoicing_pdf.MaxLogoBytes >> 20, whole: true,
+			message: fmt.Sprintf("the logo is larger than %d MB", invoicing_pdf.MaxLogoBytes>>20)})
 		return
 	}
 	f, err := file.Open()
@@ -51,8 +53,10 @@ func PutInvoicingLogoHandler(c *gin.Context) {
 	}
 
 	logo, err := invoicing_pdf.NormalizeLogo(raw)
-	if invoicing_pdf.IsLogoError(err) {
-		RespondWithError(c, http.StatusBadRequest, err.Error())
+	var le *invoicing_pdf.LogoError
+	if errors.As(err, &le) {
+		respondFieldRefusal(c, "logo", &refusal{code: le.Code, message: le.Error(), whole: true,
+			limit: le.Limit, width: le.Width, height: le.Height})
 		return
 	}
 	if err != nil {

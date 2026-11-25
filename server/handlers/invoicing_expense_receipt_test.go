@@ -230,6 +230,25 @@ func TestInvoicingExpenseReceipt_RejectsOversizeAndUnsupportedType(t *testing.T)
 		t.Fatalf("mislabeled text/plain upload: %d, want 400", w.Code)
 	}
 
+	// Each cause its own code at the receipt (system_3 #12300).
+	for _, tc := range []struct {
+		name, filename string
+		content        []byte
+		code           string
+		limit          int64
+	}{
+		{"oversize", "big.pdf", big, codeFileTooLarge, maxReceiptBytes >> 20},
+		{"text", "note.txt", []byte("not a receipt"), codeUnsupportedType, 0},
+		{"empty", "empty.pdf", []byte{}, codeEmptyFile, 0},
+		{"no file", "", nil, codeMissingFile, 0},
+	} {
+		w := uploadReceipt(r, int(e.ID), tc.filename, tc.content, "")
+		var env refusalEnvelope
+		if json.Unmarshal(w.Body.Bytes(), &env) != nil || w.Code != http.StatusBadRequest || env.Error.Code != tc.code || env.Error.Field != "receipt" || env.Error.Limit != tc.limit {
+			t.Errorf("%s: %d %s; want %s limit %d at the receipt", tc.name, w.Code, w.Body.String(), tc.code, tc.limit)
+		}
+	}
+
 	// Positive control: nothing got through any of the refused uploads.
 	if w := invoicingDo(r, "GET", fmt.Sprintf("/invoicing/expenses/%d/receipt", e.ID), ""); w.Code != http.StatusNotFound {
 		t.Fatalf("GET after only-refused uploads: %d, want 404", w.Code)

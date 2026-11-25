@@ -3,6 +3,7 @@ package invoicing_pdf
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -169,28 +170,35 @@ func TestNormalizeLogo_Refusals(t *testing.T) {
 	if err := gif.Encode(&gifBuf, image.NewPaletted(image.Rect(0, 0, 4, 4), []color.Color{color.Black, color.White}), nil); err != nil {
 		t.Fatal(err)
 	}
+	// Each cause its own code, and the figures its sentence prints
+	// (system_3 #12300, c77188 group 2).
 	cases := []struct {
-		name string
-		raw  []byte
-		want string
+		name, want, code string
+		raw              []byte
+		limit            int64
+		w, h             int
 	}{
-		{"empty", nil, "empty"},
-		{"gif", gifBuf.Bytes(), "PNG or JPEG"},
-		{"text", []byte("<svg xmlns='http://www.w3.org/2000/svg'/>"), "PNG or JPEG"},
-		{"fully transparent", encodePNG(t, inkOnCanvas(50, 50, image.Rectangle{})), "fully transparent"},
-		{"over the pixel cap", hugeHeaderPNG(t, 20000, 20000), "20000×20000"},
-		{"over the side cap", hugeHeaderPNG(t, 9000, 10), "9000×10"},
-		{"truncated", encodePNG(t, inkOnCanvas(50, 50, image.Rect(0, 0, 50, 50)))[:60], "could not be read"},
-		{"over the byte cap", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, MaxLogoBytes)...), "larger than 5 MB"},
+		{"empty", "empty", LogoEmpty, nil, 0, 0, 0},
+		{"gif", "PNG or JPEG", LogoUnsupportedType, gifBuf.Bytes(), 0, 0, 0},
+		{"text", "PNG or JPEG", LogoUnsupportedType, []byte("<svg xmlns='http://www.w3.org/2000/svg'/>"), 0, 0, 0},
+		{"fully transparent", "fully transparent", LogoNoVisiblePixels, encodePNG(t, inkOnCanvas(50, 50, image.Rectangle{})), 0, 0, 0},
+		{"over the pixel cap", "20000×20000", LogoTooManyPixels, hugeHeaderPNG(t, 20000, 20000), MaxLogoSide, 20000, 20000},
+		{"over the side cap", "9000×10", LogoTooManyPixels, hugeHeaderPNG(t, 9000, 10), MaxLogoSide, 9000, 10},
+		{"truncated", "could not be read", LogoUnreadable, encodePNG(t, inkOnCanvas(50, 50, image.Rect(0, 0, 50, 50)))[:60], 0, 0, 0},
+		{"over the byte cap", "larger than 5 MB", LogoTooLarge, append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, MaxLogoBytes)...), 5, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NormalizeLogo(tc.raw)
-			if !IsLogoError(err) {
+			var le *LogoError
+			if !IsLogoError(err) || !errors.As(err, &le) {
 				t.Fatalf("got %v, want a LogoError", err)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("message %q does not name %q", err.Error(), tc.want)
+			}
+			if le.Code != tc.code || le.Limit != tc.limit || le.Width != tc.w || le.Height != tc.h {
+				t.Errorf("got %q limit %d %d×%d, want %q %d %d×%d", le.Code, le.Limit, le.Width, le.Height, tc.code, tc.limit, tc.w, tc.h)
 			}
 		})
 	}

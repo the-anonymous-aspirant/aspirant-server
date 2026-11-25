@@ -61,6 +61,10 @@ type ErrorDetail struct {
 	// Item is the 1-based position of the list entry the refusal is about
 	// (a draft's line item).
 	Item int `json:"item,omitempty"`
+	// Width and Height are an image's size in pixels, where its refusal
+	// names it (a logo too large).
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 }
 
 type ErrorResponse struct {
