@@ -11,7 +11,8 @@ import (
 
 // system_3 #12312 ruling 3: a draft's service dates take a payment date's
 // floor, 2000-01-01, on save. A date after today stays allowed on a draft
-// (the review's point 1: the ceiling is the issue's).
+// (the review's point 1: the ceiling is the issue's). It answers a payment
+// date's code, with the field and the year (#12300).
 func TestDraftSave_RefusesAServiceDateBefore2000(t *testing.T) {
 	f := newInvoiceFixture(t)
 	id := f.draft(t, 0)
@@ -30,9 +31,9 @@ func TestDraftSave_RefusesAServiceDateBefore2000(t *testing.T) {
 		{"until", `{"service_date_to":"1999-12-31"}`, "service_date_to"},
 	} {
 		w := invoicingDo(f.r, "PUT", path, tc.body)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "service_date_invalid") ||
-			!strings.Contains(w.Body.String(), tc.field+" must be 2000-01-01 or later") {
-			t.Fatalf("%s: %d %s", tc.name, w.Code, w.Body.String())
+		assertRefusal(t, tc.name, w, codeDateTooEarly, tc.field, 2000)
+		if !strings.Contains(w.Body.String(), tc.field+" must be 2000-01-01 or later") {
+			t.Fatalf("%s: the sentence changed: %s", tc.name, w.Body.String())
 		}
 		after := stored()
 		if !after.ServiceDateFrom.Equal(*before.ServiceDateFrom) || !after.ServiceDateTo.Equal(*before.ServiceDateTo) {
