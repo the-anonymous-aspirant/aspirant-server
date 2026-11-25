@@ -31,6 +31,9 @@ func (InvoicingExpenseReceipt) TableName() string { return "invoicing_expense_re
 // is attached. Scoped by owner so a receipt never answers for an expense
 // that belongs to someone else's book.
 func GetInvoicingExpenseReceipt(db *gorm.DB, owner, expenseID uint) (*InvoicingExpenseReceipt, error) {
+	if !InvoicingIDInRange(expenseID) {
+		return nil, nil
+	}
 	var r InvoicingExpenseReceipt
 	err := db.Where("expense_id = ? AND owner_user_id = ?", expenseID, owner).First(&r).Error
 	if err == gorm.ErrRecordNotFound {

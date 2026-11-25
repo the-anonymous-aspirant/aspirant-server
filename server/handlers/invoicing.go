@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/mail"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -173,6 +174,14 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	req.Email = strings.TrimSpace(req.Email)
 	req.Phone = strings.TrimSpace(req.Phone)
 	req.InvoiceNumberPrefix = strings.TrimSpace(req.InvoiceNumberPrefix)
+	if field := firstNULField(map[string]string{
+		"full_name": req.FullName, "address": req.Address, "steuernummer": req.Steuernummer, "email": req.Email,
+		"phone": req.Phone, "instagram_url": req.InstagramURL, "telegram_url": req.TelegramURL,
+		"invoice_number_prefix": req.InvoiceNumberPrefix,
+	}); field != "" {
+		respondNULRefusal(c, field)
+		return
+	}
 
 	if req.FullName == "" || req.Address == "" {
 		RespondWithError(c, http.StatusBadRequest, "full_name and address are required")
@@ -199,6 +208,10 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	}
 	if *req.NextInvoiceNumber < 1 {
 		RespondWithError(c, http.StatusBadRequest, "next_invoice_number must be at least 1")
+		return
+	}
+	if *req.NextInvoiceNumber > data_models.MaxInvoiceNumber {
+		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("next_invoice_number must be at most %d", data_models.MaxInvoiceNumber))
 		return
 	}
 
@@ -398,6 +411,30 @@ func otherClientNamed(tx *gorm.DB, owner uint, name string, except uint) (*data_
 // itself and returns ok=false on any problem. The name is required. The
 // address is optional: an invoice up to 250 EUR gross needs none (§33 UStDV),
 // and issuing enforces it above that (system_3 #9835).
+// firstNULField names the first field, in name order, that holds a NUL
+// character, or "" when none does. Postgres cannot store a NUL in text, so
+// such a request answered 500 (system_3 #12268, the #11498 review's C3-14).
+// The hand entries refuse every control character already (hasControlChars);
+// the client and profile take free text with line breaks, so they refuse the
+// one character that cannot be stored.
+func firstNULField(fields map[string]string) string {
+	names := make([]string, 0, len(fields))
+	for name, v := range fields {
+		if strings.ContainsRune(v, 0) {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return names[0]
+}
+
+func respondNULRefusal(c *gin.Context, field string) {
+	respondError(c, http.StatusBadRequest, "invalid_field", field+" must not hold a NUL character")
+}
+
 func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	var req invoicingClientRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -412,6 +449,21 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	// A NUL cannot be stored: say so, never a 500 (system_3 #12264).
 	if strings.ContainsRune(req.Notes, 0) {
 		respondError(c, http.StatusBadRequest, "invalid_notes", "The notes have a character that cannot be stored. Remove it.")
+		return req, false
+	}
+	// Every other text field: a NUL is refused by name (system_3 #12268).
+	// The name, the address and the notes keep #12264's own sentences: the
+	// notes above, the name and the address in checkClientNameAndAddress,
+	// whose control-character rule covers a NUL.
+	fields := map[string]string{
+		"email": req.Email, "paypal_email": req.PayPalEmail,
+		"phone": req.Phone, "instagram_url": req.InstagramURL, "telegram_url": req.TelegramURL,
+	}
+	if req.IBAN != nil {
+		fields["iban"] = *req.IBAN
+	}
+	if field := firstNULField(fields); field != "" {
+		respondNULRefusal(c, field)
 		return req, false
 	}
 	if utf8.RuneCountInString(req.Notes) > maxClientNotesRunes {

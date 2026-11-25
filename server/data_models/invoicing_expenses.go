@@ -175,6 +175,9 @@ func FindExpenseCategoryFold(db *gorm.DB, owner uint, name string) (*InvoicingEx
 // GetExpenseCategory returns the owner's category by id, or nil when the id
 // is unknown or belongs to another book.
 func GetExpenseCategory(db *gorm.DB, owner, id uint) (*InvoicingExpenseCategory, error) {
+	if !InvoicingIDInRange(id) {
+		return nil, nil
+	}
 	return firstExpenseCategory(db.Where("owner_user_id = ? AND id = ?", owner, id))
 }
 
@@ -335,6 +338,9 @@ func ListRemovedInvoicingExpenses(db *gorm.DB, owner uint) ([]InvoicingExpense, 
 // GetInvoicingExpense returns the owner's expense, or nil when the id is
 // unknown or belongs to another book.
 func GetInvoicingExpense(db *gorm.DB, owner, id uint) (*InvoicingExpense, error) {
+	if !InvoicingIDInRange(id) {
+		return nil, nil
+	}
 	var e InvoicingExpense
 	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&e).Error
 	if err == gorm.ErrRecordNotFound {

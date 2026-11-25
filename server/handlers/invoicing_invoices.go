@@ -861,7 +861,12 @@ func ListInvoicesHandler(c *gin.Context) {
 			RespondWithError(c, http.StatusBadRequest, "Invalid client_id")
 			return
 		}
-		q = q.Where("invoicing_invoices.client_id = ?", cid)
+		if !data_models.InvoicingIDInRange(uint(cid)) {
+			// Names no client: the empty list an unknown id answers.
+			q = q.Where("1 = 0")
+		} else {
+			q = q.Where("invoicing_invoices.client_id = ?", cid)
+		}
 	}
 	var scanned []invoiceListRow
 	if err := q.Scan(&scanned).Error; err != nil {

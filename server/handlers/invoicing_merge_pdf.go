@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -93,8 +94,20 @@ func ExportInvoicesMergedPDFHandler(c *gin.Context) {
 // a stale client can never get a shorter file than it asked for (ack D13).
 func invoicesForMerge(db *gorm.DB, owner uint, ids []uint) ([]data_models.InvoicingInvoice, *invoicingGuardError) {
 	var invoices []data_models.InvoicingInvoice
-	if err := db.Where("owner_user_id = ? AND id IN (?)", owner, ids).Order("prefix asc, number asc").Find(&invoices).Error; err != nil {
-		return nil, guard(http.StatusInternalServerError, "lookup_failed", "%v", err)
+	// An id out of the column's range names no invoice: it is left out of the
+	// query and refused below as invoice_not_found, like any unknown id.
+	lookup := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if data_models.InvoicingIDInRange(id) {
+			lookup = append(lookup, id)
+		}
+	}
+	if len(lookup) > 0 {
+		if err := db.Where("owner_user_id = ? AND id IN (?)", owner, lookup).Order("prefix asc, number asc").Find(&invoices).Error; err != nil {
+			// The driver's text stays in the log, never in the answer.
+			log.Printf("Error reading invoices for the merged PDF: %v", err)
+			return nil, guard(http.StatusInternalServerError, "lookup_failed", "the invoices could not be read")
+		}
 	}
 	byID := make(map[uint]data_models.InvoicingInvoice, len(invoices))
 	for _, inv := range invoices {

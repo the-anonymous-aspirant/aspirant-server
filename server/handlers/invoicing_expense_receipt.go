@@ -146,6 +146,14 @@ func PutInvoicingExpenseReceiptHandler(c *gin.Context) {
 
 	tx := db.Begin()
 	defer tx.RollbackUnlessCommitted()
+	// The book lock first, as every other write takes it: two first uploads
+	// on one expense run one after the other, and the second replaces the
+	// first, instead of both inserting and the unique index refusing one
+	// with a 500 (system_3 #12268, the #11498 review's C3-14).
+	if err := data_models.LockInvoicingBook(tx, userID); err != nil {
+		respondInvoicingInternal(c, tx, "saving the receipt", err)
+		return
+	}
 	e := ownedExpenseOrNotFound(c, tx, userID, id, "saving the receipt")
 	if e == nil {
 		return
@@ -242,6 +250,10 @@ func DeleteInvoicingExpenseReceiptHandler(c *gin.Context) {
 
 	tx := db.Begin()
 	defer tx.RollbackUnlessCommitted()
+	if err := data_models.LockInvoicingBook(tx, userID); err != nil {
+		respondInvoicingInternal(c, tx, "removing the receipt", err)
+		return
+	}
 	e := ownedExpenseOrNotFound(c, tx, userID, id, "removing the receipt")
 	if e == nil {
 		return

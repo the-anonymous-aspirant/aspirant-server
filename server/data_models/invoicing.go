@@ -175,6 +175,9 @@ func ListInvoicingClients(db *gorm.DB, owner uint) ([]InvoicingClient, error) {
 // GetInvoicingClient returns the owner's client, or nil when the id is unknown
 // or belongs to someone else: another book's client does not exist here.
 func GetInvoicingClient(db *gorm.DB, owner, id uint) (*InvoicingClient, error) {
+	if !InvoicingIDInRange(id) {
+		return nil, nil
+	}
 	var cl InvoicingClient
 	err := db.Where("id = ? AND owner_user_id = ?", id, owner).First(&cl).Error
 	if err == gorm.ErrRecordNotFound {
@@ -323,6 +326,10 @@ func ListInvoicingAuditEvents(db *gorm.DB, owner uint, entityType string, entity
 		q = q.Where("entity_type = ?", entityType)
 	}
 	if entityID > 0 {
+		if !InvoicingIDInRange(entityID) {
+			// Names no row: the empty list an unknown id answers.
+			return []InvoicingAuditEvent{}, nil
+		}
 		q = q.Where("entity_id = ?", entityID)
 	}
 	var events []InvoicingAuditEvent
