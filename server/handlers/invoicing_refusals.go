@@ -39,13 +39,17 @@ const (
 	codeNotCategorisable = "not_categorisable"     // a category on a bank withdrawal
 	codeRequired         = "required"              // an empty field that must be given
 	codeInvalidCategory  = "invalid_category"      // not one of the owner's expense categories
+	codeInvalidPrefix    = "invalid_prefix"        // an invoice number prefix of other characters or over limit
+	codeNumberTooSmall   = "number_too_small"      // under limit
 )
 
 // refusal is why one field cannot be accepted. nil means it can.
 type refusal struct {
 	code    string
-	message string // after the field's name: "must be ..."
+	message string // after the field's name: "must be ...", unless whole
 	limit   int64
+	lines   int64
+	whole   bool // message is a whole sentence, not prefixed with the field
 }
 
 func refuse(code, message string) *refusal { return &refusal{code: code, message: message} }
@@ -54,12 +58,22 @@ func refuseOver(code string, limit int64, message string) *refusal {
 	return &refusal{code: code, message: message, limit: limit}
 }
 
+// refuseWhole is a refusal whose message is already a whole sentence, as
+// the client book's and the editors' dedicated codes have always answered.
+func refuseWhole(code, message string) *refusal {
+	return &refusal{code: code, message: message, whole: true}
+}
+
 // respondFieldRefusal answers 400 with the refusal's code, field and limit.
-// The message reads "<field> <message>", as these answers always have.
+// The message reads "<field> <message>", as these answers always have,
+// unless the refusal's message is a whole sentence.
 func respondFieldRefusal(c *gin.Context, field string, r *refusal) {
-	msg := field + " " + r.message
+	msg := r.message
+	if !r.whole {
+		msg = field + " " + msg
+	}
 	log.Printf("Error response: %d - %s - %s", http.StatusBadRequest, r.code, msg)
-	c.JSON(http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: msg, Field: field, Limit: r.limit}})
+	c.JSON(http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: msg, Field: field, Limit: r.limit, Lines: r.lines}})
 }
 
 var notAString = refuse(codeNotAString, "must be a string")

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"unicode/utf8"
 
@@ -62,16 +61,16 @@ func checkProfileBounds(c *gin.Context, req invoicingProfileRequest, before *dat
 	}
 	switch {
 	case changed(stored.FullName, req.FullName) && !oneLineWithin(req.FullName, maxProfileLineRunes):
-		respondError(c, http.StatusBadRequest, codeFullNameTooLong,
-			fmt.Sprintf("full_name must be one line of at most %d characters", maxProfileLineRunes))
+		respondFieldRefusal(c, "full_name", &refusal{code: codeFullNameTooLong, limit: maxProfileLineRunes, whole: true,
+			message: fmt.Sprintf("full_name must be one line of at most %d characters", maxProfileLineRunes)})
 		return false
 	case changed(stored.Address, req.Address) && !addressWithin(req.Address, maxProfileAddressLines, maxProfileLineRunes):
-		respondError(c, http.StatusBadRequest, codeAddressTooLong,
-			fmt.Sprintf("address must be at most %d lines of at most %d characters each", maxProfileAddressLines, maxProfileLineRunes))
+		respondFieldRefusal(c, "address", &refusal{code: codeAddressTooLong, limit: maxProfileLineRunes, lines: maxProfileAddressLines, whole: true,
+			message: fmt.Sprintf("address must be at most %d lines of at most %d characters each", maxProfileAddressLines, maxProfileLineRunes)})
 		return false
 	case changed(stored.Steuernummer, req.Steuernummer) && !oneLineWithin(req.Steuernummer, maxProfileLineRunes):
-		respondError(c, http.StatusBadRequest, codeSteuernummerTooLong,
-			fmt.Sprintf("steuernummer must be one line of at most %d characters", maxProfileLineRunes))
+		respondFieldRefusal(c, "steuernummer", &refusal{code: codeSteuernummerTooLong, limit: maxProfileLineRunes, whole: true,
+			message: fmt.Sprintf("steuernummer must be one line of at most %d characters", maxProfileLineRunes)})
 		return false
 	}
 	return true

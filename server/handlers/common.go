@@ -55,6 +55,9 @@ type ErrorDetail struct {
 	// and Limit the number the client's sentence prints (system_3 #12300).
 	Field string `json:"field,omitempty"`
 	Limit int64  `json:"limit,omitempty"`
+	// Lines is the most lines a field of several lines takes, beside Limit,
+	// the characters of each (an address).
+	Lines int64 `json:"lines,omitempty"`
 }
 
 type ErrorResponse struct {

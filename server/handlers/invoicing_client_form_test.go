@@ -35,6 +35,9 @@ type clientFormAnswer struct {
 	Error  struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
+		Field   string `json:"field"`
+		Limit   int64  `json:"limit"`
+		Lines   int64  `json:"lines"`
 	} `json:"error"`
 }
 
@@ -140,25 +143,44 @@ func TestClient_NameAndAddressBounds(t *testing.T) {
 		body      map[string]interface{}
 		code, msg string
 	}{
-		{"a line break in the name", map[string]interface{}{"name": "Mara\nEsempio"}, "invalid_name", "The name is one line."},
-		{"a carriage return in the name", map[string]interface{}{"name": "Mara\rEsempio"}, "invalid_name", "The name is one line."},
-		{"a tab in the name", map[string]interface{}{"name": "Mara\tEsempio"}, "invalid_name", "The name has a tab, a control or a direction character. Remove it."},
-		{"a NUL in the name", map[string]interface{}{"name": "Mara\x00Esempio"}, "invalid_name", "The name has a tab, a control or a direction character. Remove it."},
-		{"a right-to-left override in the name", map[string]interface{}{"name": "Mara ‮oipmesE"}, "invalid_name", "The name has a tab, a control or a direction character. Remove it."},
-		{"a name of 201 characters", map[string]interface{}{"name": strings.Repeat("ä", 201)}, "invalid_name", "The name is at most 200 characters."},
-		{"a name of 5,000 characters", map[string]interface{}{"name": strings.Repeat("a", 5000)}, "invalid_name", "The name is at most 200 characters."},
-		{"a name of punctuation only", map[string]interface{}{"name": " ... "}, "invalid_name", "A client needs a name."},
-		{"an address of 11 lines", map[string]interface{}{"name": "Mara Esempio", "address": tenLines + "\nb"}, "invalid_address", "The address is at most 10 lines."},
-		{"an address line of 201 characters", map[string]interface{}{"name": "Mara Esempio", "address": "Weg 1\n" + strings.Repeat("ß", 201)}, "invalid_address", "Each line of the address is at most 200 characters."},
-		{"an address of 1,000,000 characters", map[string]interface{}{"name": "Mara Esempio", "address": strings.Repeat("a", 1000000)}, "invalid_address", "Each line of the address is at most 200 characters."},
-		{"a tab in the address", map[string]interface{}{"name": "Mara Esempio", "address": "Weg\t1"}, "invalid_address", "The address has a tab, a control or a direction character. Remove it."},
-		{"a NUL in the address", map[string]interface{}{"name": "Mara Esempio", "address": "Weg 1\x00"}, "invalid_address", "The address has a tab, a control or a direction character. Remove it."},
-		{"an isolate in the address", map[string]interface{}{"name": "Mara Esempio", "address": "Weg ⁦1⁩"}, "invalid_address", "The address has a tab, a control or a direction character. Remove it."},
-		{"a NUL in the notes", map[string]interface{}{"name": "Mara Esempio", "notes": "a\x00b"}, "invalid_notes", "The notes have a character that cannot be stored. Remove it."},
+		// system_3 #12300: one code per cause, the sentence kept.
+		{"a line break in the name", map[string]interface{}{"name": "Mara\nEsempio"}, "too_long", "The name is one line."},
+		{"a carriage return in the name", map[string]interface{}{"name": "Mara\rEsempio"}, "too_long", "The name is one line."},
+		{"a tab in the name", map[string]interface{}{"name": "Mara\tEsempio"}, "hidden_characters", "The name has a tab, a control or a direction character. Remove it."},
+		{"a NUL in the name", map[string]interface{}{"name": "Mara\x00Esempio"}, "hidden_characters", "The name has a tab, a control or a direction character. Remove it."},
+		{"a right-to-left override in the name", map[string]interface{}{"name": "Mara ‮oipmesE"}, "hidden_characters", "The name has a tab, a control or a direction character. Remove it."},
+		{"a name of 201 characters", map[string]interface{}{"name": strings.Repeat("ä", 201)}, "too_long", "The name is at most 200 characters."},
+		{"a name of 5,000 characters", map[string]interface{}{"name": strings.Repeat("a", 5000)}, "too_long", "The name is at most 200 characters."},
+		{"a name of punctuation only", map[string]interface{}{"name": " ... "}, "no_letter_or_digit", "A client needs a name."},
+		{"an address of 11 lines", map[string]interface{}{"name": "Mara Esempio", "address": tenLines + "\nb"}, "too_long", "The address is at most 10 lines."},
+		{"an address line of 201 characters", map[string]interface{}{"name": "Mara Esempio", "address": "Weg 1\n" + strings.Repeat("ß", 201)}, "too_long", "Each line of the address is at most 200 characters."},
+		{"an address of 1,000,000 characters", map[string]interface{}{"name": "Mara Esempio", "address": strings.Repeat("a", 1000000)}, "too_long", "Each line of the address is at most 200 characters."},
+		{"a tab in the address", map[string]interface{}{"name": "Mara Esempio", "address": "Weg\t1"}, "hidden_characters", "The address has a tab, a control or a direction character. Remove it."},
+		{"a NUL in the address", map[string]interface{}{"name": "Mara Esempio", "address": "Weg 1\x00"}, "hidden_characters", "The address has a tab, a control or a direction character. Remove it."},
+		{"an isolate in the address", map[string]interface{}{"name": "Mara Esempio", "address": "Weg ⁦1⁩"}, "hidden_characters", "The address has a tab, a control or a direction character. Remove it."},
+		{"a NUL in the notes", map[string]interface{}{"name": "Mara Esempio", "notes": "a\x00b"}, "hidden_characters", "The notes have a character that cannot be stored. Remove it."},
 	} {
 		code, a := f.create(t, c.body)
 		if code != http.StatusBadRequest || a.Error.Code != c.code || a.Error.Message != c.msg {
 			t.Errorf("%s: %d %+v; want 400 %s %q", c.what, code, a.Error, c.code, c.msg)
+		}
+		// The field it is about, and the numbers its sentence prints.
+		field := "name"
+		if _, ok := c.body["address"]; ok {
+			field = "address"
+		}
+		if _, ok := c.body["notes"]; ok {
+			field = "notes"
+		}
+		var limit, lines int64
+		if c.code == "too_long" {
+			limit = 200
+			if field == "address" {
+				lines = 10
+			}
+		}
+		if a.Error.Field != field || a.Error.Limit != limit || a.Error.Lines != lines {
+			t.Errorf("%s: field %q limit %d lines %d; want %q %d %d", c.what, a.Error.Field, a.Error.Limit, a.Error.Lines, field, limit, lines)
 		}
 	}
 	if f.clients(t) != 0 {
@@ -187,10 +209,10 @@ func TestUpdateClient_AFieldTheEditDidNotChangeIsNotChecked(t *testing.T) {
 	if code, a := f.update(t, old.ID, map[string]interface{}{"name": longName, "address": twelve, "notes": "kept"}); code != http.StatusOK {
 		t.Fatalf("edit of the notes only: %d %+v", code, a.Error)
 	}
-	if code, a := f.update(t, old.ID, map[string]interface{}{"name": longName + "x", "address": twelve}); code != http.StatusBadRequest || a.Error.Code != "invalid_name" {
+	if code, a := f.update(t, old.ID, map[string]interface{}{"name": longName + "x", "address": twelve}); code != http.StatusBadRequest || a.Error.Code != "too_long" || a.Error.Field != "name" {
 		t.Fatalf("a changed long name: %d %+v", code, a.Error)
 	}
-	if code, a := f.update(t, old.ID, map[string]interface{}{"name": longName, "address": twelve + "\nmore"}); code != http.StatusBadRequest || a.Error.Code != "invalid_address" {
+	if code, a := f.update(t, old.ID, map[string]interface{}{"name": longName, "address": twelve + "\nmore"}); code != http.StatusBadRequest || a.Error.Code != "too_long" || a.Error.Field != "address" {
 		t.Fatalf("a changed long address: %d %+v", code, a.Error)
 	}
 	if code, a := f.update(t, old.ID, map[string]interface{}{"name": "Mara Esempio", "address": "Weg 1"}); code != http.StatusOK {

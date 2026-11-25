@@ -20,6 +20,7 @@ type refusalEnvelope struct {
 		Message string `json:"message"`
 		Field   string `json:"field"`
 		Limit   int64  `json:"limit"`
+		Lines   int64  `json:"lines"`
 	} `json:"error"`
 }
 
@@ -114,5 +115,56 @@ func TestEdit_RefusalsAnswerTheEntrysCodes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		assertRefusal(t, tc.name, invoicingDo(f.r, "PATCH", tc.path, tc.body), tc.code, tc.field, tc.limit)
+	}
+}
+
+// The issuer profile and the client book: the causes that shared one
+// sentence ("full_name and address are required", "email and paypal_email
+// must be valid addresses") now say which field, and the codes that were
+// bad_request say why (#12300).
+func TestProfileAndClient_EachCauseHasItsOwnCode(t *testing.T) {
+	f := newInvoiceFixture(t)
+	profile := func(fields string) string {
+		base := map[string]string{"full_name": `"Mara Esempio"`, "address": `"Weg 1"`, "is_kleinunternehmer": "true", "invoice_number_prefix": `"2026"`, "next_invoice_number": "1"}
+		var parts []string
+		for k, v := range base {
+			if !strings.Contains(fields, `"`+k+`"`) {
+				parts = append(parts, `"`+k+`":`+v)
+			}
+		}
+		if fields != "" {
+			parts = append(parts, fields)
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	}
+	cases := []struct {
+		refusalCase
+		method, path string
+	}{
+		{refusalCase{"profile: no name", profile(`"full_name":""`), codeRequired, "full_name", 0}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: no address", profile(`"address":"  "`), codeRequired, "address", 0}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: a wrong email", profile(`"email":"mara@"`), codeInvalidEmail, "email", 0}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: a prefix with a slash", profile(`"invoice_number_prefix":"RE/26"`), codeInvalidPrefix, "invoice_number_prefix", maxInvoicePrefixRunes}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: a prefix too long", profile(`"invoice_number_prefix":"` + strings.Repeat("R", maxInvoicePrefixRunes+1) + `"`), codeInvalidPrefix, "invoice_number_prefix", maxInvoicePrefixRunes}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: no Kleinunternehmer answer", `{"full_name":"Mara Esempio","address":"Weg 1","invoice_number_prefix":"2026","next_invoice_number":1}`, codeRequired, "is_kleinunternehmer", 0}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: no next number", `{"full_name":"Mara Esempio","address":"Weg 1","is_kleinunternehmer":true,"invoice_number_prefix":"2026"}`, codeRequired, "next_invoice_number", 0}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: next number 0", profile(`"next_invoice_number":0`), codeNumberTooSmall, "next_invoice_number", 1}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: a name too long", profile(`"full_name":"` + strings.Repeat("m", maxProfileLineRunes+1) + `"`), codeFullNameTooLong, "full_name", maxProfileLineRunes}, "PUT", "/invoicing/profile"},
+		{refusalCase{"profile: a wrong phone", profile(`"phone":"call me"`), "invalid_phone", "phone", 0}, "PUT", "/invoicing/profile"},
+		{refusalCase{"client: a wrong email", `{"name":"Atelier Ost","email":"ost@"}`, codeInvalidEmail, "email", 0}, "POST", "/invoicing/clients"},
+		{refusalCase{"client: a wrong PayPal email", `{"name":"Atelier Ost","paypal_email":"ost@"}`, codeInvalidEmail, "paypal_email", 0}, "POST", "/invoicing/clients"},
+		{refusalCase{"client: notes too long", `{"name":"Atelier Ost","notes":"` + strings.Repeat("n", maxClientNotesRunes+1) + `"}`, codeTooLong, "notes", maxClientNotesRunes}, "POST", "/invoicing/clients"},
+		{refusalCase{"client: no name", `{"name":"  "}`, codeRequired, "name", 0}, "POST", "/invoicing/clients"},
+		{refusalCase{"client: a wrong IBAN", `{"name":"Atelier Ost","iban":"DE00 1234"}`, "invalid_iban", "iban", 0}, "POST", "/invoicing/clients"},
+	}
+	for _, tc := range cases {
+		assertRefusal(t, tc.name, invoicingDo(f.r, tc.method, tc.path, tc.body), tc.code, tc.field, tc.limit)
+	}
+	// An address of too many lines names both of its numbers.
+	w := invoicingDo(f.r, "PUT", "/invoicing/profile", profile(`"address":"`+strings.Repeat("Zeile\\n", maxProfileAddressLines)+`Ende"`))
+	var e refusalEnvelope
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	if e.Error.Code != codeAddressTooLong || e.Error.Field != "address" || e.Error.Limit != maxProfileLineRunes || e.Error.Lines != maxProfileAddressLines {
+		t.Errorf("profile address of %d lines: %+v", maxProfileAddressLines+1, e.Error)
 	}
 }
