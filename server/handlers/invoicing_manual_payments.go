@@ -39,6 +39,8 @@ var manualPaymentFields = map[string]bool{
 	// A new client's address and email, typed with its name (system_3
 	// #11507): optional, and only with new_client_name.
 	"new_client_address": true, "new_client_email": true,
+	// Save it although a payment like it is in the book (system_3 #12295).
+	"confirm_duplicate": true,
 }
 
 // maxNewClientAddressRunes bounds the address typed with a new client's name.
@@ -296,6 +298,11 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		bad("note", "has a direction-override character: remove it")
 		return
 	}
+	confirmDuplicate, err := confirmDuplicateFlag(body)
+	if err != nil {
+		bad("confirm_duplicate", err.Error())
+		return
+	}
 
 	// PayPal transaction ids are upper-case letters and digits; store a
 	// PayPal reference that way so "tx1" and an imported "TX1" are one id
@@ -377,6 +384,35 @@ func CreateManualPaymentHandler(c *gin.Context) {
 			tx.Rollback()
 			respondError(c, http.StatusConflict, "duplicate_payment",
 				fmt.Sprintf("a PayPal payment with transaction id %s is already stored", reference))
+			return
+		}
+	}
+	// A look-alike is asked about, once (system_3 #12295). The payer is every
+	// name this entry gives: its client's, a new client's, the sender's.
+	if !confirmDuplicate {
+		names := []string{sender, newClientName}
+		if clientID != nil && newClient == nil {
+			cl, err := data_models.GetInvoicingClient(tx, invoicingUserID(c), *clientID)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error reading client %d: %v", *clientID, err)
+				RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
+				return
+			}
+			if cl != nil {
+				names = append(names, cl.Name)
+			}
+		}
+		twin, err := findPaymentTwin(tx, invoicingUserID(c), paidOn, gross, currency, names)
+		if err != nil {
+			tx.Rollback()
+			log.Printf("Error checking for a look-alike payment: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing payment")
+			return
+		}
+		if twin != nil {
+			tx.Rollback()
+			respondPossibleDuplicate(c, "payment", twin.ID, twin)
 			return
 		}
 	}

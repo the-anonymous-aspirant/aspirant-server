@@ -138,9 +138,14 @@ func TestManualPayment_PayPalReferenceDeduplicatesBothWays(t *testing.T) {
 	if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"paypal","reference":"9AB12345CD6789012"}`); code != http.StatusConflict {
 		t.Errorf("second manual entry of the same PayPal id: %d %s", code, body)
 	}
-	// A bank reference may repeat: only PayPal ids are unique keys.
+	// A bank reference may repeat: only PayPal ids are unique keys. These
+	// entries share the day, amount and empty payer of the one above, so each
+	// is asked about first (system_3 #12295); confirmed, both are saved.
 	for i := 0; i < 2; i++ {
-		if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"bank_transfer","reference":"Miete"}`); code != http.StatusCreated {
+		if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"bank_transfer","reference":"Miete"}`); code != http.StatusConflict || !strings.Contains(body, "possible_duplicate") {
+			t.Errorf("bank reference %d unconfirmed: %d %s, want the look-alike question", i, code, body)
+		}
+		if code, _, body := createManual(t, f, `{"paid_on":"2026-07-10","gross_cents":10000,"method":"bank_transfer","reference":"Miete","confirm_duplicate":true}`); code != http.StatusCreated {
 			t.Errorf("bank reference %d: %d %s", i, code, body)
 		}
 	}

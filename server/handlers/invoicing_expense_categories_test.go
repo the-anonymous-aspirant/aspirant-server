@@ -328,7 +328,7 @@ func TestExpenseTypedCategory_SavedWithTheExpense(t *testing.T) {
 	if e2.Category != "Guitar strings" || categories() != c0+1 {
 		t.Errorf("live name, other case: expense %+v, categories %d", e2, categories())
 	}
-	e3 := catCreateExpense(t, r, `{"paid_on":"2026-07-14","amount_cents":800,"category":"Travel","create_category":true}`)
+	e3 := catCreateExpense(t, r, `{"paid_on":"2026-07-14","amount_cents":850,"category":"Travel","create_category":true}`)
 	if e3.Category != "travel" || categories() != c0+1 {
 		t.Errorf("a starter typed in another case: expense %+v, categories %d", e3, categories())
 	}
