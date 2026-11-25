@@ -558,16 +558,87 @@ func TestProfile_NextNumberIsServerOwnedOnceIssued(t *testing.T) {
 	if *d.Invoice.InvoiceNumber != "2026-007" {
 		t.Fatalf("continued sequence: %v", *d.Invoice.InvoiceNumber)
 	}
-	w := invoicingDo(f.r, "PUT", "/invoicing/profile", strings.Replace(validProfileBody, `"next_invoice_number":1`, `"next_invoice_number":3`, 1))
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "next_number_server_owned") {
-		t.Errorf("rewind after issuing: %d %s", w.Code, w.Body.String())
+	// Once issued, the server sets the number and ignores the one sent, so a
+	// Save never fails over a number the editor shows read-only (system_3
+	// #12306 review point 3). A sent 3 cannot rewind the sequence: 8 is kept.
+	for _, sent := range []int{3, 8, 50} {
+		body := strings.Replace(validProfileBody, `"next_invoice_number":1`, fmt.Sprintf(`"next_invoice_number":%d`, sent), 1)
+		w := invoicingDo(f.r, "PUT", "/invoicing/profile", body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("save with %d sent after issuing: %d %s", sent, w.Code, w.Body.String())
+		}
+		if got := profileNext(t, w.Body.Bytes()); got != 8 {
+			t.Errorf("save with %d sent: stored next %d, want the server's 8", sent, got)
+		}
 	}
-	if w := invoicingDo(f.r, "PUT", "/invoicing/profile", strings.Replace(validProfileBody, `"next_invoice_number":1`, `"next_invoice_number":8`, 1)); w.Code != http.StatusOK {
-		t.Errorf("re-saving the server's own next number: %d %s", w.Code, w.Body.String())
+	_, d2, _ := f.issue(f.draft(t, 1))
+	if *d2.Invoice.InvoiceNumber != "2026-008" {
+		t.Fatalf("after the saves the sequence goes on: %v", *d2.Invoice.InvoiceNumber)
 	}
-	newPrefix := strings.Replace(strings.Replace(validProfileBody, `"2026"`, `"2027"`, 1), `"next_invoice_number":1`, `"next_invoice_number":1`, 1)
-	if w := invoicingDo(f.r, "PUT", "/invoicing/profile", newPrefix); w.Code != http.StatusOK {
-		t.Errorf("a new prefix starts its own sequence: %d %s", w.Code, w.Body.String())
+	newPrefix := strings.Replace(strings.Replace(validProfileBody, `"2026"`, `"2027"`, 1), `"next_invoice_number":1`, `"next_invoice_number":4`, 1)
+	w := invoicingDo(f.r, "PUT", "/invoicing/profile", newPrefix)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a new prefix starts its own sequence: %d %s", w.Code, w.Body.String())
+	}
+	if got := profileNext(t, w.Body.Bytes()); got != 4 {
+		t.Errorf("an unused prefix keeps the number sent: %d, want 4", got)
+	}
+}
+
+// profileNext reads profile.next_invoice_number from a profile answer.
+func profileNext(t *testing.T, body []byte) int {
+	t.Helper()
+	var resp struct {
+		Profile struct {
+			NextInvoiceNumber int `json:"next_invoice_number"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("profile answer: %v %s", err, body)
+	}
+	return resp.Profile.NextInvoiceNumber
+}
+
+// system_3 #12306 review point 5: the profile's answer carries the next
+// number for every prefix in use, cancelled invoices counted, so the editor
+// can tell a used prefix from an unused one.
+func TestProfile_NextNumbersByPrefix(t *testing.T) {
+	f := newInvoiceFixture(t)
+	nextNumbers := func(method, body string) map[string]int {
+		t.Helper()
+		w := invoicingDo(f.r, method, "/invoicing/profile", body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s profile: %d %s", method, w.Code, w.Body.String())
+		}
+		var resp struct {
+			NextNumbers map[string]int `json:"next_numbers"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.NextNumbers == nil {
+			t.Fatalf("%s profile: next_numbers missing: %v %s", method, err, w.Body.String())
+		}
+		return resp.NextNumbers
+	}
+	if got := nextNumbers("GET", ""); len(got) != 0 {
+		t.Errorf("before any issue: %v, want none", got)
+	}
+	id := f.draft(t, 0)
+	f.issue(id)
+	if w := invoicingDo(f.r, "POST", fmt.Sprintf("/invoicing/invoices/%d/cancel", id), `{"reason":"Falsche Adresse"}`); w.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+	}
+	// The cancelled 2026-001 still holds its number.
+	if got := nextNumbers("GET", ""); len(got) != 1 || got["2026"] != 2 {
+		t.Errorf("after a cancelled invoice: %v, want map[2026:2]", got)
+	}
+	// A move to a new prefix does not forget the old one, and the PUT answers
+	// with the same map.
+	moved := strings.Replace(validProfileBody, `"2026"`, `"2027"`, 1)
+	if got := nextNumbers("PUT", moved); len(got) != 1 || got["2026"] != 2 {
+		t.Errorf("PUT under a new prefix: %v, want map[2026:2]", got)
+	}
+	f.issue(f.draft(t, 1))
+	if got := nextNumbers("GET", ""); len(got) != 2 || got["2026"] != 2 || got["2027"] != 2 {
+		t.Errorf("two prefixes in use: %v, want map[2026:2 2027:2]", got)
 	}
 }
 
