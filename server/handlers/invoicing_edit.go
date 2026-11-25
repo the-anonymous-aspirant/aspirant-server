@@ -664,7 +664,7 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 		case "client_id":
 			cid, err := optionalID(raw)
 			if err != nil {
-				bad(k, err.Error())
+				bad(k, refuse(codeInvalidID, err.Error()))
 				return
 			}
 			if cid != nil {
@@ -674,7 +674,7 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 					return
 				}
 				if cl == nil {
-					bad(k, "does not name a client")
+					bad(k, noSuchClient)
 					return
 				}
 			}

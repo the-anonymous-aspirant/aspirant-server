@@ -114,6 +114,8 @@ func TestEdit_RefusalsAnswerTheEntrysCodes(t *testing.T) {
 		{refusalCase{"expense: a payee on two lines", `{"payee":"a\nb"}`, codeTooLong, "payee", maxManualSenderRunes}, exp},
 		{refusalCase{"expense: an amount too large", fmt.Sprintf(`{"amount_cents":%d}`, maxUnitPriceCents+1), codeAmountTooLarge, "amount_cents", maxUnitPriceCents}, exp},
 		{refusalCase{"expense: an unknown category", `{"category":"crypto"}`, codeInvalidCategory, "category", 0}, exp},
+		{refusalCase{"expense: an unknown client", `{"client_id":999}`, codeNoSuchClient, "client_id", 0}, exp},
+		{refusalCase{"expense: a client id that is not a whole number", `{"client_id":1.5}`, codeInvalidID, "client_id", 0}, exp},
 		{refusalCase{"expense: a typed category too long", `{"category":"` + strings.Repeat("c", maxExpenseCategoryNameRunes+1) + `","create_category":true}`, codeTooLong, "category", maxExpenseCategoryNameRunes}, exp},
 	}
 	for _, tc := range cases {
