@@ -344,12 +344,13 @@ func TestExpenseTypedCategory_SavedWithTheExpense(t *testing.T) {
 		t.Errorf("restored by typing: %+v, categories %d -> %d", back, c1, categories())
 	}
 
-	// Item 9, a refused name: nothing saved, and the error names the category.
+	// Item 9, a refused name: nothing saved, and the error names the
+	// category as its field, with its own code (system_3 #12300).
 	c2, e2n := categories(), expenses()
-	for _, typed := range []string{"", "   ", strings.Repeat("x", 101), "two\nlines"} {
+	for typed, want := range map[string]string{"": codeRequired, "   ": codeRequired, strings.Repeat("x", 101): codeTooLong, "two\nlines": codeTooLong} {
 		body, _ := json.Marshal(map[string]any{"paid_on": "2026-07-14", "amount_cents": 300, "category": typed, "create_category": true})
 		w := invoicingDo(r, "POST", "/invoicing/expenses/manual", string(body))
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_category") || !strings.Contains(w.Body.String(), "category ") {
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"`+want+`"`) || !strings.Contains(w.Body.String(), `"field":"category"`) {
 			t.Errorf("typed %q: %d %s", typed, w.Code, w.Body.String())
 		}
 	}

@@ -51,6 +51,10 @@ type ErrorDetail struct {
 	// own sentence (the amounts, a line, a date), so it never shows Message
 	// as written (system_3 #12274). Absent on most errors.
 	Details map[string]interface{} `json:"details,omitempty"`
+	// Field is the request field a refusal is about, when it is about one,
+	// and Limit the number the client's sentence prints (system_3 #12300).
+	Field string `json:"field,omitempty"`
+	Limit int64  `json:"limit,omitempty"`
 }
 
 type ErrorResponse struct {

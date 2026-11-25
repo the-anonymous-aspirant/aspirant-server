@@ -139,29 +139,28 @@ func TestManualExpense_Refusals(t *testing.T) {
 	_, r := newExpenseFixture(t)
 	ok := `"paid_on":"2026-07-14","amount_cents":1000`
 	cases := []struct {
-		name, body, code string
+		name, body, code, field string
+		limit                   int64
 	}{
-		{"future date", `{"paid_on":"2026-10-22","amount_cents":1000}`, "invalid_field"},
-		{"not a date", `{"paid_on":"14.07.2026","amount_cents":1000}`, "invalid_field"},
-		{"zero amount", `{"paid_on":"2026-07-14","amount_cents":0}`, "invalid_field"},
-		{"negative amount", `{"paid_on":"2026-07-14","amount_cents":-5}`, "invalid_field"},
-		{"missing amount", `{"paid_on":"2026-07-14"}`, "invalid_field"},
-		{"unknown category", `{` + ok + `,"category":"crypto"}`, "invalid_field"},
-		{"lower-case currency", `{` + ok + `,"currency":"eur"}`, "invalid_field"},
-		{"reference with a newline", `{` + ok + `,"reference":"a\nb"}`, "invalid_field"},
-		{"reference too long", `{` + ok + `,"reference":"` + strings.Repeat("x", 101) + `"}`, "invalid_field"},
-		{"unknown client", `{` + ok + `,"client_id":999}`, "invalid_field"},
-		{"transaction id is server-owned", `{` + ok + `,"transaction_id":"X"}`, "unknown_field"},
-		{"entry is server-owned", `{` + ok + `,"entry":"import"}`, "unknown_field"},
-		{"right-to-left override in the reference", `{` + ok + `,"reference":"RE‮71"}`, "invalid_field"},
-		{"zero-width space in the reference", `{` + ok + `,"reference":"RE​71"}`, "invalid_field"},
-		{"before 2000", `{"paid_on":"1999-12-31","amount_cents":1000}`, "invalid_field"},
+		{"future date", `{"paid_on":"2026-10-22","amount_cents":1000}`, "date_in_future", "paid_on", 0},
+		{"not a date", `{"paid_on":"14.07.2026","amount_cents":1000}`, "invalid_date", "paid_on", 0},
+		{"zero amount", `{"paid_on":"2026-07-14","amount_cents":0}`, "invalid_amount", "amount_cents", 0},
+		{"negative amount", `{"paid_on":"2026-07-14","amount_cents":-5}`, "invalid_amount", "amount_cents", 0},
+		{"missing amount", `{"paid_on":"2026-07-14"}`, "invalid_amount", "amount_cents", 0},
+		{"unknown category", `{` + ok + `,"category":"crypto"}`, "invalid_category", "category", 0},
+		{"lower-case currency", `{` + ok + `,"currency":"eur"}`, "invalid_choice", "currency", 0},
+		{"reference with a newline", `{` + ok + `,"reference":"a\nb"}`, "too_long", "reference", 100},
+		{"reference too long", `{` + ok + `,"reference":"` + strings.Repeat("x", 101) + `"}`, "too_long", "reference", 100},
+		{"unknown client", `{` + ok + `,"client_id":999}`, "no_such_client", "client_id", 0},
+		{"transaction id is server-owned", `{` + ok + `,"transaction_id":"X"}`, "unknown_field", "", 0},
+		{"entry is server-owned", `{` + ok + `,"entry":"import"}`, "unknown_field", "", 0},
+		{"right-to-left override in the reference", `{` + ok + `,"reference":"RE‮71"}`, "hidden_characters", "reference", 0},
+		{"zero-width space in the reference", `{` + ok + `,"reference":"RE​71"}`, "hidden_characters", "reference", 0},
+		{"before 2000", `{"paid_on":"1999-12-31","amount_cents":1000}`, "date_too_early", "paid_on", 2000},
 	}
 	for _, tc := range cases {
 		w := invoicingDo(r, "POST", "/invoicing/expenses/manual", tc.body)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.code) {
-			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body.String())
-		}
+		assertRefusal(t, tc.name, w, tc.code, tc.field, tc.limit)
 	}
 	got := listExpenses(t, r, "")
 	if len(got) != 0 {
@@ -203,7 +202,7 @@ func TestManualExpense_OwnerIsolation(t *testing.T) {
 		t.Fatalf("create category for A: %d %s", w.Code, w.Body.String())
 	}
 	code, _, body := createExpense(t, b, `{"paid_on":"2026-07-14","amount_cents":1000,"category":"A's own category"}`)
-	if code != http.StatusBadRequest || !strings.Contains(body, "invalid_field") {
+	if code != http.StatusBadRequest || !strings.Contains(body, codeInvalidCategory) {
 		t.Errorf("owner B used owner A's category: %d %s", code, body)
 	}
 }
