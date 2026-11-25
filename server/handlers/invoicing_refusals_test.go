@@ -23,6 +23,7 @@ type refusalEnvelope struct {
 		Field   string `json:"field"`
 		Limit   int64  `json:"limit"`
 		Lines   int64  `json:"lines"`
+		Item    int    `json:"item"`
 	} `json:"error"`
 }
 
@@ -306,5 +307,65 @@ func TestN26Confirm_ARefusedRowAnswersItsPosition(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &e)
 	if e.Error.Code != "too_many_rows" || e.Error.Limit != maxN26ConfirmRows {
 		t.Errorf("too many rows: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A preset's name answers one code per cause at the name, and the built-in's
+// name is told apart from a name ze already used (system_3 #12300 ruling 1).
+func TestBookPresetName_EachCauseHasItsOwnCode(t *testing.T) {
+	_, r := newBookSelectionFixture(t)
+	if w := invoicingDo(r, "POST", "/invoicing/book/presets", `{"name":"Jobcenter","income":["paid_work"],"expense_all":false,"expense":[]}`); w.Code != http.StatusCreated {
+		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
+	}
+	preset := func(name string) string {
+		return `{"name":"` + name + `","income":[],"expense_all":false,"expense":[]}`
+	}
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		code       string
+		limit      int64
+	}{
+		{"no name", `{"income":[],"expense_all":false,"expense":[]}`, http.StatusBadRequest, codeRequired, 0},
+		{"an empty name", preset(" "), http.StatusBadRequest, codeRequired, 0},
+		{"a name too long", preset(strings.Repeat("n", maxBookPresetNameRunes+1)), http.StatusBadRequest, codeTooLong, maxBookPresetNameRunes},
+		{"a name on two lines", preset(`Job\ncenter`), http.StatusBadRequest, codeTooLong, maxBookPresetNameRunes},
+		{"a zero-width space", preset("Job\u200bcenter"), http.StatusBadRequest, codeHiddenCharacters, 0},
+		{"the built-in's name", preset("work only"), http.StatusConflict, codeBuiltinPresetName, 0},
+		{"a name already used", preset("JOBCENTER"), http.StatusConflict, "duplicate_preset", 0},
+	} {
+		w := invoicingDo(r, "POST", "/invoicing/book/presets", tc.body)
+		var e refusalEnvelope
+		json.Unmarshal(w.Body.Bytes(), &e)
+		if w.Code != tc.status || e.Error.Code != tc.code || e.Error.Field != "name" || e.Error.Limit != tc.limit {
+			t.Errorf("%s: %d %s, want %d %q at name, limit %d", tc.name, w.Code, w.Body.String(), tc.status, tc.code, tc.limit)
+		}
+	}
+}
+
+// A payer's new name answers its cause and which payer it is, 1-based.
+func TestAddPayers_ARefusedNameAnswersItsCauseAndPayer(t *testing.T) {
+	f := newPayerFixture(t)
+	u := uint(invoiceFixtureUser)
+	a := f.pay(t, u, "n26", "Mara Esempio", "", "uncategorised", 10000, 1)
+	b := f.pay(t, u, "n26", "Lia Beispiel", "", "uncategorised", 10000, 2)
+	for _, tc := range []struct {
+		name, newName, code string
+		limit               int64
+	}{
+		{"a name too long", strings.Repeat("m", maxManualSenderRunes+1), codeTooLong, maxManualSenderRunes},
+		{"a name of only punctuation", "...", codeNoLetterOrDigit, 0},
+	} {
+		w := invoicingDo(f.r, "POST", "/invoicing/payers", fmt.Sprintf(`{"payers":[
+			{"payment_ids":[%d],"new_client_name":"Mara Esempio"},
+			{"payment_ids":[%d],"new_client_name":%q}]}`, a, b, tc.newName))
+		var e refusalEnvelope
+		json.Unmarshal(w.Body.Bytes(), &e)
+		if w.Code != http.StatusBadRequest || e.Error.Code != tc.code || e.Error.Field != "new_client_name" || e.Error.Item != 2 || e.Error.Limit != tc.limit {
+			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body.String())
+		}
+		if !strings.HasPrefix(e.Error.Message, "payers[1].new_client_name ") {
+			t.Errorf("%s: the log's message changed: %q", tc.name, e.Error.Message)
+		}
 	}
 }

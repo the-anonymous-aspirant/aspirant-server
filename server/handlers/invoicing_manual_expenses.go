@@ -410,12 +410,12 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 	}
 	raw, present := body["name"]
 	if !present {
-		respondError(c, http.StatusBadRequest, "invalid_field", "name is required")
+		respondFieldRefusal(c, "name", refuse(codeRequired, "is required"))
 		return
 	}
 	var name string
 	if err := json.Unmarshal(raw, &name); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_field", "name must be a string")
+		respondFieldRefusal(c, "name", notAString)
 		return
 	}
 	name = strings.TrimSpace(name)
@@ -432,13 +432,13 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 	countsAs := data_models.ExpenseCategoryOther
 	if raw, present := body["counts_as"]; present {
 		if err := json.Unmarshal(raw, &countsAs); err != nil {
-			respondError(c, http.StatusBadRequest, "invalid_field", "counts_as must be a string")
+			respondFieldRefusal(c, "counts_as", notAString)
 			return
 		}
 		countsAs = strings.TrimSpace(countsAs)
 	}
 	if !data_models.IsStarterExpenseCategory(countsAs) {
-		respondError(c, http.StatusBadRequest, "invalid_field", "counts_as must be one of "+strings.Join(data_models.DefaultExpenseCategories, ", "))
+		respondFieldRefusal(c, "counts_as", refuse(codeInvalidChoice, "must be one of "+strings.Join(data_models.DefaultExpenseCategories, ", ")))
 		return
 	}
 

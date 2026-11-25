@@ -297,7 +297,15 @@ func AddPayersHandler(c *gin.Context) {
 		}
 		if row.NewClientName != "" {
 			if !validOneLineName(row.NewClientName) || !validClientName(row.NewClientName) {
-				bad(fmt.Sprintf("payers[%d].new_client_name must be one line of at most %d characters with at least one letter or digit", i, maxManualSenderRunes))
+				msg := fmt.Sprintf("payers[%d].new_client_name must be one line of at most %d characters with at least one letter or digit", i, maxManualSenderRunes)
+				// The row's own cause and position, so the dialog says it at
+				// that payer (system_3 #12300 ruling 1).
+				r := newClientNameRefusal(row.NewClientName)
+				if r == nil {
+					bad(msg)
+					return
+				}
+				respondFieldRefusal(c, "new_client_name", &refusal{code: r.code, limit: r.limit, item: i + 1, whole: true, message: msg})
 				return
 			}
 		} else if row.SecondClient {
