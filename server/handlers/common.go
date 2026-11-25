@@ -47,6 +47,10 @@ func parsePagination(c *gin.Context) (page int, pageSize int) {
 type ErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Details carries the figures a client needs to word the refusal in its
+	// own sentence (the amounts, a line, a date), so it never shows Message
+	// as written (system_3 #12274). Absent on most errors.
+	Details map[string]interface{} `json:"details,omitempty"`
 }
 
 type ErrorResponse struct {

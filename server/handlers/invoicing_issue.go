@@ -46,41 +46,75 @@ func dateOnly(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// profileMissing names what the issuer profile lacks for an issue, in the
+// order the profile form shows them; a missing profile lacks all three.
+func profileMissing(p *data_models.InvoicingProfile) []string {
+	var out []string
+	if p == nil || p.FullName == "" {
+		out = append(out, "name")
+	}
+	if p == nil || p.Address == "" {
+		out = append(out, "address")
+	}
+	if p == nil || strings.TrimSpace(p.Steuernummer) == "" {
+		out = append(out, "steuernummer")
+	}
+	return out
+}
+
+func profileIncomplete(missing []string) *invoicingGuardError {
+	return guard(http.StatusUnprocessableEntity, "profile_incomplete",
+		"the issuer profile needs a name, an address and a Steuernummer before an invoice can be issued").with("missing", missing)
+}
+
 // checkIssuable runs every guardrail that does not depend on the number. It
 // returns the profile and client to snapshot.
 func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, items []data_models.InvoicingLineItem, issueDate time.Time) (*data_models.InvoicingProfile, *data_models.InvoicingClient, *invoicingGuardError, error) {
 	if inv.Status != data_models.InvoiceStatusDraft {
-		return nil, nil, guard(http.StatusConflict, "not_a_draft", "invoice %d is already %s", inv.ID, inv.Status), nil
+		return nil, nil, guard(http.StatusConflict, "not_a_draft", "invoice %d is already %s", inv.ID, inv.Status).
+			with("status", inv.Status), nil
 	}
 
 	profile, err := data_models.GetInvoicingProfile(tx, owner)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if profile == nil || profile.FullName == "" || profile.Address == "" || strings.TrimSpace(profile.Steuernummer) == "" {
-		return nil, nil, guard(http.StatusUnprocessableEntity, "profile_incomplete",
-			"the issuer profile needs a name, an address and a Steuernummer before an invoice can be issued"), nil
+	if missing := profileMissing(profile); len(missing) > 0 {
+		return nil, nil, profileIncomplete(missing), nil
 	}
 
 	if inv.ClientID == nil {
-		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the invoice has no client"), nil
+		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the invoice has no client").
+			with("missing", "client"), nil
 	}
 	client, err := data_models.GetInvoicingClient(tx, owner, *inv.ClientID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if client == nil || strings.TrimSpace(client.Name) == "" {
-		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the client needs a name"), nil
+		return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete", "the client needs a name").
+			with("missing", "name"), nil
 	}
 
 	if len(items) == 0 {
-		return nil, nil, guard(http.StatusUnprocessableEntity, "line_items_incomplete", "the invoice has no line items"), nil
+		return nil, nil, guard(http.StatusUnprocessableEntity, "line_items_incomplete", "the invoice has no line items").
+			with("missing", "lines"), nil
 	}
 	for _, it := range items {
 		if strings.TrimSpace(it.Description) == "" || it.QuantityMilli <= 0 || it.UnitPriceCents <= 0 {
 			return nil, nil, guard(http.StatusUnprocessableEntity, "line_items_incomplete",
-				"line item %d needs a description, a quantity above zero and a price above zero", it.Position), nil
+				"line item %d needs a description, a quantity above zero and a price above zero", it.Position).
+				with("position", it.Position), nil
 		}
+	}
+	// Every line above zero can still round to a total of 0,00 (0.001 x
+	// 0,01 EUR): such an invoice is refused, not issued (system_3 #12274
+	// ruling 8). A difference from the payments stays a warning.
+	totals := *inv
+	recomputeTotals(&totals, items, profile.IsKleinunternehmer)
+	if totals.TotalCents <= 0 {
+		return nil, nil, guard(http.StatusUnprocessableEntity, "total_zero", "the invoice totals %s, so it cannot be issued",
+			invoicing_pdf.FormatEuro(totals.TotalCents, totals.Currency)).with("total_cents", totals.TotalCents, "currency", totals.Currency), nil
 	}
 
 	// The recipient's address is an issue-time rule on the gross total, not
@@ -91,26 +125,32 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 		gross := *inv
 		recomputeTotals(&gross, items, profile.IsKleinunternehmer)
 		if data_models.InvoiceNeedsRecipientAddress(gross.TotalCents, gross.Currency) {
-			return nil, nil, guard(http.StatusUnprocessableEntity, "client_incomplete",
+			// Its own code since system_3 #12274, with the figures the
+			// dialog's sentence names.
+			return nil, nil, guard(http.StatusUnprocessableEntity, "client_address_required",
 				"the client has no postal address, and this invoice totals %s gross: above %s an invoice must name the recipient's full address (§14 Abs. 4 UStG, §34a UStDV). Add the client's postal address to issue it",
-				invoicing_pdf.FormatEuro(gross.TotalCents, gross.Currency), invoicing_pdf.FormatEuro(data_models.KleinbetragLimitCents, "EUR")), nil
+				invoicing_pdf.FormatEuro(gross.TotalCents, gross.Currency), invoicing_pdf.FormatEuro(data_models.KleinbetragLimitCents, "EUR")).
+				with("total_cents", gross.TotalCents, "currency", gross.Currency, "limit_cents", int64(data_models.KleinbetragLimitCents)), nil
 		}
 	}
 
 	if inv.ServiceDateFrom == nil {
-		return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid", "the invoice has no service date"), nil
+		return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid", "the invoice has no service date").
+			with("reason", "missing"), nil
 	}
 	end := dateOnly(*inv.ServiceDateFrom)
 	if inv.ServiceDateTo != nil {
 		to := dateOnly(*inv.ServiceDateTo)
 		if to.Before(end) {
-			return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid", "the service period ends before it starts"), nil
+			return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid", "the service period ends before it starts").
+				with("reason", "ends_before_start"), nil
 		}
 		end = to
 	}
 	if end.After(issueDate) {
 		return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid",
-			"the service date %s is after today's issue date %s", end.Format(invoicingDateLayout), issueDate.Format(invoicingDateLayout)), nil
+			"the service date %s is after today's issue date %s", end.Format(invoicingDateLayout), issueDate.Format(invoicingDateLayout)).
+			with("reason", "after_today", "date", end.Format(invoicingDateLayout)), nil
 	}
 
 	payments, err := data_models.ListInvoicePayments(tx, inv.ID)
@@ -137,7 +177,8 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 	}
 	if latest != nil && issueDate.Before(dateOnly(*latest)) {
 		return nil, nil, guard(http.StatusUnprocessableEntity, "issue_date_before_previous",
-			"today (%s) is before the previous invoice's issue date (%s); check the server clock", issueDate.Format(invoicingDateLayout), latest.Format(invoicingDateLayout)), nil
+			"today (%s) is before the previous invoice's issue date (%s); check the server clock", issueDate.Format(invoicingDateLayout), latest.Format(invoicingDateLayout)).
+			with("latest", latest.Format(invoicingDateLayout)), nil
 	}
 	return profile, client, nil, nil
 }
@@ -235,8 +276,7 @@ func IssueInvoiceHandler(c *gin.Context) {
 		return
 	}
 	if !hasProfile {
-		respondGuard(c, tx, guard(http.StatusUnprocessableEntity, "profile_incomplete",
-			"the issuer profile needs a name, an address and a Steuernummer before an invoice can be issued"))
+		respondGuard(c, tx, profileIncomplete(profileMissing(nil)))
 		return
 	}
 	inv, err := data_models.GetInvoicingInvoice(tx, invoicingUserID(c), id)
@@ -316,7 +356,8 @@ func IssueInvoiceHandler(c *gin.Context) {
 	pdfSHA, err := storeInvoicePDF(tx, inv, profile, &frozenClient, items, logo)
 	if unprintable := asUnprintable(err); unprintable != nil {
 		respondGuard(c, tx, guard(http.StatusUnprocessableEntity, "unprintable_characters",
-			"the invoice would print without %q, which the invoice font cannot show; change those characters in the profile, the client or the line items", string(unprintable.Runes)))
+			"the invoice would print without %q, which the invoice font cannot show; change those characters in the profile, the client or the line items", string(unprintable.Runes)).
+			with("characters", string(unprintable.Runes)))
 		return
 	}
 	if err != nil {
