@@ -189,20 +189,50 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
 		return
 	}
+	// What the book holds is read once for the file, and the new payments
+	// are stored in a few statements, all in this one transaction (system_3
+	// #12273 item 6): a failure still stores nothing.
+	owner := invoicingUserID(c)
+	txnIDs := make([]string, 0, len(parsed.Rows))
+	emails := make([]string, 0, len(parsed.Rows))
+	for _, row := range parsed.Rows {
+		txnIDs = append(txnIDs, row.TransactionID)
+		if row.Kind == data_models.PaymentKindIncoming {
+			emails = append(emails, row.SenderEmail)
+		}
+	}
+	priors, err := data_models.InvoicingPaymentPriors(tx, owner, invoicingPaymentSourcePayPal, txnIDs)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error checking the file's payments: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
+	}
+	// The same PayPal payment may already have been entered by hand with its
+	// transaction id as the reference (#8409).
+	byHand, err := data_models.ManualPayPalReferences(tx, owner, txnIDs)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error checking manual payments for the file: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
+	}
+	clientIDs, err := data_models.InvoicingClientIDsByPayPalEmail(tx, owner, emails)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error matching clients for the file: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
+	}
 	seen := map[string]bool{}
+	var fresh []data_models.InvoicingPayment
 	for _, row := range parsed.Rows {
 		if seen[row.TransactionID] {
 			summary.Duplicates++
 			continue
 		}
 		seen[row.TransactionID] = true
-		prior, err := data_models.InvoicingPaymentPrior(tx, invoicingUserID(c), invoicingPaymentSourcePayPal, row.TransactionID)
-		if err != nil {
-			tx.Rollback()
-			log.Printf("Error checking payment %s: %v", row.TransactionID, err)
-			RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
-			return
-		}
+		prior := priors[row.TransactionID]
 		summary.count(prior)
 		if prior == data_models.PriorStored {
 			differs, err := payPalRowDiffersFromStored(tx, invoicingUserID(c), row)
@@ -216,24 +246,12 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 				summary.Differing = append(summary.Differing, row.TransactionID)
 			}
 		}
-		exists := prior.Seen()
-		if !exists {
-			// The same PayPal payment may already have been entered by hand
-			// with its transaction id as the reference (#8409).
-			exists, err = data_models.ManualPayPalPaymentWithReference(tx, invoicingUserID(c), row.TransactionID)
-			if err != nil {
-				tx.Rollback()
-				log.Printf("Error checking manual payments for %s: %v", row.TransactionID, err)
-				RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
-				return
-			}
-		}
-		if exists {
+		if prior.Seen() || byHand[row.TransactionID] {
 			summary.Duplicates++
 			continue
 		}
 		p := data_models.InvoicingPayment{
-			OwnerUserID:    invoicingUserID(c),
+			OwnerUserID:    owner,
 			Source:         invoicingPaymentSourcePayPal,
 			TransactionID:  row.TransactionID,
 			ReferenceTxnID: row.ReferenceTxnID,
@@ -248,25 +266,12 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 			Note:           row.Note,
 			Category:       row.Category,
 		}
-		if row.Kind == data_models.PaymentKindIncoming {
-			cl, err := data_models.FindInvoicingClientByPayPalEmail(tx, invoicingUserID(c), row.SenderEmail)
-			if err != nil {
-				tx.Rollback()
-				log.Printf("Error matching client for payment %s: %v", row.TransactionID, err)
-				RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
-				return
-			}
-			if cl != nil {
-				id := cl.ID
+		if row.Kind == data_models.PaymentKindIncoming && row.SenderEmail != "" {
+			if id, ok := clientIDs[row.SenderEmail]; ok {
 				p.ClientID = &id
 			}
 		}
-		if err := tx.Create(&p).Error; err != nil {
-			tx.Rollback()
-			log.Printf("Error storing payment %s: %v", row.TransactionID, err)
-			RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
-			return
-		}
+		fresh = append(fresh, p)
 		summary.Imported++
 		if row.Kind == data_models.PaymentKindWithdrawal {
 			summary.Withdrawals++
@@ -274,6 +279,12 @@ func ImportPayPalPaymentsHandler(c *gin.Context) {
 		if row.Category == data_models.PaymentCategoryRefund {
 			summary.Refunds++
 		}
+	}
+	if err := data_models.InsertImportedPayments(tx, fresh); err != nil {
+		tx.Rollback()
+		log.Printf("Error storing the file's payments: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Error importing payments")
+		return
 	}
 	// The rows that undo money already in the book, each with the payment it
 	// names (system_3 #12259). Read after the inserts, so a refund in the

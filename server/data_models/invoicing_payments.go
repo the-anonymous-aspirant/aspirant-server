@@ -178,14 +178,31 @@ func (p InvoicingPayment) MethodLabel() string {
 	}
 }
 
+// AnsweredFeeCents is the fee as every answer carries it: a charge positive,
+// a fee given back negative (system_3 #12273 item 2). N26 rows store it that
+// way (their confirm requires 0 <= fee < gross); a PayPal row stores the fee
+// as the file prints it, a charge negative and a returned fee positive, on
+// every kind (a withdrawal's gross and net are turned at import, its fee is
+// not). Stored rows are never rewritten, and this is read only where the
+// answer is built: an edit saves the whole loaded row, so a normalised model
+// would be written back.
+func (p InvoicingPayment) AnsweredFeeCents() int64 {
+	if p.Source == "paypal" {
+		return -p.FeeCents
+	}
+	return p.FeeCents
+}
+
 // MarshalJSON serves the stored fields plus `shown_reference`, so no view has
-// to tell a derived id from a provider's (system_3 #12257).
+// to tell a derived id from a provider's (system_3 #12257), with the fee in
+// one sign (AnsweredFeeCents). The outer fee_cents shadows the stored one.
 func (p InvoicingPayment) MarshalJSON() ([]byte, error) {
 	type stored InvoicingPayment
 	return json.Marshal(struct {
 		stored
+		FeeCents       int64  `json:"fee_cents"`
 		ShownReference string `json:"shown_reference"`
-	}{stored(p), p.ShownReference()})
+	}{stored(p), p.AnsweredFeeCents(), p.ShownReference()})
 }
 
 // PaymentOnAnyInvoice returns the id of an invoice (draft, issued or

@@ -505,14 +505,27 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	}
 	if req.IBAN != nil {
 		iban := data_models.NormaliseIBAN(*req.IBAN)
-		// The message never repeats the value (security C5, #11551).
-		if iban != "" && !data_models.ValidIBAN(iban) {
-			respondError(c, http.StatusBadRequest, "invalid_iban", "iban must be a valid IBAN when given")
-			return req, false
-		}
 		req.IBAN = &iban
 	}
 	return req, true
+}
+
+// checkClientIBAN refuses an IBAN that is not valid, unless it is the one
+// already stored on the client: the form sends the IBAN with every Save, and
+// a stored IBAN the check has since tightened against must not make every
+// later Save of that client fail (system_3 #12273 item 1, the rule of
+// #12264's review: an unchanged field is not checked). stored is "" on
+// create. It writes the 400 itself.
+func checkClientIBAN(c *gin.Context, req invoicingClientRequest, stored string) bool {
+	if req.IBAN == nil || *req.IBAN == "" || *req.IBAN == stored {
+		return true
+	}
+	if !data_models.ValidIBAN(*req.IBAN) {
+		// The message never repeats the value (security C5, #11551).
+		respondError(c, http.StatusBadRequest, "invalid_iban", "iban must be a valid IBAN when given")
+		return false
+	}
+	return true
 }
 
 func ListInvoicingClientsHandler(c *gin.Context) {
@@ -529,7 +542,7 @@ func ListInvoicingClientsHandler(c *gin.Context) {
 func CreateInvoicingClientHandler(c *gin.Context) {
 	db := c.MustGet("db").(*gorm.DB)
 	req, ok := bindInvoicingClient(c)
-	if !ok {
+	if !ok || !checkClientIBAN(c, req, "") {
 		return
 	}
 	if !checkClientNameAndAddress(c, req, nil) {
@@ -628,6 +641,10 @@ func UpdateInvoicingClientHandler(c *gin.Context) {
 			respondClientExists(c, other)
 			return
 		}
+	}
+	if !checkClientIBAN(c, req, existing.IBAN) {
+		tx.Rollback()
+		return
 	}
 	before := *existing
 	existing.Name = req.Name
