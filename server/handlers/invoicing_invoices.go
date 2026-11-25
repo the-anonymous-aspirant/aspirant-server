@@ -569,6 +569,32 @@ type lineItemInput struct {
 	UnitPriceCents int64  `json:"unit_price_cents"`
 }
 
+// lineRefusal is a refusal of one draft line, with its field.
+type lineRefusal struct {
+	refusal
+	field string
+}
+
+// lineItemRefusal checks one draft line; item is its 1-based position.
+// Bounded so quantity × price stays far inside int64 (@security N1,
+// c51467): 10,000 units, 100 million euros.
+func lineItemRefusal(li lineItemInput, item int) *lineRefusal {
+	at := func(field, code string, limit int64, format string) *lineRefusal {
+		return &lineRefusal{refusal{code: code, limit: limit, item: item, whole: true, message: "line_items " + fmt.Sprintf(format, item)}, field}
+	}
+	switch {
+	case li.QuantityMilli < 0:
+		return at("quantity_milli", codeBelowZero, 0, "item %d has a negative quantity")
+	case li.UnitPriceCents < 0:
+		return at("unit_price_cents", codeBelowZero, 0, "item %d has a negative price")
+	case li.QuantityMilli > maxQuantityMilli:
+		return at("quantity_milli", codeQuantityTooLarge, maxQuantityMilli/1000, "item %d exceeds 10000 units")
+	case li.UnitPriceCents > maxUnitPriceCents:
+		return at("unit_price_cents", codeAmountTooLarge, maxUnitPriceCents, "item %d exceeds 100000000 euros")
+	}
+	return nil
+}
+
 // UpdateInvoiceDraftHandler edits a draft. Fields left out are unchanged;
 // line_items and payment_ids replace the whole list when given. Issued and
 // cancelled invoices refuse every edit.
@@ -619,14 +645,17 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 		respondGuard(c, tx, guard(http.StatusConflict, "not_a_draft", "invoice %d is %s and can no longer be changed", inv.ID, inv.Status))
 		return
 	}
-	bad := func(field string, err error) {
-		respondGuard(c, tx, guard(http.StatusBadRequest, "invalid_field", "%s %v", field, err))
+	// One code per cause and the field it is about (system_3 #12300
+	// ruling 1); the message is the one these refusals have always had.
+	bad := func(field string, r *refusal) {
+		tx.Rollback()
+		respondFieldRefusal(c, field, r)
 	}
 
 	if raw, ok := body["client_id"]; ok {
 		cid, err := optionalID(raw)
 		if err != nil {
-			bad("client_id", err)
+			bad("client_id", refuse(codeInvalidID, err.Error()))
 			return
 		}
 		if cid != nil {
@@ -636,7 +665,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 				return
 			}
 			if cl == nil {
-				bad("client_id", fmt.Errorf("does not name a client"))
+				bad("client_id", noSuchClient)
 				return
 			}
 		}
@@ -649,7 +678,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 		}
 		d, err := parseOptionalDate(raw)
 		if err != nil {
-			bad(f, err)
+			bad(f, refuse(codeInvalidDate, err.Error()))
 			return
 		}
 		// A service date before 2000 is a mistyped year ("26" for 2026), as
@@ -669,7 +698,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	if raw, ok := body["vat_rate_bp"]; ok {
 		var bp int
 		if err := json.Unmarshal(raw, &bp); err != nil || bp < 0 || bp > 10000 || bp%10 != 0 {
-			bad("vat_rate_bp", fmt.Errorf("must be basis points between 0 and 10000, in steps of 10"))
+			bad("vat_rate_bp", refuse(codeInvalidVATRate, "must be basis points between 0 and 10000, in steps of 10"))
 			return
 		}
 		inv.VatRateBP = bp
@@ -683,26 +712,16 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	if raw, ok := body["line_items"]; ok {
 		var in []lineItemInput
 		if err := json.Unmarshal(raw, &in); err != nil {
-			bad("line_items", fmt.Errorf("must be a list of {description, quantity_milli, unit_price_cents}"))
+			bad("line_items", refuse(codeInvalidLineItems, "must be a list of {description, quantity_milli, unit_price_cents}"))
 			return
 		}
 		items = items[:0]
 		for i, li := range in {
-			if li.QuantityMilli < 0 || li.UnitPriceCents < 0 {
-				bad("line_items", fmt.Errorf("item %d has a negative quantity or price", i+1))
-				return
-			}
-			// Bounded so quantity × price stays far inside int64
-			// (@security N1, c51467): 10,000 units, 100 million euros.
-			// The quantity has its own code, so the dialog can name the line
-			// (system_3 #12274: "Line 1: the quantity is too large.").
-			if li.QuantityMilli > maxQuantityMilli {
-				respondGuard(c, tx, guard(http.StatusBadRequest, "quantity_too_large", "item %d exceeds 10000 units", i+1).
-					with("position", i+1))
-				return
-			}
-			if li.QuantityMilli > maxQuantityMilli || li.UnitPriceCents > maxUnitPriceCents {
-				bad("line_items", fmt.Errorf("item %d exceeds 10000 units or 100000000 euros", i+1))
+			// The field is the line's own, so the editor can print the
+			// sentence at that line's input (c77188 on #12300).
+			if r := lineItemRefusal(li, i+1); r != nil {
+				tx.Rollback()
+				respondFieldRefusal(c, r.field, &r.refusal)
 				return
 			}
 			items = append(items, data_models.InvoicingLineItem{
@@ -729,7 +748,7 @@ func UpdateInvoiceDraftHandler(c *gin.Context) {
 	if raw, ok := body["payment_ids"]; ok {
 		var ids []uint
 		if err := json.Unmarshal(raw, &ids); err != nil {
-			bad("payment_ids", fmt.Errorf("must be a list of ids"))
+			bad("payment_ids", refuse(codeInvalidID, "must be a list of ids"))
 			return
 		}
 		linked, g, err := checkInvoiceablePayments(tx, invoicingUserID(c), ids, inv.ID)

@@ -168,3 +168,42 @@ func TestProfileAndClient_EachCauseHasItsOwnCode(t *testing.T) {
 		t.Errorf("profile address of %d lines: %+v", maxProfileAddressLines+1, e.Error)
 	}
 }
+
+// A draft: each line's refusal is about that line's own input, with its
+// 1-based position, so the editor prints it there (c77188 on #12300).
+func TestDraft_EachCauseHasItsOwnCode(t *testing.T) {
+	f := newInvoiceFixture(t)
+	path := fmt.Sprintf("/invoicing/invoices/%d", f.draft(t, 0))
+	line := func(q, p int64) string {
+		return fmt.Sprintf(`{"description":"Wandbild","quantity_milli":%d,"unit_price_cents":%d}`, q, p)
+	}
+	ok := line(1000, 1999)
+	for _, tc := range []struct {
+		name, body, code, field string
+		limit                   int64
+		item                    int
+	}{
+		{"a negative quantity on line 2", `{"line_items":[` + ok + `,` + line(-1000, 1999) + `]}`, codeBelowZero, "quantity_milli", 0, 2},
+		{"a negative price on line 1", `{"line_items":[` + line(1000, -1) + `]}`, codeBelowZero, "unit_price_cents", 0, 1},
+		{"a quantity over 10,000 on line 3", `{"line_items":[` + ok + `,` + ok + `,` + line(maxQuantityMilli+1, 1999) + `]}`, codeQuantityTooLarge, "quantity_milli", 10000, 3},
+		{"a price too large on line 2", `{"line_items":[` + ok + `,` + line(1000, maxUnitPriceCents+1) + `]}`, codeAmountTooLarge, "unit_price_cents", maxUnitPriceCents, 2},
+		{"a quantity as text", `{"line_items":[{"description":"x","quantity_milli":"zwei","unit_price_cents":1}]}`, codeInvalidLineItems, "line_items", 0, 0},
+		{"a VAT rate off the steps", `{"vat_rate_bp":1905}`, codeInvalidVATRate, "vat_rate_bp", 0, 0},
+		{"a service date that is not a date", `{"service_date_from":"14.07.2026"}`, codeInvalidDate, "service_date_from", 0, 0},
+		{"an unknown client", `{"client_id":999}`, codeNoSuchClient, "client_id", 0, 0},
+		{"a client id that is not one", `{"client_id":-3}`, codeInvalidID, "client_id", 0, 0},
+	} {
+		w := invoicingDo(f.r, "PUT", path, tc.body)
+		var e refusalEnvelope
+		var item struct {
+			Error struct {
+				Item int `json:"item"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &e)
+		_ = json.Unmarshal(w.Body.Bytes(), &item)
+		if w.Code != http.StatusBadRequest || e.Error.Code != tc.code || e.Error.Field != tc.field || e.Error.Limit != tc.limit || item.Error.Item != tc.item {
+			t.Errorf("%s: %d %s; want %s %s limit %d item %d", tc.name, w.Code, w.Body.String(), tc.code, tc.field, tc.limit, tc.item)
+		}
+	}
+}

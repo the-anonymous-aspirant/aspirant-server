@@ -41,6 +41,10 @@ const (
 	codeInvalidCategory  = "invalid_category"      // not one of the owner's expense categories
 	codeInvalidPrefix    = "invalid_prefix"        // an invoice number prefix of other characters or over limit
 	codeNumberTooSmall   = "number_too_small"      // under limit
+	codeBelowZero        = "below_zero"            // a draft line\'s quantity or unit price under 0
+	codeQuantityTooLarge = "quantity_too_large"    // a draft line\'s quantity over limit units
+	codeInvalidLineItems = "invalid_line_items"    // line_items is not a list of line items
+	codeInvalidVATRate   = "invalid_vat_rate"      // not basis points 0-10000 in steps of 10
 )
 
 // refusal is why one field cannot be accepted. nil means it can.
@@ -49,6 +53,7 @@ type refusal struct {
 	message string // after the field's name: "must be ...", unless whole
 	limit   int64
 	lines   int64
+	item    int  // 1-based list position, 0 for none
 	whole   bool // message is a whole sentence, not prefixed with the field
 }
 
@@ -73,7 +78,7 @@ func respondFieldRefusal(c *gin.Context, field string, r *refusal) {
 		msg = field + " " + msg
 	}
 	log.Printf("Error response: %d - %s - %s", http.StatusBadRequest, r.code, msg)
-	c.JSON(http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: msg, Field: field, Limit: r.limit, Lines: r.lines}})
+	c.JSON(http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: msg, Field: field, Limit: r.limit, Lines: r.lines, Item: r.item}})
 }
 
 var notAString = refuse(codeNotAString, "must be a string")

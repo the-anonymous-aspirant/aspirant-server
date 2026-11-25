@@ -58,6 +58,9 @@ type ErrorDetail struct {
 	// Lines is the most lines a field of several lines takes, beside Limit,
 	// the characters of each (an address).
 	Lines int64 `json:"lines,omitempty"`
+	// Item is the 1-based position of the list entry the refusal is about
+	// (a draft's line item).
+	Item int `json:"item,omitempty"`
 }
 
 type ErrorResponse struct {
