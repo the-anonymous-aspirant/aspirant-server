@@ -138,6 +138,14 @@ func checkIssuable(tx *gorm.DB, owner uint, inv *data_models.InvoicingInvoice, i
 		return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid", "the invoice has no service date").
 			with("reason", "missing"), nil
 	}
+	// The floor of a draft's save, held again here for a draft stored before
+	// it (system_3 #12312 ruling 3).
+	for _, d := range []*time.Time{inv.ServiceDateFrom, inv.ServiceDateTo} {
+		if d != nil && dateOnly(*d).Before(earliestPaymentDate) {
+			return nil, nil, guard(http.StatusUnprocessableEntity, "service_date_invalid",
+				"the service date %s is before 2000-01-01: check the year", d.Format(invoicingDateLayout)), nil
+		}
+	}
 	end := dateOnly(*inv.ServiceDateFrom)
 	if inv.ServiceDateTo != nil {
 		to := dateOnly(*inv.ServiceDateTo)

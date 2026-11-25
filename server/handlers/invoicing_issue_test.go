@@ -318,6 +318,15 @@ func TestIssue_Guardrails(t *testing.T) {
 		{"service date after the issue date", 422, "service_date_invalid", func(t *testing.T, f *invoiceFixture, id uint) {
 			invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id), `{"service_date_from":"2026-10-22","service_date_to":null}`)
 		}},
+		// system_3 #12312: a draft stored before the save's floor, with the
+		// year typed as "26", is not issued.
+		{"service date before 2000", 422, "service_date_invalid", func(t *testing.T, f *invoiceFixture, id uint) {
+			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).Update("service_date_from", time.Date(26, 11, 3, 0, 0, 0, 0, time.UTC))
+		}},
+		{"service end before 2000", 422, "check the year", func(t *testing.T, f *invoiceFixture, id uint) {
+			f.db.Model(&data_models.InvoicingInvoice{}).Where("id = ?", id).Updates(map[string]interface{}{
+				"service_date_from": time.Date(26, 11, 3, 0, 0, 0, 0, time.UTC), "service_date_to": time.Date(26, 11, 4, 0, 0, 0, 0, time.UTC)})
+		}},
 		{"payment recategorised after drafting", 422, "payment_not_paid_work", func(t *testing.T, f *invoiceFixture, id uint) {
 			f.db.Model(&data_models.InvoicingPayment{}).Where("id = ?", f.payments[0].ID).Update("category", "gift")
 		}},
