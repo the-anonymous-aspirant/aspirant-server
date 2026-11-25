@@ -1075,7 +1075,10 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		// The parse never offers such a row; the client posts rows back,
 		// so the rule is enforced here too.
 		if isPayPalSender(row.SenderName) {
-			bad("the payer is PayPal: a transfer from PayPal is already counted in the PayPal import")
+			// Its own code: this is the one row refusal that is zirs to
+			// read, and the dialog says it at the row (c77188 group 6).
+			respondFieldRefusal(c, "rows", &refusal{code: codePayPalTransferRow, item: i + 1, whole: true,
+				message: fmt.Sprintf("row %d: the payer is PayPal: a transfer from PayPal is already counted in the PayPal import", i)})
 			return
 		}
 		if utf8.RuneCountInString(row.Note) > n26MaxPaymentNoteRunes {

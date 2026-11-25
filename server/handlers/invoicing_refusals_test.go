@@ -310,6 +310,15 @@ func TestN26Confirm_ARefusedRowAnswersItsPosition(t *testing.T) {
 	if w.Code != http.StatusBadRequest || e.Error.Code != "invalid_row" || e.Error.Field != "rows" || item.Error.Item != 2 {
 		t.Errorf("the second row: %d %s", w.Code, w.Body.String())
 	}
+	// A row whose payer is PayPal has its own code, at its position.
+	paypal := strings.Replace(row(n26KindAccountStatement), "Mara Esempio", "PayPal Europe S.a.r.l. et Cie S.C.A", 1)
+	w = invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+row(n26KindAccountStatement)+`,`+paypal+`]}`)
+	e, item.Error.Item = refusalEnvelope{}, 0
+	_ = json.Unmarshal(w.Body.Bytes(), &e)
+	_ = json.Unmarshal(w.Body.Bytes(), &item)
+	if w.Code != http.StatusBadRequest || e.Error.Code != codePayPalTransferRow || item.Error.Item != 2 || !strings.HasPrefix(e.Error.Message, "row 1: the payer is PayPal") {
+		t.Errorf("a PayPal payer: %d %s", w.Code, w.Body.String())
+	}
 	many := strings.TrimSuffix(strings.Repeat(row(n26KindAccountStatement)+",", maxN26ConfirmRows+1), ",")
 	w = invoicingDo(r, "POST", "/invoicing/payments/import-n26/confirm", `{"rows":[`+many+`]}`)
 	e = refusalEnvelope{}

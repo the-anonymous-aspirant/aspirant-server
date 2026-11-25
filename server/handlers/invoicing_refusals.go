@@ -55,6 +55,7 @@ const (
 	codePaymentListedTwice = "payment_listed_twice"  // a payment id twice in one list; duplicate_payment is one already in the book
 	codeBuiltinPresetName  = "builtin_preset_name"   // a preset named as the built-in Work only
 	codeNotPayPalExport    = "not_paypal_export"     // a CSV or sheet without the activity export\'s columns
+	codePayPalTransferRow  = "paypal_transfer_row"   // an N26 row whose payer is PayPal, already counted by the PayPal import
 )
 
 // refusal is why one field cannot be accepted. nil means it can.
