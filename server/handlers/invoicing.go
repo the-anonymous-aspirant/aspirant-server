@@ -262,6 +262,10 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		tx.Rollback()
 		return
 	}
+	if !checkPrefixHyphens(c, p.InvoiceNumberPrefix, existing) {
+		tx.Rollback()
+		return
+	}
 	action := invoicingActionUpdate
 	if existing == nil {
 		action = invoicingActionCreate
@@ -269,7 +273,9 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 	// Once a number has been issued under a prefix, the counter belongs to
 	// the server: it must read one past the highest number issued, so the
 	// sequence stays gap-free and unique (spec §5). A new prefix may start
-	// wherever an earlier, outside sequence left off (spec §8 Q3).
+	// wherever an earlier, outside sequence left off (spec §8 Q3). Prefixes
+	// that differ only in case are one prefix here, so changing "r" to "R"
+	// continues the series (system_3 #12272).
 	//
 	// The server sets that number itself and ignores the one sent: the
 	// editor shows the field read-only while the prefix is in use, so a Save

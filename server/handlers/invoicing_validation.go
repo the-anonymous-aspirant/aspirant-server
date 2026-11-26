@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"aspirant-online/server/data_models"
@@ -54,9 +55,36 @@ func validateInvoicing(db *gorm.DB, owner uint) (*validationReport, error) {
 	}
 	day := screenDay
 
+	// Each prefix's series is checked exactly, as before. Prefixes that
+	// differ only in case are one family (system_3 #12272): since the profile
+	// save folds case, "R" continues "r"'s series, so a number a case-variant
+	// holds fills a gap. A book that holds the same number under two such
+	// prefixes (r-001 and R-001, issued before the fold) reads a warning:
+	// issued invoices are not rewritten, and a violation would block every
+	// export for good.
 	byPrefix := map[string][]data_models.InvoicingInvoice{}
+	family := map[string][]int{}
+	holders := map[string]map[int][]data_models.InvoicingInvoice{}
 	for _, inv := range numbered {
 		byPrefix[inv.Prefix] = append(byPrefix[inv.Prefix], inv)
+		key := strings.ToLower(inv.Prefix)
+		if holders[key] == nil {
+			holders[key] = map[int][]data_models.InvoicingInvoice{}
+		}
+		if len(holders[key][*inv.Number]) == 0 {
+			family[key] = append(family[key], *inv.Number)
+		}
+		holders[key][*inv.Number] = append(holders[key][*inv.Number], inv)
+	}
+	for key := range family {
+		sort.Ints(family[key])
+	}
+	// filled reports whether the family holds every number strictly between
+	// from and to.
+	filled := func(key string, from, to int) bool {
+		nums := family[key]
+		between := sort.SearchInts(nums, to) - sort.SearchInts(nums, from+1)
+		return between == to-from-1
 	}
 	prefixes := make([]string, 0, len(byPrefix))
 	for p := range byPrefix {
@@ -70,12 +98,35 @@ func validateInvoicing(db *gorm.DB, owner uint) (*validationReport, error) {
 			switch {
 			case *cur.Number == *prev.Number:
 				add("number_duplicate", cur.ID, 0, "Invoice number %s is used twice.", label[cur.ID])
-			case *cur.Number != *prev.Number+1:
+			case *cur.Number != *prev.Number+1 && !filled(strings.ToLower(prefix), *prev.Number, *cur.Number):
 				add("number_gap", cur.ID, 0, "Invoice numbers jump from %s to %s.", label[prev.ID], label[cur.ID])
 			}
 			if prev.IssueDate != nil && cur.IssueDate != nil && cur.IssueDate.Before(*prev.IssueDate) {
 				add("number_order", cur.ID, 0, "Invoice %s (%s) is dated before %s (%s).",
 					label[cur.ID], day(*cur.IssueDate), label[prev.ID], day(*prev.IssueDate))
+			}
+		}
+	}
+	keys := make([]string, 0, len(family))
+	for key := range family {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		for _, n := range family[key] {
+			invs := holders[key][n]
+			twins := map[string]bool{}
+			names := []string{}
+			for _, inv := range invs {
+				if !twins[inv.Prefix] {
+					twins[inv.Prefix] = true
+					names = append(names, label[inv.ID])
+				}
+			}
+			sort.Strings(names)
+			if len(names) > 1 {
+				rep.Warnings = append(rep.Warnings, validationItem{"number_case_twin", invs[len(invs)-1].ID, 0,
+					fmt.Sprintf("Invoices %s have the same number; their prefixes differ only in capital letters.", strings.Join(names, " and "))})
 			}
 		}
 	}
