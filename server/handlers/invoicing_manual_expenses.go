@@ -34,6 +34,8 @@ var manualExpenseFields = map[string]bool{
 	"paid_on": true, "amount_cents": true, "currency": true,
 	"category": true, "reference": true, "note": true, "client_id": true,
 	"payee": true, "create_category": true,
+	// Save it although an expense like it is in the book (system_3 #12295).
+	"confirm_duplicate": true,
 }
 
 // createCategoryFlag reads the optional "create_category" of an expense
@@ -199,6 +201,11 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		bad("payee", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
 		return
 	}
+	confirmDuplicate, err := confirmDuplicateFlag(body)
+	if err != nil {
+		bad("confirm_duplicate", err.Error())
+		return
+	}
 
 	tx := db.Begin()
 	defer tx.RollbackUnlessCommitted()
@@ -250,6 +257,21 @@ func CreateManualExpenseHandler(c *gin.Context) {
 			}
 		}
 		clientID = cid
+	}
+	// A look-alike is asked about, once (system_3 #12295).
+	if !confirmDuplicate {
+		twin, err := findExpenseTwin(tx, invoicingUserID(c), paidOn, amount, currency, payee)
+		if err != nil {
+			tx.Rollback()
+			log.Printf("Error checking for a look-alike expense: %v", err)
+			RespondWithError(c, http.StatusInternalServerError, "Error storing expense")
+			return
+		}
+		if twin != nil {
+			tx.Rollback()
+			respondPossibleDuplicate(c, "expense", twin.ID, twin)
+			return
+		}
 	}
 	txnID, err := newManualExpenseTransactionID()
 	if err != nil {

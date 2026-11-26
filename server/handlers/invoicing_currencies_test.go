@@ -115,8 +115,10 @@ func TestManualEntry_IsInEuros(t *testing.T) {
 			t.Errorf("payment in %s: %d %s, want 400 must be EUR", cur, code, body)
 		}
 	}
+	// Each entry is the other's look-alike (system_3 #12295), so each is
+	// confirmed: this test is about the currency.
 	for _, cur := range []string{`,"currency":"EUR"`, ""} {
-		code, p, body := createManual(t, f, fmt.Sprintf(`{"paid_on":"2026-07-14","gross_cents":4200,"method":"cash"%s,"client_id":%d}`, cur, f.clientID))
+		code, p, body := createManual(t, f, fmt.Sprintf(`{"paid_on":"2026-07-14","gross_cents":4200,"method":"cash"%s,"client_id":%d,"confirm_duplicate":true}`, cur, f.clientID))
 		if code != http.StatusCreated || p.Currency != "EUR" {
 			t.Errorf("payment with %q: %d %s", cur, code, body)
 		}
@@ -130,7 +132,7 @@ func TestManualEntry_IsInEuros(t *testing.T) {
 		}
 	}
 	for _, cur := range []string{`,"currency":"EUR"`, ""} {
-		code, e, body := createExpense(t, r, fmt.Sprintf(`{"paid_on":"2026-07-14","amount_cents":1299%s}`, cur))
+		code, e, body := createExpense(t, r, fmt.Sprintf(`{"paid_on":"2026-07-14","amount_cents":1299%s,"confirm_duplicate":true}`, cur))
 		if code != http.StatusCreated || e.Currency != "EUR" {
 			t.Errorf("expense with %q: %d %s", cur, code, body)
 		}

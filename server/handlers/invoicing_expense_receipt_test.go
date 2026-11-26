@@ -77,7 +77,9 @@ func uploadReceipt(r *gin.Engine, id int, filename string, content []byte, decla
 
 func mustCreateExpense(t *testing.T, r *gin.Engine) data_models.InvoicingExpense {
 	t.Helper()
-	code, e, body := createExpense(t, r, `{"paid_on":"2026-07-01","amount_cents":1500}`)
+	// Every expense made here is the same, so each is confirmed past the
+	// look-alike question (system_3 #12295).
+	code, e, body := createExpense(t, r, `{"paid_on":"2026-07-01","amount_cents":1500,"confirm_duplicate":true}`)
 	if code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("create expense: %d %s", code, body)
 	}
