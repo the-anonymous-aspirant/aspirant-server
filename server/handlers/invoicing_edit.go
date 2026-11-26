@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
 
@@ -117,63 +116,40 @@ func editString(raw json.RawMessage) (string, bool) {
 
 // checkEditPaidOn applies the hand-entry date rule. futureHint completes the
 // "cannot be in the future" message the same way each create handler does.
-func checkEditPaidOn(raw json.RawMessage, futureHint string) (time.Time, string) {
+func checkEditPaidOn(raw json.RawMessage, futureHint string) (time.Time, *refusal) {
 	s, ok := editString(raw)
 	if !ok {
-		return time.Time{}, "must be a string"
+		return time.Time{}, notAString
 	}
-	d, err := time.Parse(invoicingDateLayout, s)
-	if err != nil {
-		return time.Time{}, "must be a date, YYYY-MM-DD"
-	}
-	if d.After(berlinToday()) {
-		return time.Time{}, "cannot be in the future: " + futureHint
-	}
-	if d.Before(earliestPaymentDate) {
-		return time.Time{}, "must be 2000-01-01 or later"
-	}
-	return d, ""
+	return paidOnRefusal(s, futureHint)
 }
 
-func checkEditCents(raw json.RawMessage) (int64, string) {
-	var v int64
-	if err := json.Unmarshal(raw, &v); err != nil || v <= 0 || v > maxUnitPriceCents {
-		return 0, "must be a whole number of cents above zero"
-	}
-	return v, ""
+func checkEditCents(raw json.RawMessage) (int64, *refusal) {
+	return centsRefusal(raw)
 }
 
-func checkEditReference(raw json.RawMessage) (string, string) {
+func checkEditReference(raw json.RawMessage) (string, *refusal) {
 	s, ok := editString(raw)
 	if !ok {
-		return "", "must be a string"
+		return "", notAString
 	}
-	if utf8.RuneCountInString(s) > maxManualReferenceRunes || strings.Contains(s, "\n") || hasControlChars(s) || hasFormatChars(s) {
-		return "", fmt.Sprintf("must be one line of at most %d characters", maxManualReferenceRunes)
-	}
-	return s, ""
+	return s, oneLineTextRefusal(s, maxManualReferenceRunes)
 }
 
-func checkEditOneLineName(raw json.RawMessage) (string, string) {
+func checkEditOneLineName(raw json.RawMessage) (string, *refusal) {
 	s, ok := editString(raw)
 	if !ok {
-		return "", "must be a string"
+		return "", notAString
 	}
-	if !validOneLineName(s) {
-		return "", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes)
-	}
-	return s, ""
+	return s, oneLineTextRefusal(s, maxManualSenderRunes)
 }
 
-func checkEditNote(raw json.RawMessage) (string, string) {
+func checkEditNote(raw json.RawMessage) (string, *refusal) {
 	s, ok := editString(raw)
 	if !ok {
-		return "", "must be a string"
+		return "", notAString
 	}
-	if utf8.RuneCountInString(s) > maxManualNoteRunes || hasControlChars(s) {
-		return "", fmt.Sprintf("must be at most %d characters", maxManualNoteRunes)
-	}
-	return s, ""
+	return s, textRefusal(s, maxManualNoteRunes, false)
 }
 
 // changedFields compares the before and after values of the keys sent and
@@ -293,9 +269,9 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 			return
 		}
 	}
-	bad := func(field, msg string) {
+	bad := func(field string, r *refusal) {
 		tx.Rollback()
-		respondError(c, http.StatusBadRequest, "invalid_field", field+" "+msg)
+		respondFieldRefusal(c, field, r)
 	}
 
 	next := *p
@@ -307,7 +283,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		case "new_client_address", "new_client_email":
 			s, ok := editString(raw)
 			if !ok {
-				bad(k, "must be a string")
+				bad(k, notAString)
 				return
 			}
 			if k == "new_client_address" {
@@ -318,31 +294,31 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		case "new_client_name":
 			s, ok := editString(raw)
 			if !ok {
-				bad(k, "must be a string")
+				bad(k, notAString)
 				return
 			}
-			if msg := newClientNameRefusal(s); msg != "" {
-				bad(k, msg)
+			if r := newClientNameRefusal(s); r != nil {
+				bad(k, r)
 				return
 			}
 			if s != "" {
 				if cid, present := body["client_id"]; present && string(cid) != "null" {
-					bad(k, "cannot be given together with client_id: choose a client or add a new one")
+					bad(k, clientAndNewClient)
 					return
 				}
 			}
 			newClientName = s
 		case "paid_on":
-			d, msg := checkEditPaidOn(raw, "enter the day the money was received")
-			if msg != "" {
-				bad(k, msg)
+			d, r := checkEditPaidOn(raw, "enter the day the money was received")
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.PaidOn = d
 		case "gross_cents":
-			v, msg := checkEditCents(raw)
-			if msg != "" {
-				bad(k, msg)
+			v, r := checkEditCents(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.GrossCents = v
@@ -350,40 +326,40 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		case "method":
 			s, ok := editString(raw)
 			if _, known := data_models.PaymentMethodLabels[s]; !ok || !known {
-				bad(k, "must be one of "+strings.Join(data_models.PaymentMethods, ", "))
+				bad(k, refuse(codeInvalidChoice, "must be one of "+strings.Join(data_models.PaymentMethods, ", ")))
 				return
 			}
 			next.Method = s
 		case "reference":
-			s, msg := checkEditReference(raw)
-			if msg != "" {
-				bad(k, msg)
+			s, r := checkEditReference(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.Reference = s
 		case "sender_name":
-			s, msg := checkEditOneLineName(raw)
-			if msg != "" {
-				bad(k, msg)
+			s, r := checkEditOneLineName(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.SenderName = s
 		case "note":
-			s, msg := checkEditNote(raw)
-			if msg != "" {
-				bad(k, msg)
+			s, r := checkEditNote(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.Note = s
 		case "category":
 			var cat string
 			if err := json.Unmarshal(raw, &cat); err != nil || !data_models.IsPaymentCategory(cat) {
-				bad(k, "must be one of uncategorised, paid_work, gift, loan, refund, other")
+				bad(k, refuse(codeInvalidChoice, "must be one of uncategorised, paid_work, gift, loan, refund, other"))
 				return
 			}
 			if p.Kind != data_models.PaymentKindIncoming {
 				tx.Rollback()
-				RespondWithError(c, http.StatusBadRequest, "Only incoming payments are categorised; this row is a bank withdrawal")
+				respondFieldRefusal(c, k, refuse(codeNotCategorisable, "is only set on incoming payments; this row is a bank withdrawal"))
 				return
 			}
 			// A transfer from PayPal into N26 is money the PayPal import
@@ -398,7 +374,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		case "client_id":
 			cid, err := optionalID(raw)
 			if err != nil {
-				bad(k, err.Error())
+				bad(k, refuse(codeInvalidID, err.Error()))
 				return
 			}
 			if cid != nil {
@@ -408,7 +384,7 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 					return
 				}
 				if cl == nil {
-					bad(k, "does not name a client")
+					bad(k, noSuchClient)
 					return
 				}
 			}
@@ -425,8 +401,8 @@ func PatchInvoicingPaymentHandler(c *gin.Context) {
 		next.Reference = strings.ToUpper(next.Reference)
 	}
 
-	if field, msg := newClientDetailsRefusal(newClientName, newDetails); msg != "" {
-		bad(field, msg)
+	if field, r := newClientDetailsRefusal(newClientName, newDetails); r != nil {
+		bad(field, r)
 		return
 	}
 
@@ -608,9 +584,9 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 			return
 		}
 	}
-	bad := func(field, msg string) {
+	bad := func(field string, r *refusal) {
 		tx.Rollback()
-		respondError(c, http.StatusBadRequest, "invalid_field", field+" "+msg)
+		respondFieldRefusal(c, field, r)
 	}
 
 	createCategory, ok := createCategoryFlag(c, body)
@@ -624,70 +600,71 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 		raw := body[k]
 		switch k {
 		case "paid_on":
-			d, msg := checkEditPaidOn(raw, "enter the day the expense was paid")
-			if msg != "" {
-				bad(k, msg)
+			d, r := checkEditPaidOn(raw, "enter the day the expense was paid")
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.PaidOn = d
 		case "amount_cents":
-			v, msg := checkEditCents(raw)
-			if msg != "" {
-				bad(k, msg)
+			v, r := checkEditCents(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.AmountCents = v
 		case "category":
 			s, ok := editString(raw)
 			if !ok || (s == "" && !createCategory) {
-				bad(k, "is not one of your expense categories")
+				bad(k, refuse(codeInvalidCategory, "is not one of your expense categories"))
 				return
 			}
 			// A removed category is refused unless it is this expense's own,
 			// unchanged (#11579 item 4). A typed one is made or restored in
 			// this transaction, so a later refusal rolls it back (item 9).
-			var code, msg string
+			var refused *refusal
 			var err error
 			if createCategory {
-				s, code, msg, err = resolveTypedExpenseCategory(tx, owner, s)
+				s, refused, err = resolveTypedExpenseCategory(tx, owner, s)
 			} else {
+				var code, msg string
 				code, msg, err = checkExpenseCategoryChoice(tx, owner, s, e.Category)
+				refused = categoryChoiceRefusal(code, msg)
 			}
 			if err != nil {
 				fail(tx, "category check", err)
 				return
 			}
-			if msg != "" {
-				tx.Rollback()
-				respondError(c, http.StatusBadRequest, code, msg)
+			if refused != nil {
+				bad(k, refused)
 				return
 			}
 			next.Category = s
 		case "payee":
-			s, msg := checkEditOneLineName(raw)
-			if msg != "" {
-				bad(k, msg)
+			s, r := checkEditOneLineName(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.Payee = s
 		case "reference":
-			s, msg := checkEditReference(raw)
-			if msg != "" {
-				bad(k, msg)
+			s, r := checkEditReference(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.Reference = s
 		case "note":
-			s, msg := checkEditNote(raw)
-			if msg != "" {
-				bad(k, msg)
+			s, r := checkEditNote(raw)
+			if r != nil {
+				bad(k, r)
 				return
 			}
 			next.Note = s
 		case "client_id":
 			cid, err := optionalID(raw)
 			if err != nil {
-				bad(k, err.Error())
+				bad(k, refuse(codeInvalidID, err.Error()))
 				return
 			}
 			if cid != nil {
@@ -697,7 +674,7 @@ func PatchInvoicingExpenseHandler(c *gin.Context) {
 					return
 				}
 				if cl == nil {
-					bad(k, "does not name a client")
+					bad(k, noSuchClient)
 					return
 				}
 			}

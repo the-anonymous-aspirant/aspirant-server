@@ -157,9 +157,9 @@ func TestBookPresets_CRUDAndTheBuiltin(t *testing.T) {
 	}
 	for _, tc := range []struct{ body, code string }{
 		{`{"name":"jobcenter","income":[],"expense_all":false,"expense":[]}`, "duplicate_preset"},
-		{`{"name":"Work Only","income":[],"expense_all":false,"expense":[]}`, "duplicate_preset"},
+		{`{"name":"Work Only","income":[],"expense_all":false,"expense":[]}`, "builtin_preset_name"},
 		{`{"name":"Private too","income":[],"expense_all":false,"expense":["private"]}`, "private_never_counts"},
-		{`{"name":"","income":[],"expense_all":false,"expense":[]}`, "invalid_field"},
+		{`{"name":"","income":[],"expense_all":false,"expense":[]}`, "required"},
 		{`{"name":"Everything","income":["paid_work"],"expense_all":true,"expense":[]}`, "invalid_field"},
 	} {
 		if code, _, e, body := bookCall(t, r, "POST", "/invoicing/book/presets", tc.body); code < 400 || e.Error.Code != tc.code {

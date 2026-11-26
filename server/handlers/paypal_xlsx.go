@@ -51,7 +51,10 @@ type xlsxInCell struct {
 }
 
 type xlsxInSheet struct {
-	Rows     [][]xlsxInCell
+	Rows [][]xlsxInCell
+	// RowNums is each row's number in the sheet, as the spreadsheet shows
+	// it: a sheet leaves out the empty rows, so it is not the index + 1.
+	RowNums  []int
 	Date1904 bool
 }
 
@@ -284,15 +287,17 @@ func xlsxColumnIndex(ref string) (int, bool) {
 }
 
 // readXLSXSheet reads the cell values of one worksheet, row by row.
-func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
+func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, []int, error) {
 	d, c, err := openXLSXPart(f)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer c.Close()
 
 	var rows [][]xlsxInCell
+	var nums []int
 	var row []xlsxInCell
+	num := 0 // the row being read's number in the sheet
 	inRow := false
 	// The cell being read.
 	col, typ := -1, ""
@@ -305,16 +310,22 @@ func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("could not read the worksheet: %w", err)
+			return nil, nil, fmt.Errorf("could not read the worksheet: %w", err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "row":
 				if len(rows) >= xlsxMaxRows {
-					return nil, fmt.Errorf("the worksheet has more than %d rows", xlsxMaxRows)
+					return nil, nil, fmt.Errorf("the worksheet has more than %d rows", xlsxMaxRows)
 				}
 				inRow, row = true, nil
+				num++
+				if r, ok := attr(t, "r"); ok {
+					if n, err := strconv.Atoi(r); err == nil && n > 0 {
+						num = n
+					}
+				}
 			case "c":
 				if !inRow {
 					continue
@@ -323,12 +334,12 @@ func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
 				if ref, ok := attr(t, "r"); ok {
 					idx, ok := xlsxColumnIndex(ref)
 					if !ok {
-						return nil, fmt.Errorf("cell reference %q is not valid", ref)
+						return nil, nil, fmt.Errorf("cell reference %q is not valid", ref)
 					}
 					next = idx
 				}
 				if next >= xlsxMaxColumns {
-					return nil, fmt.Errorf("the worksheet uses more than %d columns", xlsxMaxColumns)
+					return nil, nil, fmt.Errorf("the worksheet uses more than %d columns", xlsxMaxColumns)
 				}
 				col = next
 				typ, _ = attr(t, "t")
@@ -348,6 +359,7 @@ func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
 			case "row":
 				if inRow {
 					rows = append(rows, row)
+					nums = append(nums, num)
 				}
 				inRow = false
 			case "c":
@@ -356,7 +368,7 @@ func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
 				}
 				cell, err := xlsxCellValue(typ, val.String(), inline.String(), shared)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				for len(row) <= col {
 					row = append(row, xlsxInCell{})
@@ -380,7 +392,7 @@ func readXLSXSheet(f *zip.File, shared []string) ([][]xlsxInCell, error) {
 			}
 		}
 	}
-	return rows, nil
+	return rows, nums, nil
 }
 
 // xlsxCellValue decodes one cell by its type attribute (ECMA-376 §18.18.11).
@@ -451,9 +463,9 @@ func readXLSXFirstSheet(data []byte) (*xlsxInSheet, error) {
 			return nil, err
 		}
 	}
-	rows, err := readXLSXSheet(sheetFile, shared)
+	rows, nums, err := readXLSXSheet(sheetFile, shared)
 	if err != nil {
 		return nil, err
 	}
-	return &xlsxInSheet{Rows: rows, Date1904: date1904}, nil
+	return &xlsxInSheet{Rows: rows, RowNums: nums, Date1904: date1904}, nil
 }

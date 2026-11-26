@@ -126,7 +126,7 @@ func TestManualPayment_NewClientNameRefusals(t *testing.T) {
 		"punctuation only": `{` + ok + `,"new_client_name":"..."}`,
 	} {
 		w := invoicingDo(f.r, "POST", "/invoicing/payments/manual", body)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_field") {
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"field":"new_client_name"`) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}

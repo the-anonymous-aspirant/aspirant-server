@@ -708,7 +708,8 @@ func TestPayPalInvalidFileErrorCarriesItsCopyExpiryOnlyWhenKept(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Error.Code != "invalid_csv" || !near(body.CopyExpiresAt, time.Now().UTC().Add(importFailureWindow())) {
+	// The answer names the cause; the kept failure keeps the format's code.
+	if body.Error.Code != codeNotPayPalExport || !near(body.CopyExpiresAt, time.Now().UTC().Add(importFailureWindow())) {
 		t.Fatalf("body: %s", w.Body.String())
 	}
 
@@ -768,7 +769,8 @@ func TestPayPalParseFailureLogsTheCodeNotTheCellValue(t *testing.T) {
 	if strings.Contains(logged, logSentinel) {
 		t.Fatalf("the cell value reached the log:\n%s", logged)
 	}
-	if !strings.Contains(logged, "invalid_csv") {
+	// The cause's own code since #12300: an amount that is not a number.
+	if !strings.Contains(logged, "invalid_amount") {
 		t.Fatalf("the log should still carry the code:\n%s", logged)
 	}
 }

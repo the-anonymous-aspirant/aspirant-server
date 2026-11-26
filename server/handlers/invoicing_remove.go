@@ -100,6 +100,16 @@ func rowActionIDs(c *gin.Context) ([]uint, bool) {
 type rowRefusal struct {
 	status        int
 	code, message string
+	// field and limit, where the refusal is about one request field
+	// (system_3 #12300 ruling 1).
+	field string
+	limit int64
+}
+
+// respondRow answers a rowRefusal with its status, code, field and limit.
+func respondRow(c *gin.Context, r *rowRefusal) {
+	log.Printf("Error response: %d - %s - %s", r.status, r.code, r.message)
+	c.JSON(r.status, ErrorResponse{Error: ErrorDetail{Code: r.code, Message: r.message, Field: r.field, Limit: r.limit}})
 }
 
 func refuseRow(status int, code, format string, args ...interface{}) *rowRefusal {
@@ -305,7 +315,7 @@ func PaymentsRowActionHandler(action string) gin.HandlerFunc {
 		}
 		if refusal != nil {
 			tx.Rollback()
-			respondError(c, refusal.status, refusal.code, refusal.message)
+			respondRow(c, refusal)
 			return
 		}
 		if err := tx.Commit().Error; err != nil {
@@ -496,7 +506,7 @@ func ExpensesRowActionHandler(action string) gin.HandlerFunc {
 		}
 		if refusal != nil {
 			tx.Rollback()
-			respondError(c, refusal.status, refusal.code, refusal.message)
+			respondRow(c, refusal)
 			return
 		}
 		if err := tx.Commit().Error; err != nil {

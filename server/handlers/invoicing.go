@@ -34,6 +34,10 @@ const (
 
 var invoicePrefixPattern = regexp.MustCompile(`^[0-9A-Za-z-]{1,20}$`)
 
+// maxInvoicePrefixRunes is invoicePrefixPattern's upper bound, for the
+// refusal's limit.
+const maxInvoicePrefixRunes = 20
+
 // invoicePhonePattern is the optional issuer phone (system_3 #9967): what a
 // German number is written with, at most 40 characters, or empty.
 var invoicePhonePattern = regexp.MustCompile(`^[0-9+()/. -]{0,40}$`)
@@ -50,12 +54,12 @@ const (
 func bindSocialLinks(c *gin.Context, instagram, telegram *string) bool {
 	ig, err := instagramPlatform.normalize(*instagram)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_instagram", fmt.Sprintf(invalidLinkMessage, "instagram_url", "instagram.com"))
+		respondFieldRefusal(c, "instagram_url", refuseWhole("invalid_instagram", fmt.Sprintf(invalidLinkMessage, "instagram_url", "instagram.com")))
 		return false
 	}
 	tg, err := telegramPlatform.normalize(*telegram)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_telegram", fmt.Sprintf(invalidLinkMessage, "telegram_url", "t.me"))
+		respondFieldRefusal(c, "telegram_url", refuseWhole("invalid_telegram", fmt.Sprintf(invalidLinkMessage, "telegram_url", "t.me")))
 		return false
 	}
 	*instagram, *telegram = ig, tg
@@ -192,31 +196,40 @@ func PutInvoicingProfileHandler(c *gin.Context) {
 		return
 	}
 
-	if req.FullName == "" || req.Address == "" {
-		RespondWithError(c, http.StatusBadRequest, "full_name and address are required")
+	// One code and one field for each refusal (system_3 #12300 ruling 1).
+	if req.FullName == "" {
+		respondFieldRefusal(c, "full_name", refuse(codeRequired, "is required"))
 		return
 	}
-	if !validOptionalEmail(req.Email) {
-		RespondWithError(c, http.StatusBadRequest, "email is not a valid address")
+	if req.Address == "" {
+		respondFieldRefusal(c, "address", refuse(codeRequired, "is required"))
+		return
+	}
+	if r := emailRefusal(req.Email); r != nil {
+		respondFieldRefusal(c, "email", r)
 		return
 	}
 	if !invoicePhonePattern.MatchString(req.Phone) {
-		respondError(c, http.StatusBadRequest, "invalid_phone", invalidPhoneMessage)
+		respondFieldRefusal(c, "phone", refuseWhole("invalid_phone", invalidPhoneMessage))
 		return
 	}
 	if !bindSocialLinks(c, &req.InstagramURL, &req.TelegramURL) {
 		return
 	}
 	if !invoicePrefixPattern.MatchString(req.InvoiceNumberPrefix) {
-		RespondWithError(c, http.StatusBadRequest, "invoice_number_prefix must be 1-20 letters, digits or hyphens")
+		respondFieldRefusal(c, "invoice_number_prefix", refuseOver(codeInvalidPrefix, maxInvoicePrefixRunes, fmt.Sprintf("must be 1-%d letters, digits or hyphens", maxInvoicePrefixRunes)))
 		return
 	}
-	if req.IsKleinunternehmer == nil || req.NextInvoiceNumber == nil {
-		RespondWithError(c, http.StatusBadRequest, "is_kleinunternehmer and next_invoice_number are required")
+	if req.IsKleinunternehmer == nil {
+		respondFieldRefusal(c, "is_kleinunternehmer", refuse(codeRequired, "is required"))
+		return
+	}
+	if req.NextInvoiceNumber == nil {
+		respondFieldRefusal(c, "next_invoice_number", refuse(codeRequired, "is required"))
 		return
 	}
 	if *req.NextInvoiceNumber < 1 {
-		RespondWithError(c, http.StatusBadRequest, "next_invoice_number must be at least 1")
+		respondFieldRefusal(c, "next_invoice_number", refuseOver(codeNumberTooSmall, 1, "must be at least 1"))
 		return
 	}
 	if *req.NextInvoiceNumber > data_models.MaxInvoiceNumber {
@@ -379,34 +392,45 @@ func hasDirectionChars(s string) bool {
 // #12264, review point 4).
 func checkClientNameAndAddress(c *gin.Context, req invoicingClientRequest, before *data_models.InvoicingClient) bool {
 	if before == nil || req.Name != before.Name {
+		// The sentences are kept; the code now tells the causes apart
+		// (system_3 #12300 ruling 1).
+		tooLong := func(msg string) *refusal {
+			return &refusal{code: codeTooLong, message: msg, limit: maxClientNameRunes, whole: true}
+		}
+		var r *refusal
 		switch {
+		case req.Name == "":
+			r = refuseWhole(codeRequired, "A client needs a name.")
 		case !validClientName(req.Name):
-			respondError(c, http.StatusBadRequest, "invalid_name", "A client needs a name.")
-			return false
+			r = refuseWhole(codeNoLetterOrDigit, "A client needs a name.")
 		case strings.ContainsAny(req.Name, "\r\n"):
-			respondError(c, http.StatusBadRequest, "invalid_name", "The name is one line.")
-			return false
+			r = tooLong("The name is one line.")
 		case hasControlChars(req.Name) || hasDirectionChars(req.Name):
-			respondError(c, http.StatusBadRequest, "invalid_name", "The name has a tab, a control or a direction character. Remove it.")
-			return false
+			r = refuseWhole(codeHiddenCharacters, "The name has a tab, a control or a direction character. Remove it.")
 		case utf8.RuneCountInString(req.Name) > maxClientNameRunes:
-			respondError(c, http.StatusBadRequest, "invalid_name", fmt.Sprintf("The name is at most %d characters.", maxClientNameRunes))
+			r = tooLong(fmt.Sprintf("The name is at most %d characters.", maxClientNameRunes))
+		}
+		if r != nil {
+			respondFieldRefusal(c, "name", r)
 			return false
 		}
 	}
 	if before == nil || req.Address != before.Address {
 		lines := strings.Split(req.Address, "\n")
 		if hasControlChars(req.Address) || hasDirectionChars(req.Address) {
-			respondError(c, http.StatusBadRequest, "invalid_address", "The address has a tab, a control or a direction character. Remove it.")
+			respondFieldRefusal(c, "address", refuseWhole(codeHiddenCharacters, "The address has a tab, a control or a direction character. Remove it."))
 			return false
 		}
+		tooLong := func(msg string) *refusal {
+			return &refusal{code: codeTooLong, message: msg, limit: maxClientAddressLineRunes, lines: maxClientAddressLines, whole: true}
+		}
 		if len(lines) > maxClientAddressLines {
-			respondError(c, http.StatusBadRequest, "invalid_address", fmt.Sprintf("The address is at most %d lines.", maxClientAddressLines))
+			respondFieldRefusal(c, "address", tooLong(fmt.Sprintf("The address is at most %d lines.", maxClientAddressLines)))
 			return false
 		}
 		for _, l := range lines {
 			if utf8.RuneCountInString(l) > maxClientAddressLineRunes {
-				respondError(c, http.StatusBadRequest, "invalid_address", fmt.Sprintf("Each line of the address is at most %d characters.", maxClientAddressLineRunes))
+				respondFieldRefusal(c, "address", tooLong(fmt.Sprintf("Each line of the address is at most %d characters.", maxClientAddressLineRunes)))
 				return false
 			}
 		}
@@ -470,7 +494,7 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 	req.Notes = strings.TrimSpace(req.Notes)
 	// A NUL cannot be stored: say so, never a 500 (system_3 #12264).
 	if strings.ContainsRune(req.Notes, 0) {
-		respondError(c, http.StatusBadRequest, "invalid_notes", "The notes have a character that cannot be stored. Remove it.")
+		respondFieldRefusal(c, "notes", refuseWhole(codeHiddenCharacters, "The notes have a character that cannot be stored. Remove it."))
 		return req, false
 	}
 	// Every other text field: a NUL is refused by name (system_3 #12268).
@@ -489,21 +513,27 @@ func bindInvoicingClient(c *gin.Context) (invoicingClientRequest, bool) {
 		return req, false
 	}
 	if utf8.RuneCountInString(req.Notes) > maxClientNotesRunes {
-		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("notes must be at most %d characters", maxClientNotesRunes))
+		respondFieldRefusal(c, "notes", refuseOver(codeTooLong, maxClientNotesRunes, fmt.Sprintf("must be at most %d characters", maxClientNotesRunes)))
 		return req, false
 	}
 	if req.Name == "" {
-		RespondWithError(c, http.StatusBadRequest, "name is required")
+		respondFieldRefusal(c, "name", refuse(codeRequired, "is required"))
 		return req, false
 	}
-	if !validOptionalEmail(req.Email) || !validOptionalEmail(req.PayPalEmail) {
-		RespondWithError(c, http.StatusBadRequest, "email and paypal_email must be valid addresses when given")
+	// Each address is its own field: one refusal for both could not say
+	// which (system_3 #12300).
+	if r := emailRefusal(req.Email); r != nil {
+		respondFieldRefusal(c, "email", r)
+		return req, false
+	}
+	if r := emailRefusal(req.PayPalEmail); r != nil {
+		respondFieldRefusal(c, "paypal_email", r)
 		return req, false
 	}
 	// The client's phone takes the issuer phone's rule (system_3 #9971).
 	req.Phone = strings.TrimSpace(req.Phone)
 	if !invoicePhonePattern.MatchString(req.Phone) {
-		respondError(c, http.StatusBadRequest, "invalid_phone", invalidPhoneMessage)
+		respondFieldRefusal(c, "phone", refuseWhole("invalid_phone", invalidPhoneMessage))
 		return req, false
 	}
 	if !bindSocialLinks(c, &req.InstagramURL, &req.TelegramURL) {
@@ -527,8 +557,9 @@ func checkClientIBAN(c *gin.Context, req invoicingClientRequest, stored string) 
 		return true
 	}
 	if !data_models.ValidIBAN(*req.IBAN) {
-		// The message never repeats the value (security C5, #11551).
-		respondError(c, http.StatusBadRequest, "invalid_iban", "iban must be a valid IBAN when given")
+		// The message never repeats the value (security C5, #11551). It
+		// names its field, as every client refusal does (system_3 #12300).
+		respondFieldRefusal(c, "iban", refuseWhole("invalid_iban", "iban must be a valid IBAN when given"))
 		return false
 	}
 	return true

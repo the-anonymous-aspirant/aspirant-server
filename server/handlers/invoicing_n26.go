@@ -116,6 +116,7 @@ const (
 	n26ErrExtractFailed  = "extract_failed"
 	n26ErrNotN26Document = "not_n26_document"
 	n26ErrParseFailed    = "parse_failed"
+	n26ErrEmptyFile      = "empty_file"
 )
 
 // n26Candidate is one would-be payment, parsed but not stored. PaidOn is ISO
@@ -865,8 +866,8 @@ func ImportN26ParseHandler(c *gin.Context) {
 		return
 	}
 	if len(files) > maxN26FilesPerRequest {
-		respondError(c, http.StatusBadRequest, "too_many_files",
-			fmt.Sprintf("upload at most %d files per request", maxN26FilesPerRequest))
+		respondFieldRefusal(c, "files", &refusal{code: "too_many_files", limit: maxN26FilesPerRequest, whole: true,
+			message: fmt.Sprintf("upload at most %d files per request", maxN26FilesPerRequest)})
 		return
 	}
 
@@ -896,9 +897,20 @@ func ImportN26ParseHandler(c *gin.Context) {
 		}
 		data, err = io.ReadAll(io.LimitReader(f, maxN26PDFBytes+1))
 		f.Close()
-		if err != nil || int64(len(data)) > maxN26PDFBytes {
+		// A read that fails is not a file too large (system_3 #12300), and
+		// an empty file is said as one.
+		if err != nil {
+			data = nil
+			fail(n26ErrExtractFailed, "could not read the uploaded file")
+			continue
+		}
+		if int64(len(data)) > maxN26PDFBytes {
 			data = nil
 			fail(n26ErrTooLarge, "the file is larger than 5 MB")
+			continue
+		}
+		if len(data) == 0 {
+			fail(n26ErrEmptyFile, "the file is empty")
 			continue
 		}
 		// The CSV export (system_3 #10543) is recognised from its bytes and
@@ -1026,8 +1038,8 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 	// is bounded (security review N3, #9812 c60279). 20 files of statement
 	// rows stay well below it.
 	if len(req.Rows) > maxN26ConfirmRows {
-		respondError(c, http.StatusBadRequest, "too_many_rows",
-			fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows))
+		respondFieldRefusal(c, "rows", &refusal{code: "too_many_rows", limit: maxN26ConfirmRows, whole: true,
+			message: fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows)})
 		return
 	}
 	type validated struct {
@@ -1035,9 +1047,9 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for _, row := range req.Rows {
+	for i, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.SenderName, "from"), msg))
+			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.SenderName, "from"), msg)
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.SenderName = strings.TrimSpace(row.SenderName)
@@ -1063,7 +1075,10 @@ func ImportN26ConfirmHandler(c *gin.Context) {
 		// The parse never offers such a row; the client posts rows back,
 		// so the rule is enforced here too.
 		if isPayPalSender(row.SenderName) {
-			bad("the payer is PayPal: a transfer from PayPal is already counted in the PayPal import")
+			// Its own code: this is the one row refusal that is zirs to
+			// read, and the dialog says it at the row (c77188 group 6).
+			respondFieldRefusal(c, "rows", &refusal{code: codePayPalTransferRow, item: i + 1, whole: true,
+				message: fmt.Sprintf("row %d: the payer is PayPal: a transfer from PayPal is already counted in the PayPal import", i)})
 			return
 		}
 		if utf8.RuneCountInString(row.Note) > n26MaxPaymentNoteRunes {
@@ -1235,8 +1250,8 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		return
 	}
 	if len(req.Rows) > maxN26ConfirmRows {
-		respondError(c, http.StatusBadRequest, "too_many_rows",
-			fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows))
+		respondFieldRefusal(c, "rows", &refusal{code: "too_many_rows", limit: maxN26ConfirmRows, whole: true,
+			message: fmt.Sprintf("confirm at most %d rows per request", maxN26ConfirmRows)})
 		return
 	}
 	type validated struct {
@@ -1244,9 +1259,9 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		paidOn time.Time
 	}
 	rows := make([]validated, 0, len(req.Rows))
-	for _, row := range req.Rows {
+	for i, row := range req.Rows {
 		bad := func(msg string) {
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("%s: %s", importRowName(row.PaidOn, row.PayeeName, "to"), msg))
+			respondNamedRowRefusal(c, i, importRowName(row.PaidOn, row.PayeeName, "to"), msg)
 		}
 		row.TransactionID = strings.TrimSpace(row.TransactionID)
 		row.PayeeName = strings.TrimSpace(row.PayeeName)
@@ -1321,7 +1336,7 @@ func ImportN26ExpensesConfirmHandler(c *gin.Context) {
 		}
 		if !ok {
 			tx.Rollback()
-			respondError(c, http.StatusBadRequest, "invalid_row", fmt.Sprintf("row %d: %s", i, categoryRefusal[v.row.Category]))
+			respondRowRefusal(c, i, categoryRefusal[v.row.Category])
 			return
 		}
 		if seen[v.row.TransactionID] {

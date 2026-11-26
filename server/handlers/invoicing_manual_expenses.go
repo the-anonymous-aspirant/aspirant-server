@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
-	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
 
@@ -107,8 +105,8 @@ func CreateManualExpenseHandler(c *gin.Context) {
 			return
 		}
 	}
-	bad := func(field, msg string) {
-		respondError(c, http.StatusBadRequest, "invalid_field", field+" "+msg)
+	bad := func(field string, r *refusal) {
+		respondFieldRefusal(c, field, r)
 	}
 	str := func(field string) (string, bool) {
 		raw, ok := body[field]
@@ -117,7 +115,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		}
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			bad(field, "must be a string")
+			bad(field, notAString)
 			return "", false
 		}
 		return strings.TrimSpace(s), true
@@ -127,22 +125,14 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	paidOn, err := time.Parse(invoicingDateLayout, paidOnRaw)
-	if err != nil {
-		bad("paid_on", "must be a date, YYYY-MM-DD")
+	paidOn, r := paidOnRefusal(paidOnRaw, "enter the day the expense was paid")
+	if r != nil {
+		bad("paid_on", r)
 		return
 	}
-	if paidOn.After(berlinToday()) {
-		bad("paid_on", "cannot be in the future: enter the day the expense was paid")
-		return
-	}
-	if paidOn.Before(earliestPaymentDate) {
-		bad("paid_on", "must be 2000-01-01 or later")
-		return
-	}
-	var amount int64
-	if err := json.Unmarshal(body["amount_cents"], &amount); err != nil || !rowAmountInBounds(amount) {
-		bad("amount_cents", "must be a whole number of cents above zero")
+	amount, r := centsRefusal(body["amount_cents"])
+	if r != nil {
+		bad("amount_cents", r)
 		return
 	}
 	currency, ok := str("currency")
@@ -156,7 +146,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	// currency, and the Book counts euros only. Only the PayPal import can
 	// store another currency, as the file names it.
 	if currency != "EUR" {
-		bad("currency", "must be EUR: an entry by hand is in euros")
+		bad("currency", refuse(codeInvalidChoice, "must be EUR: an entry by hand is in euros"))
 		return
 	}
 	category, ok := str("category")
@@ -174,21 +164,21 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(reference) > maxManualReferenceRunes || strings.Contains(reference, "\n") || hasControlChars(reference) || hasFormatChars(reference) {
-		bad("reference", fmt.Sprintf("must be one line of at most %d characters", maxManualReferenceRunes))
+	if r := oneLineTextRefusal(reference, maxManualReferenceRunes); r != nil {
+		bad("reference", r)
 		return
 	}
 	note, ok := str("note")
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(note) > maxManualNoteRunes || hasControlChars(note) {
-		bad("note", fmt.Sprintf("must be at most %d characters", maxManualNoteRunes))
+	if r := textRefusal(note, maxManualNoteRunes, false); r != nil {
+		bad("note", r)
 		return
 	}
 	// The one row check's note rule (system_3 #12265).
 	if !rowNoteText(note) {
-		bad("note", "has a direction-override character: remove it")
+		bad("note", refuse(codeHiddenCharacters, "has a direction-override character: remove it"))
 		return
 	}
 	// "Paid to (optional)" (system_3 #10555-A1, design §3.143 Decision 3):
@@ -197,8 +187,8 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !validOneLineName(payee) {
-		bad("payee", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
+	if r := oneLineTextRefusal(payee, maxManualSenderRunes); r != nil {
+		bad("payee", r)
 		return
 	}
 	confirmDuplicate, err := confirmDuplicateFlag(body)
@@ -217,11 +207,14 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	}
 	// A typed category is made or restored inside this transaction, so a
 	// refusal below rolls it back with the expense (#11579 item 9).
-	var refusalCode, refusal string
+	var refused *refusal
+	var err error
 	if createCategory {
-		category, refusalCode, refusal, err = resolveTypedExpenseCategory(tx, invoicingUserID(c), category)
+		category, refused, err = resolveTypedExpenseCategory(tx, invoicingUserID(c), category)
 	} else {
-		refusalCode, refusal, err = checkExpenseCategoryChoice(tx, invoicingUserID(c), category, "")
+		var code, msg string
+		code, msg, err = checkExpenseCategoryChoice(tx, invoicingUserID(c), category, "")
+		refused = categoryChoiceRefusal(code, msg)
 	}
 	if err != nil {
 		tx.Rollback()
@@ -229,9 +222,9 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusInternalServerError, "Error storing expense")
 		return
 	}
-	if refusal != "" {
+	if refused != nil {
 		tx.Rollback()
-		respondError(c, http.StatusBadRequest, refusalCode, refusal)
+		respondFieldRefusal(c, "category", refused)
 		return
 	}
 	var clientID *uint
@@ -239,7 +232,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 		cid, err := optionalID(raw)
 		if err != nil {
 			tx.Rollback()
-			bad("client_id", err.Error())
+			bad("client_id", refuse(codeInvalidID, err.Error()))
 			return
 		}
 		if cid != nil {
@@ -252,7 +245,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 			}
 			if cl == nil {
 				tx.Rollback()
-				bad("client_id", "does not name a client")
+				bad("client_id", noSuchClient)
 				return
 			}
 		}
@@ -439,17 +432,17 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 	}
 	raw, present := body["name"]
 	if !present {
-		respondError(c, http.StatusBadRequest, "invalid_field", "name is required")
+		respondFieldRefusal(c, "name", refuse(codeRequired, "is required"))
 		return
 	}
 	var name string
 	if err := json.Unmarshal(raw, &name); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_field", "name must be a string")
+		respondFieldRefusal(c, "name", notAString)
 		return
 	}
 	name = strings.TrimSpace(name)
-	if refusal := expenseCategoryNameRefusal(name); refusal != "" {
-		respondError(c, http.StatusBadRequest, "invalid_field", "name "+refusal)
+	if r := expenseCategoryNameRefusal(name); r != nil {
+		respondFieldRefusal(c, "name", r)
 		return
 	}
 	// Private is built in and never counts (§3.143 Decision 8): ze cannot
@@ -461,13 +454,13 @@ func CreateExpenseCategoryHandler(c *gin.Context) {
 	countsAs := data_models.ExpenseCategoryOther
 	if raw, present := body["counts_as"]; present {
 		if err := json.Unmarshal(raw, &countsAs); err != nil {
-			respondError(c, http.StatusBadRequest, "invalid_field", "counts_as must be a string")
+			respondFieldRefusal(c, "counts_as", notAString)
 			return
 		}
 		countsAs = strings.TrimSpace(countsAs)
 	}
 	if !data_models.IsStarterExpenseCategory(countsAs) {
-		respondError(c, http.StatusBadRequest, "invalid_field", "counts_as must be one of "+strings.Join(data_models.DefaultExpenseCategories, ", "))
+		respondFieldRefusal(c, "counts_as", refuse(codeInvalidChoice, "must be one of "+strings.Join(data_models.DefaultExpenseCategories, ", ")))
 		return
 	}
 

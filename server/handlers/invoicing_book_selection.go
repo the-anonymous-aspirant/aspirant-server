@@ -210,7 +210,7 @@ func bookWrite(c *gin.Context, what string, status int, fn func(tx *gorm.DB, own
 	}
 	if refusal != nil {
 		tx.Rollback()
-		respondError(c, refusal.status, refusal.code, refusal.message)
+		respondRow(c, refusal)
 		return
 	}
 	if err := tx.Commit().Error; err != nil {
@@ -260,7 +260,7 @@ func PutInvoicingBookSelectionHandler(c *gin.Context) {
 	}
 	next, refusal := bookCountingBody(body)
 	if refusal != nil {
-		respondError(c, refusal.status, refusal.code, refusal.message)
+		respondRow(c, refusal)
 		return
 	}
 	var preset string
@@ -269,7 +269,7 @@ func PutInvoicingBookSelectionHandler(c *gin.Context) {
 		return
 	}
 	if r := workOnlyRule(next, false); r != nil {
-		respondError(c, r.status, r.code, r.message)
+		respondRow(c, r)
 		return
 	}
 	bookWrite(c, "selection", http.StatusOK, func(tx *gorm.DB, owner uint) (*rowRefusal, gin.H, error) {
@@ -302,16 +302,31 @@ func PutInvoicingBookSelectionHandler(c *gin.Context) {
 // presetName validates a preset's name: one line, 1-60 characters, not the
 // built-in's, and not one ze already uses (case-insensitively).
 func presetName(tx *gorm.DB, owner uint, raw json.RawMessage, exceptID uint) (string, *rowRefusal, error) {
+	// One code per cause, at the name (system_3 #12300 ruling 1). The
+	// message is the one these refusals have always had.
+	at := func(status int, code string, limit int64, format string, args ...interface{}) *rowRefusal {
+		r := refuseRow(status, code, format, args...)
+		r.field, r.limit = "name", limit
+		return r
+	}
 	var name string
 	if json.Unmarshal(raw, &name) != nil {
-		return "", refuseRow(http.StatusBadRequest, "invalid_field", "name must be a string"), nil
+		return "", at(http.StatusBadRequest, codeNotAString, 0, "name must be a string"), nil
 	}
 	name = strings.TrimSpace(name)
-	if name == "" || utf8.RuneCountInString(name) > maxBookPresetNameRunes || strings.Contains(name, "\n") || hasControlChars(name) || hasFormatChars(name) {
-		return "", refuseRow(http.StatusBadRequest, "invalid_field", "name must be one line of 1-%d characters", maxBookPresetNameRunes), nil
+	lengthMsg := fmt.Sprintf("name must be one line of 1-%d characters", maxBookPresetNameRunes)
+	switch {
+	case name == "":
+		return "", at(http.StatusBadRequest, codeRequired, 0, "%s", lengthMsg), nil
+	case utf8.RuneCountInString(name) > maxBookPresetNameRunes || strings.Contains(name, "\n"):
+		return "", at(http.StatusBadRequest, codeTooLong, maxBookPresetNameRunes, "%s", lengthMsg), nil
+	case hasControlChars(name) || hasFormatChars(name):
+		return "", at(http.StatusBadRequest, codeHiddenCharacters, 0, "%s", lengthMsg), nil
 	}
+	// The built-in's name has its own code: the client says it is the
+	// built-in's, not that ze already made one so named.
 	if strings.EqualFold(name, data_models.BookPresetWorkOnlyName) {
-		return "", refuseRow(http.StatusConflict, "duplicate_preset", "%q is the built-in preset's name", data_models.BookPresetWorkOnlyName), nil
+		return "", at(http.StatusConflict, codeBuiltinPresetName, 0, "%q is the built-in preset's name", data_models.BookPresetWorkOnlyName), nil
 	}
 	own, err := data_models.ListInvoicingBookPresets(tx, owner)
 	if err != nil {
@@ -319,7 +334,7 @@ func presetName(tx *gorm.DB, owner uint, raw json.RawMessage, exceptID uint) (st
 	}
 	for _, p := range own {
 		if p.ID != exceptID && strings.EqualFold(p.Name, name) {
-			return "", refuseRow(http.StatusConflict, "duplicate_preset", "a preset named %q already exists", p.Name), nil
+			return "", at(http.StatusConflict, "duplicate_preset", 0, "a preset named %q already exists", p.Name), nil
 		}
 	}
 	return name, nil, nil
@@ -333,16 +348,16 @@ func CreateInvoicingBookPresetHandler(c *gin.Context) {
 		return
 	}
 	if _, ok := body["name"]; !ok {
-		respondError(c, http.StatusBadRequest, "invalid_field", "name is required")
+		respondFieldRefusal(c, "name", refuse(codeRequired, "is required"))
 		return
 	}
 	counting, refusal := bookCountingBody(body)
 	if refusal != nil {
-		respondError(c, refusal.status, refusal.code, refusal.message)
+		respondRow(c, refusal)
 		return
 	}
 	if r := workOnlyRule(counting, true); r != nil {
-		respondError(c, r.status, r.code, r.message)
+		respondRow(c, r)
 		return
 	}
 	bookWrite(c, "preset create", http.StatusCreated, func(tx *gorm.DB, owner uint) (*rowRefusal, gin.H, error) {
@@ -395,11 +410,11 @@ func UpdateInvoicingBookPresetHandler(c *gin.Context) {
 	}
 	counting, refusal := bookCountingBody(body)
 	if refusal != nil {
-		respondError(c, refusal.status, refusal.code, refusal.message)
+		respondRow(c, refusal)
 		return
 	}
 	if r := workOnlyRule(counting, true); r != nil {
-		respondError(c, r.status, r.code, r.message)
+		respondRow(c, r)
 		return
 	}
 	bookWrite(c, "preset update", http.StatusOK, func(tx *gorm.DB, owner uint) (*rowRefusal, gin.H, error) {

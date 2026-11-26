@@ -51,6 +51,24 @@ type ErrorDetail struct {
 	// own sentence (the amounts, a line, a date), so it never shows Message
 	// as written (system_3 #12274). Absent on most errors.
 	Details map[string]interface{} `json:"details,omitempty"`
+	// Field is the request field a refusal is about, when it is about one,
+	// and Limit the number the client's sentence prints (system_3 #12300).
+	Field string `json:"field,omitempty"`
+	Limit int64  `json:"limit,omitempty"`
+	// Lines is the most lines a field of several lines takes, beside Limit,
+	// the characters of each (an address).
+	Lines int64 `json:"lines,omitempty"`
+	// Item is the 1-based position of the list entry the refusal is about
+	// (a draft's line item).
+	Item int `json:"item,omitempty"`
+	// Width and Height are an image's size in pixels, where its refusal
+	// names it (a logo too large).
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// Line and Value name a value in an imported file that cannot be read:
+	// the line ze can find it on, and the value as the file writes it.
+	Line  int    `json:"line,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 type ErrorResponse struct {

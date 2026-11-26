@@ -85,32 +85,31 @@ func TestManualPayment_Refusals(t *testing.T) {
 	f := newInvoiceFixture(t)
 	ok := `"paid_on":"2026-07-14","gross_cents":1000,"method":"bank_transfer"`
 	cases := []struct {
-		name, body, code string
+		name, body, code, field string
+		limit                   int64
 	}{
-		{"future date", `{"paid_on":"2026-10-22","gross_cents":1000,"method":"cash"}`, "invalid_field"},
-		{"not a date", `{"paid_on":"14.07.2026","gross_cents":1000,"method":"cash"}`, "invalid_field"},
-		{"zero amount", `{"paid_on":"2026-07-14","gross_cents":0,"method":"cash"}`, "invalid_field"},
-		{"negative amount", `{"paid_on":"2026-07-14","gross_cents":-5,"method":"cash"}`, "invalid_field"},
-		{"missing amount", `{"paid_on":"2026-07-14","method":"cash"}`, "invalid_field"},
-		{"unknown method", `{"paid_on":"2026-07-14","gross_cents":1000,"method":"crypto"}`, "invalid_field"},
-		{"lower-case currency", `{` + ok + `,"currency":"eur"}`, "invalid_field"},
-		{"reference with a newline", `{` + ok + `,"reference":"a\nb"}`, "invalid_field"},
-		{"reference too long", `{` + ok + `,"reference":"` + strings.Repeat("x", 101) + `"}`, "invalid_field"},
-		{"unknown client", `{` + ok + `,"client_id":999}`, "invalid_field"},
-		{"category is server-owned", `{` + ok + `,"category":"gift"}`, "unknown_field"},
-		{"issue date is not a payment field", `{` + ok + `,"issue_date":"2026-01-01"}`, "unknown_field"},
-		{"transaction id is server-owned", `{` + ok + `,"transaction_id":"X"}`, "unknown_field"},
+		{"future date", `{"paid_on":"2026-10-22","gross_cents":1000,"method":"cash"}`, "date_in_future", "paid_on", 0},
+		{"not a date", `{"paid_on":"14.07.2026","gross_cents":1000,"method":"cash"}`, "invalid_date", "paid_on", 0},
+		{"zero amount", `{"paid_on":"2026-07-14","gross_cents":0,"method":"cash"}`, "invalid_amount", "gross_cents", 0},
+		{"negative amount", `{"paid_on":"2026-07-14","gross_cents":-5,"method":"cash"}`, "invalid_amount", "gross_cents", 0},
+		{"missing amount", `{"paid_on":"2026-07-14","method":"cash"}`, "invalid_amount", "gross_cents", 0},
+		{"unknown method", `{"paid_on":"2026-07-14","gross_cents":1000,"method":"crypto"}`, "invalid_choice", "method", 0},
+		{"lower-case currency", `{` + ok + `,"currency":"eur"}`, "invalid_choice", "currency", 0},
+		{"reference with a newline", `{` + ok + `,"reference":"a\nb"}`, "too_long", "reference", 100},
+		{"reference too long", `{` + ok + `,"reference":"` + strings.Repeat("x", 101) + `"}`, "too_long", "reference", 100},
+		{"unknown client", `{` + ok + `,"client_id":999}`, "no_such_client", "client_id", 0},
+		{"category is server-owned", `{` + ok + `,"category":"gift"}`, "unknown_field", "", 0},
+		{"issue date is not a payment field", `{` + ok + `,"issue_date":"2026-01-01"}`, "unknown_field", "", 0},
+		{"transaction id is server-owned", `{` + ok + `,"transaction_id":"X"}`, "unknown_field", "", 0},
 		// Security F3/F4 (#8409): invisible format characters and a
 		// mistyped year are refused at entry.
-		{"right-to-left override in the reference", `{` + ok + `,"reference":"RE\u202e71"}`, "invalid_field"},
-		{"zero-width space in the payer", `{` + ok + `,"sender_name":"Galerie\u200bNord"}`, "invalid_field"},
-		{"before 2000", `{"paid_on":"1999-12-31","gross_cents":1000,"method":"cash"}`, "invalid_field"},
+		{"right-to-left override in the reference", `{` + ok + `,"reference":"RE\u202e71"}`, "hidden_characters", "reference", 0},
+		{"zero-width space in the payer", `{` + ok + `,"sender_name":"Galerie\u200bNord"}`, "hidden_characters", "sender_name", 0},
+		{"before 2000", `{"paid_on":"1999-12-31","gross_cents":1000,"method":"cash"}`, "date_too_early", "paid_on", 2000},
 	}
 	for _, tc := range cases {
 		w := invoicingDo(f.r, "POST", "/invoicing/payments/manual", tc.body)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.code) {
-			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body.String())
-		}
+		assertRefusal(t, tc.name, w, tc.code, tc.field, tc.limit)
 	}
 	var n int
 	f.db.Model(&data_models.InvoicingPayment{}).Where("entry = ?", "manual").Count(&n)

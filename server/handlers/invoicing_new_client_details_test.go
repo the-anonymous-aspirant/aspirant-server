@@ -79,7 +79,7 @@ func TestManualPayment_NewClientDetailsRefusals(t *testing.T) {
 		"email not a string":         {`{` + named + `,"new_client_email":["a@b.test"]}`, "new_client_email"},
 	} {
 		w := invoicingDo(f.r, "POST", "/invoicing/payments/manual", tc.body)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_field") || !strings.Contains(w.Body.String(), tc.field) {
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"field":"`+tc.field+`"`) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}
@@ -137,7 +137,7 @@ func TestEditPayment_NewClientDetailsRefusals(t *testing.T) {
 		"address not a string":       `{"new_client_name":"Atelier Ost","new_client_address":7}`,
 	} {
 		code, _, _, resp := patchPaymentNewClient(t, f, p.ID, body)
-		if code != http.StatusBadRequest || !strings.Contains(resp, "invalid_field") {
+		if code != http.StatusBadRequest || !strings.Contains(resp, `"field":"new_client_`) {
 			t.Errorf("%s: %d %s", name, code, resp)
 		}
 	}

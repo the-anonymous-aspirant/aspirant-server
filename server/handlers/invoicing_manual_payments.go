@@ -60,25 +60,31 @@ type newClientDetails struct {
 // can. They need a new client to belong to: with client_id, or with no client
 // at all, they would be dropped silently, so they are refused instead. The
 // field it names comes back first.
-func newClientDetailsRefusal(newClientName string, d newClientDetails) (string, string) {
+func newClientDetailsRefusal(newClientName string, d newClientDetails) (string, *refusal) {
 	if d.Address == "" && d.Email == "" {
-		return "", ""
+		return "", nil
 	}
 	if newClientName == "" {
 		field := "new_client_address"
 		if d.Address == "" {
 			field = "new_client_email"
 		}
-		return field, "can only be given together with new_client_name"
+		return field, refuse(codeNeedsNewClient, "can only be given together with new_client_name")
 	}
-	if utf8.RuneCountInString(d.Address) > maxNewClientAddressRunes || hasControlCharsExceptNewline(d.Address) || hasFormatChars(d.Address) {
-		return "new_client_address", fmt.Sprintf("must be at most %d characters of plain text", maxNewClientAddressRunes)
+	if r := textRefusal(d.Address, maxNewClientAddressRunes, true); r != nil {
+		return "new_client_address", r
 	}
-	if !validOptionalEmail(d.Email) {
-		return "new_client_email", "must be a valid address when given"
+	if r := emailRefusal(d.Email); r != nil {
+		return "new_client_email", r
 	}
-	return "", ""
+	return "", nil
 }
+
+// clientAndNewClient refuses a payment that names a client and adds one.
+var clientAndNewClient = refuse(codeClientConflict, "cannot be given together with client_id: choose a client or add a new one")
+
+// noSuchClient refuses a client_id that names no client of the owner.
+var noSuchClient = refuse(codeNoSuchClient, "does not name a client")
 
 // hasControlCharsExceptNewline is hasControlChars for a field that may hold
 // several lines: a line feed is allowed, a carriage return is dropped by the
@@ -180,8 +186,8 @@ func CreateManualPaymentHandler(c *gin.Context) {
 			return
 		}
 	}
-	bad := func(field, msg string) {
-		respondError(c, http.StatusBadRequest, "invalid_field", field+" "+msg)
+	bad := func(field string, r *refusal) {
+		respondFieldRefusal(c, field, r)
 	}
 	str := func(field string) (string, bool) {
 		raw, ok := body[field]
@@ -190,7 +196,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		}
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			bad(field, "must be a string")
+			bad(field, notAString)
 			return "", false
 		}
 		return strings.TrimSpace(s), true
@@ -200,22 +206,14 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	paidOn, err := time.Parse(invoicingDateLayout, paidOnRaw)
-	if err != nil {
-		bad("paid_on", "must be a date, YYYY-MM-DD")
+	paidOn, r := paidOnRefusal(paidOnRaw, "enter the day the money was received")
+	if r != nil {
+		bad("paid_on", r)
 		return
 	}
-	if paidOn.After(berlinToday()) {
-		bad("paid_on", "cannot be in the future: enter the day the money was received")
-		return
-	}
-	if paidOn.Before(earliestPaymentDate) {
-		bad("paid_on", "must be 2000-01-01 or later")
-		return
-	}
-	var gross int64
-	if err := json.Unmarshal(body["gross_cents"], &gross); err != nil || !rowAmountInBounds(gross) {
-		bad("gross_cents", "must be a whole number of cents above zero")
+	gross, r := centsRefusal(body["gross_cents"])
+	if r != nil {
+		bad("gross_cents", r)
 		return
 	}
 	currency, ok := str("currency")
@@ -229,7 +227,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	// currency, and the Book counts euros only. Only the PayPal import can
 	// store another currency, as the file names it.
 	if currency != "EUR" {
-		bad("currency", "must be EUR: an entry by hand is in euros")
+		bad("currency", refuse(codeInvalidChoice, "must be EUR: an entry by hand is in euros"))
 		return
 	}
 	method, ok := str("method")
@@ -237,23 +235,23 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		return
 	}
 	if _, known := data_models.PaymentMethodLabels[method]; !known {
-		bad("method", "must be one of "+strings.Join(data_models.PaymentMethods, ", "))
+		bad("method", refuse(codeInvalidChoice, "must be one of "+strings.Join(data_models.PaymentMethods, ", ")))
 		return
 	}
 	reference, ok := str("reference")
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(reference) > maxManualReferenceRunes || strings.Contains(reference, "\n") || hasControlChars(reference) || hasFormatChars(reference) {
-		bad("reference", fmt.Sprintf("must be one line of at most %d characters", maxManualReferenceRunes))
+	if r := oneLineTextRefusal(reference, maxManualReferenceRunes); r != nil {
+		bad("reference", r)
 		return
 	}
 	sender, ok := str("sender_name")
 	if !ok {
 		return
 	}
-	if !validOneLineName(sender) {
-		bad("sender_name", fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes))
+	if r := oneLineTextRefusal(sender, maxManualSenderRunes); r != nil {
+		bad("sender_name", r)
 		return
 	}
 	// new_client_name adds the payer to the client book in the same
@@ -263,13 +261,13 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if msg := newClientNameRefusal(newClientName); msg != "" {
-		bad("new_client_name", msg)
+	if r := newClientNameRefusal(newClientName); r != nil {
+		bad("new_client_name", r)
 		return
 	}
 	if newClientName != "" {
 		if raw, present := body["client_id"]; present && string(raw) != "null" {
-			bad("new_client_name", "cannot be given together with client_id: choose a client or add a new one")
+			bad("new_client_name", clientAndNewClient)
 			return
 		}
 	}
@@ -281,21 +279,21 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	if clientDetails.Email, ok = str("new_client_email"); !ok {
 		return
 	}
-	if field, msg := newClientDetailsRefusal(newClientName, clientDetails); msg != "" {
-		bad(field, msg)
+	if field, r := newClientDetailsRefusal(newClientName, clientDetails); r != nil {
+		bad(field, r)
 		return
 	}
 	note, ok := str("note")
 	if !ok {
 		return
 	}
-	if utf8.RuneCountInString(note) > maxManualNoteRunes || hasControlChars(note) {
-		bad("note", fmt.Sprintf("must be at most %d characters", maxManualNoteRunes))
+	if r := textRefusal(note, maxManualNoteRunes, false); r != nil {
+		bad("note", r)
 		return
 	}
 	// The one row check's note rule (system_3 #12265).
 	if !rowNoteText(note) {
-		bad("note", "has a direction-override character: remove it")
+		bad("note", refuse(codeHiddenCharacters, "has a direction-override character: remove it"))
 		return
 	}
 	confirmDuplicate, err := confirmDuplicateFlag(body)
@@ -326,7 +324,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 		cid, err := optionalID(raw)
 		if err != nil {
 			tx.Rollback()
-			bad("client_id", err.Error())
+			bad("client_id", refuse(codeInvalidID, err.Error()))
 			return
 		}
 		if cid != nil {
@@ -339,7 +337,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 			}
 			if cl == nil {
 				tx.Rollback()
-				bad("client_id", "does not name a client")
+				bad("client_id", noSuchClient)
 				return
 			}
 		}
@@ -474,14 +472,14 @@ func CreateManualPaymentHandler(c *gin.Context) {
 // maxManualSenderRunes, and at least one letter or digit. "" means allowed;
 // an empty name is allowed and adds nothing. Create and edit share it
 // (system_3 #10696), so the two can never disagree about a name.
-func newClientNameRefusal(name string) string {
-	if !validOneLineName(name) {
-		return fmt.Sprintf("must be one line of at most %d characters", maxManualSenderRunes)
+func newClientNameRefusal(name string) *refusal {
+	if r := oneLineTextRefusal(name, maxManualSenderRunes); r != nil {
+		return r
 	}
 	if name != "" && !validClientName(name) {
-		return "must contain at least one letter or digit"
+		return refuse(codeNoLetterOrDigit, "must contain at least one letter or digit")
 	}
-	return ""
+	return nil
 }
 
 // addPayerClient adds name to the owner's client book inside tx, audited, unless

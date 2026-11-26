@@ -25,13 +25,36 @@ const (
 )
 
 // LogoError is a logo the server refuses. Its message is safe to show the
-// user and names what to change.
-type LogoError struct{ msg string }
+// user and names what to change. Code tells the causes apart, and Limit,
+// Width and Height are the figures the client's sentence prints (system_3
+// #12300 ruling 1, c77188).
+type LogoError struct {
+	msg           string
+	Code          string
+	Limit         int64
+	Width, Height int
+}
 
 func (e *LogoError) Error() string { return e.msg }
 
-func logoErrorf(format string, a ...interface{}) error {
-	return &LogoError{msg: fmt.Sprintf(format, a...)}
+// The codes of a refused logo. Add a code, never repurpose one.
+const (
+	LogoEmpty           = "empty_file"
+	LogoTooLarge        = "too_large"         // over Limit MB
+	LogoUnsupportedType = "unsupported_type"  // not a PNG or JPEG
+	LogoUnreadable      = "unreadable_image"  // a PNG or JPEG that does not decode
+	LogoNoVisiblePixels = "no_visible_pixels" // no pixels, or all of them transparent
+	LogoTooManyPixels   = "image_too_large"   // over Limit pixels a side or MaxLogoMegapixels
+)
+
+// MaxLogoSide and MaxLogoMegapixels are the pixel caps a refusal names.
+const (
+	MaxLogoSide       = maxLogoSide
+	MaxLogoMegapixels = maxLogoPixels / 1_000_000
+)
+
+func logoErrorf(code string, format string, a ...interface{}) *LogoError {
+	return &LogoError{Code: code, msg: fmt.Sprintf(format, a...)}
 }
 
 // IsLogoError reports whether err is a refusal the user can act on.
@@ -54,10 +77,12 @@ type Logo struct {
 // side, and re-encodes it, which drops any metadata the file carried.
 func NormalizeLogo(raw []byte) (Logo, error) {
 	if len(raw) == 0 {
-		return Logo{}, logoErrorf("the logo file is empty")
+		return Logo{}, logoErrorf(LogoEmpty, "the logo file is empty")
 	}
 	if len(raw) > MaxLogoBytes {
-		return Logo{}, logoErrorf("the logo is larger than %d MB", MaxLogoBytes>>20)
+		e := logoErrorf(LogoTooLarge, "the logo is larger than %d MB", MaxLogoBytes>>20)
+		e.Limit = MaxLogoBytes >> 20
+		return Logo{}, e
 	}
 	var (
 		decodeConfig func([]byte) (image.Config, error)
@@ -71,22 +96,24 @@ func NormalizeLogo(raw []byte) (Logo, error) {
 		decodeConfig = func(b []byte) (image.Config, error) { return jpeg.DecodeConfig(bytes.NewReader(b)) }
 		decode = func(b []byte) (image.Image, error) { return jpeg.Decode(bytes.NewReader(b)) }
 	default:
-		return Logo{}, logoErrorf("the logo must be a PNG or JPEG image")
+		return Logo{}, logoErrorf(LogoUnsupportedType, "the logo must be a PNG or JPEG image")
 	}
 	cfg, err := decodeConfig(raw)
 	if err != nil {
-		return Logo{}, logoErrorf("the logo image could not be read")
+		return Logo{}, logoErrorf(LogoUnreadable, "the logo image could not be read")
 	}
 	if cfg.Width < 1 || cfg.Height < 1 {
-		return Logo{}, logoErrorf("the logo image has no pixels")
+		return Logo{}, logoErrorf(LogoNoVisiblePixels, "the logo image has no pixels")
 	}
 	if cfg.Width > maxLogoSide || cfg.Height > maxLogoSide || cfg.Width*cfg.Height > maxLogoPixels {
-		return Logo{}, logoErrorf("the logo is %d×%d pixels; the limit is %d pixels on a side and %d megapixels",
+		e := logoErrorf(LogoTooManyPixels, "the logo is %d×%d pixels; the limit is %d pixels on a side and %d megapixels",
 			cfg.Width, cfg.Height, maxLogoSide, maxLogoPixels/1_000_000)
+		e.Limit, e.Width, e.Height = maxLogoSide, cfg.Width, cfg.Height
+		return Logo{}, e
 	}
 	src, err := decode(raw)
 	if err != nil {
-		return Logo{}, logoErrorf("the logo image could not be read")
+		return Logo{}, logoErrorf(LogoUnreadable, "the logo image could not be read")
 	}
 
 	// Premultiplied RGBA, so averaging never pulls the colour of a
@@ -97,7 +124,7 @@ func NormalizeLogo(raw []byte) (Logo, error) {
 
 	ink := inkBounds(rgba)
 	if ink.Empty() {
-		return Logo{}, logoErrorf("the logo image is fully transparent")
+		return Logo{}, logoErrorf(LogoNoVisiblePixels, "the logo image is fully transparent")
 	}
 	out := downscale(rgba.SubImage(ink).(*image.RGBA), LogoOutputMaxPx)
 

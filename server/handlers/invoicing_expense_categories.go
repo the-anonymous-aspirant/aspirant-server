@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"aspirant-online/server/data_models"
 
@@ -39,11 +38,21 @@ const (
 // expenseCategoryNameRefusal says why name cannot name a new category, or ""
 // when it can. Private is checked separately: it is a reserved name, not a
 // malformed one.
-func expenseCategoryNameRefusal(name string) string {
-	if name == "" || utf8.RuneCountInString(name) > maxExpenseCategoryNameRunes || strings.Contains(name, "\n") || hasControlChars(name) || hasFormatChars(name) {
-		return fmt.Sprintf("must be one line of 1-%d characters", maxExpenseCategoryNameRunes)
+func expenseCategoryNameRefusal(name string) *refusal {
+	if name == "" {
+		return refuse(codeRequired, fmt.Sprintf("must be one line of 1-%d characters", maxExpenseCategoryNameRunes))
 	}
-	return ""
+	return oneLineTextRefusal(name, maxExpenseCategoryNameRunes)
+}
+
+// categoryChoiceRefusal is checkExpenseCategoryChoice's answer as a refusal
+// of the category field: its message without the field's name, which
+// respondFieldRefusal puts back.
+func categoryChoiceRefusal(code, msg string) *refusal {
+	if msg == "" {
+		return nil
+	}
+	return refuse(code, strings.TrimPrefix(msg, "category "))
 }
 
 // removedCategoryRefusal is the reason a removed category is not offered.
@@ -64,7 +73,7 @@ func checkExpenseCategoryChoice(tx *gorm.DB, owner uint, name, current string) (
 		return "", "", err
 	}
 	if cat == nil {
-		return "invalid_field", "category is not one of your expense categories", nil
+		return codeInvalidCategory, "category is not one of your expense categories", nil
 	}
 	if cat.Removed() && name != current {
 		return "removed_category", removedCategoryRefusal(cat.Name), nil
@@ -79,41 +88,41 @@ func checkExpenseCategoryChoice(tx *gorm.DB, owner uint, name, current string) (
 //   - one ze removed is restored, with its name and counts_as;
 //   - otherwise a new category is made, counting as Other.
 //
-// A name that cannot be a category is refused with code "invalid_category"
-// and a message naming the category, so the client can show it under that
-// field. The caller rolls back on any refusal or error, so no category is
-// left behind when the expense is refused.
-func resolveTypedExpenseCategory(tx *gorm.DB, owner uint, typed string) (name, code, msg string, err error) {
+// A name that cannot be a category is refused as a refusal of the category
+// field (too_long, hidden_characters, required), so the client can show it
+// under that field. The caller rolls back on any refusal or error, so no
+// category is left behind when the expense is refused.
+func resolveTypedExpenseCategory(tx *gorm.DB, owner uint, typed string) (name string, r *refusal, err error) {
 	typed = strings.TrimSpace(typed)
-	if refusal := expenseCategoryNameRefusal(typed); refusal != "" {
-		return "", "invalid_category", "category " + refusal, nil
+	if r := expenseCategoryNameRefusal(typed); r != nil {
+		return "", r, nil
 	}
 	existing, err := data_models.FindExpenseCategoryFold(tx, owner, typed)
 	if err != nil {
-		return "", "", "", err
+		return "", nil, err
 	}
 	if existing != nil {
 		if existing.Removed() {
 			if err := setExpenseCategoryRemoved(tx, owner, existing, false); err != nil {
-				return "", "", "", err
+				return "", nil, err
 			}
 		}
-		return existing.Name, "", "", nil
+		return existing.Name, nil, nil
 	}
 	if strings.EqualFold(typed, data_models.ExpenseCategoryPrivate) {
 		// Unreachable while every book has Private (FindExpenseCategoryFold
 		// finds it above); kept so a book without it cannot gain a twin.
-		return "", "invalid_category", "category Private is a built-in category for expenses that never count", nil
+		return "", refuse(codeInvalidCategory, "Private is a built-in category for expenses that never count"), nil
 	}
 	cat := data_models.InvoicingExpenseCategory{OwnerUserID: owner, Name: typed, CountsAs: data_models.ExpenseCategoryOther}
 	if err := tx.Create(&cat).Error; err != nil {
-		return "", "", "", err
+		return "", nil, err
 	}
 	details := auditDetails(gin.H{"name": cat.Name, "counts_as": cat.CountsAs, "with_expense": true})
 	if err := data_models.RecordInvoicingAuditEvent(tx, owner, invoicingActionCreateManual, invoicingEntityExpenseCategory, cat.ID, details); err != nil {
-		return "", "", "", err
+		return "", nil, err
 	}
-	return cat.Name, "", "", nil
+	return cat.Name, nil, nil
 }
 
 // setExpenseCategoryRemoved removes (removed true) or restores cat, and

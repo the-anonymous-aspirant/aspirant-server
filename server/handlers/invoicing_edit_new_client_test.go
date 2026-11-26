@@ -81,10 +81,10 @@ func TestEditPayment_NewClientNameRefusalsAddNothing(t *testing.T) {
 	cases := []struct {
 		name, body, wantCode, wantText string
 	}{
-		{"no letter or digit", `{"new_client_name":"--"}`, "invalid_field", "at least one letter or digit"},
-		{"two lines", `{"new_client_name":"Atelier\nOst"}`, "invalid_field", "one line"},
-		{"too long", fmt.Sprintf(`{"new_client_name":%q}`, strings.Repeat("a", maxManualSenderRunes+1)), "invalid_field", "one line"},
-		{"with client_id", fmt.Sprintf(`{"new_client_name":"Atelier Ost","client_id":%d}`, f.clientID), "invalid_field", "together with client_id"},
+		{"no letter or digit", `{"new_client_name":"--"}`, codeNoLetterOrDigit, "at least one letter or digit"},
+		{"two lines", `{"new_client_name":"Atelier\nOst"}`, codeTooLong, "one line"},
+		{"too long", fmt.Sprintf(`{"new_client_name":%q}`, strings.Repeat("a", maxManualSenderRunes+1)), codeTooLong, "one line"},
+		{"with client_id", fmt.Sprintf(`{"new_client_name":"Atelier Ost","client_id":%d}`, f.clientID), codeClientConflict, "together with client_id"},
 	}
 	for _, tc := range cases {
 		code, _, _, body := patchPaymentNewClient(t, f, p.ID, tc.body)

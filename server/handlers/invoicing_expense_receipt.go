@@ -45,6 +45,10 @@ var allowedReceiptTypes = map[string]string{
 	"application/pdf": "pdf",
 }
 
+// receiptTooLarge is the refusal of a receipt over maxReceiptBytes.
+var receiptTooLarge = &refusal{code: codeFileTooLarge, limit: maxReceiptBytes >> 20, whole: true,
+	message: fmt.Sprintf("the receipt is larger than %d MB", maxReceiptBytes>>20)}
+
 // receiptDownloadFilename builds the Content-Disposition filename from the
 // server-sniffed type and the expense id alone -- never from the client's
 // uploaded filename (c65885 point 4: a header must not carry user content).
@@ -103,14 +107,14 @@ func PutInvoicingExpenseReceiptHandler(c *gin.Context) {
 	file, err := c.FormFile("receipt")
 	if err != nil {
 		if strings.Contains(err.Error(), "request body too large") {
-			RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("the receipt is larger than %d MB", maxReceiptBytes>>20))
+			respondFieldRefusal(c, "receipt", receiptTooLarge)
 			return
 		}
-		RespondWithError(c, http.StatusBadRequest, "No receipt file received")
+		respondFieldRefusal(c, "receipt", refuseWhole(codeMissingFile, "No receipt file received"))
 		return
 	}
 	if file.Size > maxReceiptBytes {
-		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("the receipt is larger than %d MB", maxReceiptBytes>>20))
+		respondFieldRefusal(c, "receipt", receiptTooLarge)
 		return
 	}
 	f, err := file.Open()
@@ -120,12 +124,18 @@ func PutInvoicingExpenseReceiptHandler(c *gin.Context) {
 	}
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
-	if err != nil || int64(len(raw)) > maxReceiptBytes {
-		RespondWithError(c, http.StatusBadRequest, fmt.Sprintf("the receipt is larger than %d MB", maxReceiptBytes>>20))
+	// A read that fails is the server's, not a size (c77188 point 9).
+	if err != nil {
+		log.Printf("Error reading an expense receipt: %v", err)
+		RespondWithError(c, http.StatusInternalServerError, "Failed to read the receipt")
+		return
+	}
+	if int64(len(raw)) > maxReceiptBytes {
+		respondFieldRefusal(c, "receipt", receiptTooLarge)
 		return
 	}
 	if len(raw) == 0 {
-		RespondWithError(c, http.StatusBadRequest, "Receipt is empty")
+		respondFieldRefusal(c, "receipt", refuseWhole(codeEmptyFile, "Receipt is empty"))
 		return
 	}
 	// The type is decided here, from the bytes, never from the client's
@@ -133,7 +143,7 @@ func PutInvoicingExpenseReceiptHandler(c *gin.Context) {
 	// stored and served, and what builds the download filename below.
 	contentType := http.DetectContentType(raw)
 	if allowedReceiptTypes[contentType] == "" {
-		RespondWithError(c, http.StatusBadRequest, "Unsupported file type (allowed: PDF, JPEG, PNG)")
+		respondFieldRefusal(c, "receipt", refuseWhole(codeUnsupportedType, "Unsupported file type (allowed: PDF, JPEG, PNG)"))
 		return
 	}
 	// filename is kept for display only (the JSON response below) and never

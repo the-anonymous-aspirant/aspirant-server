@@ -31,6 +31,16 @@ func withLogoRoutes(r *gin.Engine) *gin.Engine {
 
 // testLogoPNG is a w×h transparent canvas with an opaque black ink box and
 // one part-transparent pixel, so the normalized logo keeps its alpha.
+// testTransparentPNG is a 20×20 PNG with no visible pixel.
+func testTransparentPNG(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewNRGBA(image.Rect(0, 0, 20, 20))); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
 func testLogoPNG(t *testing.T, w, h int) []byte {
 	t.Helper()
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -166,11 +176,13 @@ func TestInvoicingLogo_RefusalsWriteNothing(t *testing.T) {
 		field   string
 		content []byte
 		want    string
+		code    string
 	}{
-		{"no file", "", nil, "No logo file"},
-		{"wrong field", "image", []byte("x"), "No logo file"},
-		{"not an image", "logo", []byte("%PDF-1.7 not a logo"), "PNG or JPEG"},
-		{"over the byte cap", "logo", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, invoicing_pdf.MaxLogoBytes)...), "larger than 5 MB"},
+		{"no file", "", nil, "No logo file", codeMissingFile},
+		{"wrong field", "image", []byte("x"), "No logo file", codeMissingFile},
+		{"not an image", "logo", []byte("%PDF-1.7 not a logo"), "PNG or JPEG", invoicing_pdf.LogoUnsupportedType},
+		{"fully transparent", "logo", testTransparentPNG(t), "fully transparent", invoicing_pdf.LogoNoVisiblePixels},
+		{"over the byte cap", "logo", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, invoicing_pdf.MaxLogoBytes)...), "larger than 5 MB", codeFileTooLarge},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -179,6 +191,10 @@ func TestInvoicingLogo_RefusalsWriteNothing(t *testing.T) {
 			w := uploadLogo(r, tc.field, tc.content)
 			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.want) {
 				t.Fatalf("got %d %s, want 400 naming %q", w.Code, w.Body.String(), tc.want)
+			}
+			var e fieldRefusalEnvelope
+			if json.Unmarshal(w.Body.Bytes(), &e) != nil || e.Error.Code != tc.code || e.Error.Field != "logo" {
+				t.Errorf("got %s, want code %q at the logo", w.Body.String(), tc.code)
 			}
 			var n int
 			db.Model(&data_models.InvoicingProfileLogo{}).Count(&n)

@@ -188,10 +188,11 @@ func TestDraftSave_QuantityTooLargeNamesTheLine(t *testing.T) {
 	if w.Code != http.StatusBadRequest || e.Error.Code != "quantity_too_large" || e.Error.Details["position"] != float64(2) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	// A price over the bound keeps its field refusal.
+	// A price over the bound has its own code since #12300, with the line's
+	// position in details too.
 	w = invoicingDo(f.r, "PUT", fmt.Sprintf("/invoicing/invoices/%d", id),
 		`{"line_items":[{"description":"a","quantity_milli":1000,"unit_price_cents":10000000001}]}`)
-	if w.Code != http.StatusBadRequest || refusalOf(t, w.Body.String()).Error.Code != "invalid_field" {
+	if e := refusalOf(t, w.Body.String()); w.Code != http.StatusBadRequest || e.Error.Code != "amount_too_large" || e.Error.Details["position"] != float64(1) {
 		t.Errorf("price over the bound: %d %s", w.Code, w.Body.String())
 	}
 }
