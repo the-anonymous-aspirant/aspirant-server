@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -80,12 +81,18 @@ func TestPrefix_ChangingCaseContinuesTheSeries(t *testing.T) {
 			t.Fatalf("issue %d: %s", i, body)
 		}
 	}
+	// "R" is "r"'s series, so the save keeps the server's next number, 3,
+	// and ignores the 1 sent (system_3 #12306: a save under a prefix in use
+	// never fails on its number).
 	w := invoicingDo(f.r, "PUT", "/invoicing/profile", profileWithPrefix("R", 1))
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "next_number_server_owned") || !strings.Contains(w.Body.String(), "the next number is 3") {
-		t.Fatalf(`"R" starting again at 1: %d %s`, w.Code, w.Body.String())
+	var saved struct {
+		Profile struct {
+			Prefix string `json:"invoice_number_prefix"`
+			Next   int    `json:"next_invoice_number"`
+		} `json:"profile"`
 	}
-	if w := invoicingDo(f.r, "PUT", "/invoicing/profile", profileWithPrefix("R", 3)); w.Code != http.StatusOK {
-		t.Fatalf(`"R" at 3: %d %s`, w.Code, w.Body.String())
+	if err := json.Unmarshal(w.Body.Bytes(), &saved); w.Code != http.StatusOK || err != nil || saved.Profile.Prefix != "R" || saved.Profile.Next != 3 {
+		t.Fatalf(`"R" sent with 1: want 200 at 3, got %d %s`, w.Code, w.Body.String())
 	}
 	if _, d, body := f.issue(f.draft(t, 2)); d.Invoice.InvoiceNumber == nil || *d.Invoice.InvoiceNumber != "R-003" {
 		t.Fatalf("the series continued: %s", body)
