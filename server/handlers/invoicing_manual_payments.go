@@ -298,7 +298,7 @@ func CreateManualPaymentHandler(c *gin.Context) {
 	}
 	confirmDuplicate, err := confirmDuplicateFlag(body)
 	if err != nil {
-		bad("confirm_duplicate", err.Error())
+		bad("confirm_duplicate", refuse(codeInvalidChoice, err.Error()))
 		return
 	}
 

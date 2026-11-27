@@ -193,7 +193,7 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	}
 	confirmDuplicate, err := confirmDuplicateFlag(body)
 	if err != nil {
-		bad("confirm_duplicate", err.Error())
+		bad("confirm_duplicate", refuse(codeInvalidChoice, err.Error()))
 		return
 	}
 
@@ -208,7 +208,6 @@ func CreateManualExpenseHandler(c *gin.Context) {
 	// A typed category is made or restored inside this transaction, so a
 	// refusal below rolls it back with the expense (#11579 item 9).
 	var refused *refusal
-	var err error
 	if createCategory {
 		category, refused, err = resolveTypedExpenseCategory(tx, invoicingUserID(c), category)
 	} else {
