@@ -69,6 +69,7 @@ func TestManualPayment_EachCauseHasItsOwnCode(t *testing.T) {
 		{"a new client's wrong email", `{` + ok + `,"new_client_name":"Atelier Ost","new_client_email":"ost@"}`, codeInvalidEmail, "new_client_email", 0},
 		{"a new client's address too long", `{` + ok + `,"new_client_name":"Atelier Ost","new_client_address":"` + strings.Repeat("a", maxNewClientAddressRunes+1) + `"}`, codeTooLong, "new_client_address", maxNewClientAddressRunes},
 		{"an address without a new client", `{` + ok + `,"new_client_address":"Weg 1"}`, codeNeedsNewClient, "new_client_address", 0},
+		{"a confirm_duplicate that is not true or false", `{` + ok + `,"confirm_duplicate":"yes"}`, codeInvalidChoice, "confirm_duplicate", 0},
 	}
 	for _, tc := range cases {
 		assertRefusal(t, tc.name, invoicingDo(f.r, "POST", "/invoicing/payments/manual", tc.body), tc.code, tc.field, tc.limit)
@@ -86,6 +87,7 @@ func TestManualExpense_EachCauseHasItsOwnCode(t *testing.T) {
 		{"an amount too large", fmt.Sprintf(`{"paid_on":"2026-07-14","amount_cents":%d}`, maxUnitPriceCents+1), codeAmountTooLarge, "amount_cents", maxUnitPriceCents},
 		{"a typed category too long", `{` + ok + `,"category":"` + strings.Repeat("c", maxExpenseCategoryNameRunes+1) + `","create_category":true}`, codeTooLong, "category", maxExpenseCategoryNameRunes},
 		{"a typed category on two lines", `{` + ok + `,"category":"Studio\nmiete","create_category":true}`, codeTooLong, "category", maxExpenseCategoryNameRunes},
+		{"a confirm_duplicate that is not true or false", `{` + ok + `,"confirm_duplicate":"yes"}`, codeInvalidChoice, "confirm_duplicate", 0},
 	}
 	for _, tc := range cases {
 		assertRefusal(t, tc.name, invoicingDo(r, "POST", "/invoicing/expenses/manual", tc.body), tc.code, tc.field, tc.limit)
