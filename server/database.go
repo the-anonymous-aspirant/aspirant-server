@@ -449,6 +449,14 @@ func AutoMigrate(db *gorm.DB) error {
 	}
 	data_models.BootstrapCardgenCards(db)
 
+	// Step 21: the Christmas cards, an admin-only picture puzzle (system_3
+	// #12582). Three new tables and no seed: the words, the pictures and the
+	// closing sentence are written only through the app's Control endpoints,
+	// never from this public repository.
+	if err := migrate(db, &data_models.ChristmasCard{}, &data_models.ChristmasSolve{}, &data_models.ChristmasSetting{}); err != nil {
+		return fmt.Errorf("migrating christmas card tables: %w", err)
+	}
+
 	// Clean up legacy table
 	if err := exec(db, "DROP TABLE IF EXISTS word_weaver_scores"); err != nil {
 		return fmt.Errorf("dropping legacy word_weaver_scores table: %w", err)

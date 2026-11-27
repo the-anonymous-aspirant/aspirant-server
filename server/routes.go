@@ -617,6 +617,22 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 			cardgen.POST("/cards/:id/versions/:n/restore", handlers.RestoreCardVersionHandler)
 			cardgen.GET("/cards/:id/resolved", handlers.ResolveCardHandler)
 		}
+
+		// The Christmas cards (system_3 #12582): admin-only, like the card
+		// editor. Play never returns a word; Control does. The Christmas gate
+		// test walks the whole /christmas prefix.
+		christmas := adminRoutes.Group("/christmas")
+		{
+			christmas.GET("/play", handlers.GetChristmasPlayHandler)
+			christmas.GET("/cards/:n/picture", handlers.GetChristmasPictureHandler)
+			christmas.POST("/cards/:n/answer", handlers.PostChristmasAnswerHandler)
+			christmas.GET("/control", handlers.GetChristmasControlHandler)
+			christmas.GET("/control/cards/:n/picture", handlers.GetChristmasControlPictureHandler)
+			christmas.PUT("/control/cards/:n/word", handlers.PutChristmasWordHandler)
+			christmas.PUT("/control/cards/:n/picture", handlers.PutChristmasPictureHandler)
+			christmas.PUT("/control/sentence", handlers.PutChristmasSentenceHandler)
+			christmas.POST("/control/reset", handlers.PostChristmasResetHandler)
+		}
 	}
 
 	log.Println("Routes registered successfully")

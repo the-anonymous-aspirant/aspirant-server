@@ -108,6 +108,9 @@ The server listens on **port 8080**.
 | `cards` | The deck: one row per card with its type, an optional template override, and links to `goal_cards` / `relationship_types` for the rows the game already defines (bootstrapped once, insert-if-absent). |
 | `card_versions` | Every saved card value set as a new row (`card_id` + `version_no`, jsonb `data`), same shape and restore semantics as template versions. |
 | `card_export_profiles` | Print configurations for the PDF export (card size, bleed, DPI, crop marks, sheet grid, backs); three vendor presets seeded. |
+| `christmas_cards` | The Christmas cards puzzle (system_3 #12582): one row per card 1-7 with its word (as typed), its picture's bytes (`bytea`, sniffed PNG/JPEG, pixel size). In the row, never the asset store, so no MD5 reaches `/fetch-object`. Admin-only via `/christmas`; no seed. |
+| `christmas_solves` | One row per (user, card) solved, with the time. Play's current card is the first unsolved; Control's reset deletes from a card on. |
+| `christmas_settings` | Key/value; `sentence` is the closing sentence Play shows after the last card. |
 
 ## Conventions
 
