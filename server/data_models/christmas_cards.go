@@ -41,6 +41,10 @@ type ChristmasCard struct {
 	MediaType string `gorm:"type:varchar(40);not null;default:''"`
 	Width     int    `gorm:"not null;default:0"`
 	Height    int    `gorm:"not null;default:0"`
+	// OpensAt is when Play may show the card and check a word against it
+	// (system_3 #12780): one card a day up to Christmas, set on Control. Nil
+	// is open now. The server's clock decides, never the browser's.
+	OpensAt   *time.Time
 	UpdatedAt time.Time
 }
 
@@ -49,6 +53,11 @@ func (ChristmasCard) TableName() string { return "christmas_cards" }
 // Ready reports whether Play can show the card and check a word against it.
 func (c ChristmasCard) Ready() bool {
 	return len(c.Picture) > 0 && strings.TrimSpace(c.Word) != ""
+}
+
+// OpenAt reports whether the card has opened by now.
+func (c ChristmasCard) OpenAt(now time.Time) bool {
+	return c.OpensAt == nil || !now.Before(*c.OpensAt)
 }
 
 // ChristmasSolve records that a user found a card's word. Progress is per

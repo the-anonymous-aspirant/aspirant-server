@@ -631,6 +631,7 @@ func RegisterRoutes(router *gin.Engine, db *gorm.DB) {
 			christmas.PUT("/control/cards/:n/word", handlers.PutChristmasWordHandler)
 			christmas.PUT("/control/cards/:n/picture", handlers.PutChristmasPictureHandler)
 			christmas.PUT("/control/sentence", handlers.PutChristmasSentenceHandler)
+			christmas.PUT("/control/opens", handlers.PutChristmasOpensHandler)
 			christmas.POST("/control/reset", handlers.PostChristmasResetHandler)
 		}
 	}

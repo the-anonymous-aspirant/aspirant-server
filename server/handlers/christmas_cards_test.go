@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"aspirant-online/server/data_models"
 
@@ -56,6 +58,7 @@ func christmasTestRouter(db *gorm.DB, userID uint) *gin.Engine {
 	g.PUT("/control/cards/:n/word", PutChristmasWordHandler)
 	g.PUT("/control/cards/:n/picture", PutChristmasPictureHandler)
 	g.PUT("/control/sentence", PutChristmasSentenceHandler)
+	g.PUT("/control/opens", PutChristmasOpensHandler)
 	g.POST("/control/reset", PostChristmasResetHandler)
 	return r
 }
@@ -348,5 +351,139 @@ func TestChristmasControl_Refusals(t *testing.T) {
 	}
 	if w := christmasUpload(t, r, 1, []byte("GIF89a not a picture")); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unsupported_file_type") {
 		t.Errorf("a GIF: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// christmasAt sets the server's clock for one test.
+func christmasAt(t *testing.T, now time.Time) {
+	t.Helper()
+	was := christmasNow
+	christmasNow = func() time.Time { return now }
+	t.Cleanup(func() { christmasNow = was })
+}
+
+func christmasOpens(t *testing.T, r *gin.Engine, opens []interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	return christmasDo(t, r, http.MethodPut, "/christmas/control/opens", gin.H{"opens_at": opens})
+}
+
+// #12780: a card waits for its opening time on the server's clock. Before it,
+// Play shows the card as not open, with the time and the server's now; its
+// picture is a 404 and its word is refused. At the time, all three open.
+func TestChristmasOpens_ACardWaitsForItsTime(t *testing.T) {
+	t0 := time.Date(2026, 12, 19, 22, 0, 0, 0, time.UTC)
+	christmasAt(t, t0)
+	r := christmasTestRouter(christmasTestDB(t), 1)
+	christmasSetUp(t, r)
+	if w := christmasOpens(t, r, []interface{}{nil, "2026-12-20T00:00:00+01:00", nil, nil, nil, nil, nil}); w.Code != http.StatusOK {
+		t.Fatalf("opens: %d %s", w.Code, w.Body.String())
+	}
+	christmasAnswer(t, r, 1, "alpha")
+
+	play := christmasPlay(t, r)
+	card, _ := play["card"].(map[string]interface{})
+	if play["current"] != float64(2) || card["open"] != false || card["opens_at"] != "2026-12-19T23:00:00Z" || play["now"] != "2026-12-19T22:00:00Z" {
+		t.Fatalf("before card 2 opens: %v", play)
+	}
+	if w := christmasDo(t, r, http.MethodGet, "/christmas/cards/2/picture", nil); w.Code != http.StatusNotFound {
+		t.Errorf("card 2's picture before it opens: %d, want 404", w.Code)
+	}
+	w := christmasDo(t, r, http.MethodPost, "/christmas/cards/2/answer", gin.H{"answer": "Bravo two"})
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "not_open") {
+		t.Fatalf("card 2's word before it opens: %d %s", w.Code, w.Body.String())
+	}
+	if christmasPlay(t, r)["current"] != float64(2) {
+		t.Fatal("a refused word moved the player")
+	}
+	if w := christmasDo(t, r, http.MethodGet, "/christmas/cards/1/picture", nil); w.Code != http.StatusOK {
+		t.Errorf("solved card 1's picture: %d, want 200", w.Code)
+	}
+
+	christmasAt(t, t0.Add(time.Hour)) // 2026-12-19T23:00Z: midnight in Berlin
+	card, _ = christmasPlay(t, r)["card"].(map[string]interface{})
+	if card["open"] != true {
+		t.Fatalf("at its time: %v", card)
+	}
+	if w := christmasDo(t, r, http.MethodGet, "/christmas/cards/2/picture", nil); w.Code != http.StatusOK {
+		t.Errorf("card 2's picture at its time: %d, want 200", w.Code)
+	}
+	if got := christmasAnswer(t, r, 2, "bravo two"); got["correct"] != true {
+		t.Fatalf("card 2's word at its time: %v", got)
+	}
+}
+
+// Card 1 can wait too, and a solved card stays shown when its time moves later.
+func TestChristmasOpens_CardOneAndASolvedCard(t *testing.T) {
+	christmasAt(t, time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC))
+	r := christmasTestRouter(christmasTestDB(t), 1)
+	christmasSetUp(t, r)
+	christmasAnswer(t, r, 1, "alpha")
+	later := "2026-12-25T00:00:00+01:00"
+	if w := christmasOpens(t, r, []interface{}{later, later, nil, nil, nil, nil, nil}); w.Code != http.StatusOK {
+		t.Fatalf("opens: %d %s", w.Code, w.Body.String())
+	}
+	if w := christmasDo(t, r, http.MethodGet, "/christmas/cards/1/picture", nil); w.Code != http.StatusOK {
+		t.Errorf("solved card 1 after its time moved later: %d, want 200", w.Code)
+	}
+	if w := christmasDo(t, r, http.MethodPost, "/christmas/control/reset", gin.H{"to": 1}); w.Code != http.StatusOK {
+		t.Fatalf("reset: %d", w.Code)
+	}
+	card, _ := christmasPlay(t, r)["card"].(map[string]interface{})
+	if card["number"] != float64(1) || card["open"] != false {
+		t.Fatalf("card 1 before its time: %v", card)
+	}
+	if w := christmasDo(t, r, http.MethodGet, "/christmas/cards/1/picture", nil); w.Code != http.StatusNotFound {
+		t.Errorf("card 1's picture before its time: %d, want 404", w.Code)
+	}
+}
+
+// Control stores all seven times at once, null clears one, and a bad request
+// stores nothing.
+func TestChristmasOpens_Control(t *testing.T) {
+	christmasAt(t, time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC))
+	r := christmasTestRouter(christmasTestDB(t), 1)
+	christmasSetUp(t, r)
+	week := []interface{}{}
+	for d := 19; d <= 25; d++ {
+		week = append(week, fmt.Sprintf("2026-12-%02dT00:00:00+01:00", d))
+	}
+	w := christmasOpens(t, r, week)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a week: %d %s", w.Code, w.Body.String())
+	}
+	var ctl struct {
+		Now   string `json:"now"`
+		Cards []struct {
+			Number  int     `json:"number"`
+			OpensAt *string `json:"opens_at"`
+		} `json:"cards"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &ctl)
+	if ctl.Now != "2026-12-01T12:00:00Z" || len(ctl.Cards) != 7 || ctl.Cards[0].OpensAt == nil || *ctl.Cards[0].OpensAt != "2026-12-18T23:00:00Z" ||
+		ctl.Cards[6].OpensAt == nil || *ctl.Cards[6].OpensAt != "2026-12-24T23:00:00Z" {
+		t.Fatalf("control after a week: %s", w.Body.String())
+	}
+
+	for name, body := range map[string]interface{}{
+		"six times":  week[:6],
+		"eight":      append(append([]interface{}{}, week...), nil),
+		"not a time": []interface{}{nil, nil, "Dec 20", nil, nil, nil, nil},
+		"no zone":    []interface{}{nil, nil, nil, "2026-12-22T00:00:00", nil, nil, nil},
+	} {
+		if w := christmasOpens(t, r, body.([]interface{})); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", name, w.Code)
+		}
+	}
+	w = christmasDo(t, r, http.MethodGet, "/christmas/control", nil)
+	json.Unmarshal(w.Body.Bytes(), &ctl)
+	if ctl.Cards[2].OpensAt == nil || *ctl.Cards[2].OpensAt != "2026-12-20T23:00:00Z" {
+		t.Fatalf("a refused request changed a time: %s", w.Body.String())
+	}
+	w = christmasOpens(t, r, []interface{}{nil, nil, nil, nil, nil, nil, nil})
+	json.Unmarshal(w.Body.Bytes(), &ctl)
+	for _, k := range ctl.Cards {
+		if k.OpensAt != nil {
+			t.Fatalf("null did not clear card %d: %s", k.Number, w.Body.String())
+		}
 	}
 }
