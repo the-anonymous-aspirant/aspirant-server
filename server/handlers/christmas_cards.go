@@ -10,7 +10,12 @@ package handlers
 //     a card that does not exist, and the closing sentence comes only once
 //     the last card is solved.
 //   - Control (/christmas/control/...) returns the words, stores the
-//     pictures, the words and the sentence, and moves a player back.
+//     pictures, the words, the sentence and the opening times, and moves a
+//     player back.
+//
+// A card also waits for its opening time (system_3 #12780): before it, Play
+// shows the card as not open yet, its picture is a 404 and a word for it is
+// refused. christmasNow is the one clock all three read.
 
 import (
 	"bytes"
@@ -32,6 +37,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
 )
+
+// christmasNow is the server's clock; tests set it.
+var christmasNow = func() time.Time { return time.Now().UTC() }
 
 const (
 	christmasPictureField   = "picture"
@@ -82,7 +90,7 @@ func christmasSolved(db *gorm.DB, userID uint) (int, map[int]time.Time, error) {
 func christmasCards(db *gorm.DB) (map[int]data_models.ChristmasCard, error) {
 	var rows []christmasCardRow
 	err := db.Model(&data_models.ChristmasCard{}).
-		Select("number, word, media_type, width, height, updated_at, (picture IS NOT NULL AND length(picture) > 0) AS has_picture").
+		Select("number, word, media_type, width, height, opens_at, updated_at, (picture IS NOT NULL AND length(picture) > 0) AS has_picture").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -113,15 +121,32 @@ func christmasSentence(db *gorm.DB) (string, error) {
 }
 
 type christmasPlayCard struct {
-	Number int  `json:"number"`
-	Ready  bool `json:"ready"`
-	Width  int  `json:"width"`
-	Height int  `json:"height"`
+	Number  int        `json:"number"`
+	Ready   bool       `json:"ready"`
+	Open    bool       `json:"open"`
+	OpensAt *time.Time `json:"opens_at"`
+	Width   int        `json:"width"`
+	Height  int        `json:"height"`
+}
+
+func christmasPlayCardOf(n int, k data_models.ChristmasCard, now time.Time) christmasPlayCard {
+	return christmasPlayCard{Number: n, Ready: k.Ready(), Open: k.OpenAt(now), OpensAt: christmasUTC(k.OpensAt), Width: k.Width, Height: k.Height}
+}
+
+// christmasUTC answers a stored time in UTC, whatever the session's zone.
+func christmasUTC(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 // GetChristmasPlayHandler handles GET /christmas/play: the card the player is
-// on, or, once every card is solved, the closing sentence and the cards.
+// on, or, once every card is solved, the closing sentence and the cards. `now`
+// is the server's clock, so a countdown to a card's opening can run on it.
 func GetChristmasPlayHandler(c *gin.Context) {
+	now := christmasNow()
 	db := c.MustGet("db").(*gorm.DB)
 	userID := c.MustGet("user_id").(uint)
 	solved, _, err := christmasSolved(db, userID)
@@ -143,22 +168,22 @@ func GetChristmasPlayHandler(c *gin.Context) {
 		}
 		list := make([]christmasPlayCard, 0, total)
 		for n := 1; n <= total; n++ {
-			k := cards[n]
-			list = append(list, christmasPlayCard{Number: n, Ready: k.Ready(), Width: k.Width, Height: k.Height})
+			list = append(list, christmasPlayCardOf(n, cards[n], now))
 		}
-		c.JSON(http.StatusOK, gin.H{"total": total, "done": true, "sentence": sentence, "cards": list})
+		c.JSON(http.StatusOK, gin.H{"total": total, "done": true, "sentence": sentence, "cards": list, "now": now})
 		return
 	}
 	n := solved + 1
-	k := cards[n]
 	c.JSON(http.StatusOK, gin.H{"total": total, "done": false, "current": n,
-		"card": christmasPlayCard{Number: n, Ready: k.Ready(), Width: k.Width, Height: k.Height}})
+		"card": christmasPlayCardOf(n, cards[n], now), "now": now})
 }
 
-// serveChristmasPicture writes a card's stored bytes, or 404.
-func serveChristmasPicture(c *gin.Context, db *gorm.DB, n int) {
+// serveChristmasPicture writes a card's stored bytes, or 404. With
+// mustBeOpen, a card before its opening time is a 404 too.
+func serveChristmasPicture(c *gin.Context, db *gorm.DB, n int, mustBeOpen bool) {
 	var card data_models.ChristmasCard
-	if err := db.Where("number = ?", n).First(&card).Error; err != nil || len(card.Picture) == 0 {
+	if err := db.Where("number = ?", n).First(&card).Error; err != nil || len(card.Picture) == 0 ||
+		(mustBeOpen && !card.OpenAt(christmasNow())) {
 		RespondWithError(c, http.StatusNotFound, "No such card")
 		return
 	}
@@ -172,7 +197,8 @@ func serveChristmasPicture(c *gin.Context, db *gorm.DB, n int) {
 
 // GetChristmasPictureHandler handles GET /christmas/cards/:n/picture: a card
 // up to the player's current one, else 404 (not 403: a locked card must not
-// read differently from a missing one).
+// read differently from a missing one). The current card is a 404 too until
+// it opens; a solved card stays shown.
 func GetChristmasPictureHandler(c *gin.Context) {
 	n, ok := christmasNumber(c)
 	if !ok {
@@ -188,7 +214,7 @@ func GetChristmasPictureHandler(c *gin.Context) {
 		RespondWithError(c, http.StatusNotFound, "No such card")
 		return
 	}
-	serveChristmasPicture(c, db, n)
+	serveChristmasPicture(c, db, n, n == solved+1)
 }
 
 type christmasAnswerRequest struct {
@@ -234,6 +260,10 @@ func PostChristmasAnswerHandler(c *gin.Context) {
 		christmasRefuse(c, http.StatusConflict, "not_ready", "", 0, "This card has no picture or no word yet.")
 		return
 	}
+	if !card.OpenAt(christmasNow()) {
+		christmasRefuse(c, http.StatusConflict, "not_open", "", 0, "This card is not open yet.")
+		return
+	}
 	if data_models.NormalizeChristmasWord(req.Answer) != data_models.NormalizeChristmasWord(card.Word) {
 		c.JSON(http.StatusOK, gin.H{"correct": false})
 		return
@@ -254,6 +284,7 @@ type christmasControlCard struct {
 	Height     int        `json:"height"`
 	State      string     `json:"state"` // solved | current | locked
 	SolvedAt   *time.Time `json:"solved_at"`
+	OpensAt    *time.Time `json:"opens_at"`
 }
 
 func christmasControl(c *gin.Context, db *gorm.DB, userID uint) {
@@ -275,7 +306,7 @@ func christmasControl(c *gin.Context, db *gorm.DB, userID uint) {
 	list := make([]christmasControlCard, 0, data_models.ChristmasCardCount)
 	for n := 1; n <= data_models.ChristmasCardCount; n++ {
 		k := cards[n]
-		row := christmasControlCard{Number: n, Word: k.Word, HasPicture: len(k.Picture) > 0, Width: k.Width, Height: k.Height, State: "locked"}
+		row := christmasControlCard{Number: n, Word: k.Word, HasPicture: len(k.Picture) > 0, Width: k.Width, Height: k.Height, State: "locked", OpensAt: christmasUTC(k.OpensAt)}
 		switch {
 		case n <= solved:
 			row.State = "solved"
@@ -286,7 +317,7 @@ func christmasControl(c *gin.Context, db *gorm.DB, userID uint) {
 		}
 		list = append(list, row)
 	}
-	c.JSON(http.StatusOK, gin.H{"total": data_models.ChristmasCardCount, "solved": solved, "cards": list, "sentence": sentence})
+	c.JSON(http.StatusOK, gin.H{"total": data_models.ChristmasCardCount, "solved": solved, "cards": list, "sentence": sentence, "now": christmasNow()})
 }
 
 // GetChristmasControlHandler handles GET /christmas/control: every card with
@@ -302,7 +333,7 @@ func GetChristmasControlPictureHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	serveChristmasPicture(c, c.MustGet("db").(*gorm.DB), n)
+	serveChristmasPicture(c, c.MustGet("db").(*gorm.DB), n, false)
 }
 
 // christmasCheckText refuses an empty, over-long or control-character text.
@@ -447,4 +478,49 @@ func PostChristmasResetHandler(c *gin.Context) {
 		return
 	}
 	christmasControl(c, db, userID)
+}
+
+type christmasOpensRequest struct {
+	OpensAt []*string `json:"opens_at"`
+}
+
+// PutChristmasOpensHandler handles PUT /christmas/control/opens {opens_at}:
+// every card's opening time at once, card 1 first, each an RFC 3339 time or
+// null for open now. All seven are stored in one transaction, or none.
+func PutChristmasOpensHandler(c *gin.Context) {
+	var req christmasOpensRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.OpensAt) != data_models.ChristmasCardCount {
+		christmasRefuse(c, http.StatusBadRequest, "invalid_request", "opens_at", data_models.ChristmasCardCount,
+			fmt.Sprintf("Send an opening time or null for each of the %d cards.", data_models.ChristmasCardCount))
+		return
+	}
+	times := make([]*time.Time, len(req.OpensAt))
+	for i, raw := range req.OpensAt {
+		if raw == nil {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, *raw)
+		if err != nil {
+			christmasRefuse(c, http.StatusBadRequest, "invalid_time", "opens_at", int64(i+1),
+				fmt.Sprintf("Card %d's opening time could not be read.", i+1))
+			return
+		}
+		t = t.UTC()
+		times[i] = &t
+	}
+	db := c.MustGet("db").(*gorm.DB)
+	err := db.Transaction(func(tx *gorm.DB) error {
+		for i, t := range times {
+			card := data_models.ChristmasCard{Number: i + 1}
+			if err := tx.Where("number = ?", i+1).Assign(map[string]interface{}{"opens_at": t}).FirstOrCreate(&card).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		RespondWithError(c, http.StatusInternalServerError, "Could not save the opening times")
+		return
+	}
+	christmasControl(c, db, c.MustGet("user_id").(uint))
 }

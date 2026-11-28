@@ -22,8 +22,8 @@ func TestChristmasRoutes_OnlyAdminPassesTheGate(t *testing.T) {
 		routes = append(routes, ri.Method+" "+strings.ReplaceAll(ri.Path, ":n", "1"))
 	}
 	// Positive control: an empty enumeration would pass every assertion below.
-	if len(routes) < 9 {
-		t.Fatalf("found %d /christmas/ routes, want the 9 of #12582", len(routes))
+	if len(routes) < 10 {
+		t.Fatalf("found %d /christmas/ routes, want the 9 of #12582 and #12780's opening times", len(routes))
 	}
 
 	member := mustToken(t, cardgenMemberID, "Member")
